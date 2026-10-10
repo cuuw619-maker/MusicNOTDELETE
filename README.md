@@ -1,11 +1,11 @@
-<div align="center">
+# imux player
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Версия: **0.5**
 
-  <h1>Built with AI Studio</h2>
-
-  <p>The fastest path from prompt to production with Gemini.</p>
-
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+Нативный музыкальный плеер для Android с современной архитектурой:
+- Material 3 Expressive UI;
+- Media3 ExoPlayer + MediaSession;
+- Двухпоточный аудио-кроссфейд (0.1–1.5с, по умолчанию 0.3с);
+- Sonic time-stretch и изменение тональности;
+- Управление очередью, плейлистами и избранным;
+- Автономное сохранение настроек и состояния воспроизведения.

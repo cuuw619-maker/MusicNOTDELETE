@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Minimalist, pure, modern musical insignia centered in the 66dp safe zone (21-87) -->
+    <!-- Subtle soft glow accent -->
+    <path
+        android:pathData="M69,32 L43,38.5 L43,62.8 A7.5,7.5 0 0,0 39,61.5 C34.86,61.5 31.5,64.41 31.5,68 C31.5,71.59 34.86,74.5 39,74.5 C43.14,74.5 46.5,71.59 46.5,68 L46.5,45.2 L65.5,40.5 L65.5,58.8 A7.5,7.5 0 0,0 61.5,57.5 C57.36,57.5 54,60.41 54,64 C54,67.59 57.36,70.5 61.5,70.5 C65.64,70.5 69,67.59 69,64 L69,32 Z"
+        android:strokeWidth="4"
+        android:strokeColor="#25FFFFFF"
+        android:strokeLineJoin="round" />
+
+    <!-- Pure minimalist white silhouette with crisp gradient brilliance -->
+    <path
+        android:pathData="M69,32 L43,38.5 L43,62.8 A7.5,7.5 0 0,0 39,61.5 C34.86,61.5 31.5,64.41 31.5,68 C31.5,71.59 34.86,74.5 39,74.5 C43.14,74.5 46.5,71.59 46.5,68 L46.5,45.2 L65.5,40.5 L65.5,58.8 A7.5,7.5 0 0,0 61.5,57.5 C57.36,57.5 54,60.41 54,64 C54,67.59 57.36,70.5 61.5,70.5 C65.64,70.5 69,67.59 69,64 L69,32 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="43"
+                android:startY="32"
+                android:endX="69"
+                android:endY="74"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FFFFFF" />
+                <item android:offset="1.0" android:color="#EDE7F6" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
