@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.pow
 import kotlin.random.Random
 
@@ -387,6 +388,35 @@ class MusicControllerManager(
         pluginManager?.dispatchQueueChanged(currentQueueSongs)
     }
 
+    suspend fun resolveOnlineUriIfNeeded(song: Song): Song = withContext(Dispatchers.IO) {
+        if (!song.contentUriString.startsWith("online://")) return@withContext song
+
+        val uri = Uri.parse(song.contentUriString)
+        val host = uri.host // "youtube" or "spotify"
+        val path = uri.path?.removePrefix("/") ?: ""
+        val app = context.applicationContext as? com.example.MusicApplication
+        val streamManager = app?.youTubeStreamManager
+
+        if (host == "youtube" && streamManager != null) {
+            val resolved = streamManager.resolveStreamUrl(path)
+            if (resolved != null) {
+                return@withContext song.copy(contentUriString = resolved)
+            }
+        } else if (host == "spotify" && streamManager != null) {
+            // Find audio stream on YouTube Music by track title + artist
+            val query = "${song.artist} ${song.title}"
+            val searchResults = streamManager.search(query)
+            val first = searchResults.firstOrNull()
+            if (first != null) {
+                val resolved = streamManager.resolveStreamUrl(first.id)
+                if (resolved != null) {
+                    return@withContext song.copy(contentUriString = resolved)
+                }
+            }
+        }
+        song
+    }
+
     fun playSong(song: Song, queue: List<Song> = listOf(song)) {
         val controller = mediaController ?: return
         getService()?.cancelCrossfade()
@@ -394,6 +424,26 @@ class MusicControllerManager(
         originalQueue = queue.toMutableList()
         currentQueueSongs.clear()
         currentQueueSongs.addAll(queue)
+
+        if (song.contentUriString.startsWith("online://")) {
+            scope.launch {
+                val resolvedSong = resolveOnlineUriIfNeeded(song)
+                val resolvedQueue = queue.map { if (it.id == song.id) resolvedSong else it }
+                currentQueueSongs.clear()
+                currentQueueSongs.addAll(resolvedQueue)
+                originalQueue = resolvedQueue.toMutableList()
+
+                val startIndex = resolvedQueue.indexOfFirst { it.id == resolvedSong.id }.coerceAtLeast(0)
+                val mediaItems = resolvedQueue.map { songToMediaItem(it) }
+
+                controller.setMediaItems(mediaItems, startIndex, 0L)
+                controller.prepare()
+                controller.play()
+                updatePlaybackState()
+                pluginManager?.dispatchQueueChanged(currentQueueSongs)
+            }
+            return
+        }
 
         val startIndex = queue.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
         val mediaItems = queue.map { songToMediaItem(it) }

@@ -1,6 +1,10 @@
 package com.example.ui.player
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,12 +21,25 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.EditNote
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Lyrics
-import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.TextFields
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -41,41 +58,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.lyrics.DualLyricLine
 import com.example.model.Song
 import com.example.ui.util.HapticFeedbackType
 import com.example.ui.util.rememberHapticHelper
+import com.example.ui.viewmodel.MusicViewModel
 
-data class LyricLine(val timeMs: Long, val text: String)
-
-fun parseLrcLyrics(rawLyrics: String): List<LyricLine> {
-    val lines = rawLyrics.lines()
-    val regex = Regex("""\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\](.*)""")
-    val result = mutableListOf<LyricLine>()
-
-    for (line in lines) {
-        val match = regex.find(line.trim())
-        if (match != null) {
-            val minutes = match.groupValues[1].toLongOrNull() ?: 0L
-            val seconds = match.groupValues[2].toLongOrNull() ?: 0L
-            val millisStr = match.groupValues[3]
-            val millis = if (millisStr.isNotEmpty()) {
-                if (millisStr.length == 2) millisStr.toLong() * 10 else millisStr.toLong()
-            } else 0L
-            val timeMs = minutes * 60000L + seconds * 1000L + millis
-            val text = match.groupValues[4].trim()
-            if (text.isNotEmpty()) {
-                result.add(LyricLine(timeMs, text))
-            }
-        } else if (line.isNotBlank() && !line.startsWith("[")) {
-            // Plain text without timestamps
-            result.add(LyricLine(-1L, line.trim()))
-        }
-    }
-    return result.sortedBy { it.timeMs }
+enum class LyricsDisplayMode {
+    SYNCED,
+    PARALLEL,
+    PLAIN
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -83,47 +84,49 @@ fun parseLrcLyrics(rawLyrics: String): List<LyricLine> {
 fun LyricsBottomSheet(
     song: Song,
     currentPositionMs: Long,
+    viewModel: MusicViewModel,
     onSeekTo: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val haptic = rememberHapticHelper()
     val listState = rememberLazyListState()
+    val focusManager = LocalFocusManager.current
 
+    val lyricsState by viewModel.lyricsState.collectAsStateWithLifecycle()
+
+    var displayMode by remember { mutableStateOf(LyricsDisplayMode.SYNCED) }
+    var isSearchExpanded by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
     var isEditMode by remember { mutableStateOf(false) }
-    var lyricsText by remember(song.id) {
-        mutableStateOf(
-            // Pre-seed clean sample lyrics if empty
-            """
-                [00:00.00]${song.title} — ${song.artist}
-                [00:04.00]♪ Музыкальное вступление ♪
-                [00:12.00]Слушайте любимую музыку в чистом звучании
-                [00:18.00]Студийный движок с плавным затуханием
-                [00:24.00]И кристально чистыми частотами
-                [00:32.00]Наслаждайтесь каждым звуком и нотой
-                [00:40.00]♪ Проигрыш ♪
-                [00:48.00]Плеер нового поколения Material 3
-                [00:56.00]Каждая строка синхронизирована с музыкой
-                [01:06.00]♪ Завершение композиции ♪
-            """.trimIndent()
-        )
+    var customLyricsText by remember { mutableStateOf("") }
+
+    // Load lyrics when sheet opens or song changes
+    LaunchedEffect(song.id) {
+        viewModel.loadLyrics(song)
     }
 
-    val parsedLines = remember(lyricsText) { parseLrcLyrics(lyricsText) }
+    val effectiveLines = remember(lyricsState.lines, customLyricsText, isEditMode) {
+        if (customLyricsText.isNotBlank()) {
+            parseCustomLrc(customLyricsText)
+        } else {
+            lyricsState.lines
+        }
+    }
 
-    // Find active line index
-    val activeIndex = remember(parsedLines, currentPositionMs) {
-        val timed = parsedLines.filter { it.timeMs >= 0 }
+    // Active line index calculation based on current playback timestamp
+    val activeIndex = remember(effectiveLines, currentPositionMs) {
+        val timed = effectiveLines.filter { it.timestampMs >= 0 }
         if (timed.isEmpty()) -1
         else {
-            val idx = timed.indexOfLast { it.timeMs <= currentPositionMs }
+            val idx = timed.indexOfLast { it.timestampMs <= currentPositionMs }
             if (idx != -1) idx else 0
         }
     }
 
-    // Auto-scroll to active line
-    LaunchedEffect(activeIndex) {
-        if (activeIndex in 0 until parsedLines.size) {
+    // Auto-scroll in synced or parallel modes
+    LaunchedEffect(activeIndex, displayMode) {
+        if (displayMode != LyricsDisplayMode.PLAIN && activeIndex in effectiveLines.indices) {
             listState.animateScrollToItem((activeIndex - 2).coerceAtLeast(0))
         }
     }
@@ -138,109 +141,438 @@ fun LyricsBottomSheet(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 24.dp)
+                .padding(bottom = 20.dp)
         ) {
-            // Header
+            // Header Bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Rounded.Lyrics,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        modifier = Modifier.size(40.dp),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.Lyrics,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "Текст песни",
+                            text = lyricsState.title.ifBlank { song.title },
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = if (parsedLines.any { it.timeMs >= 0 }) "Синхронизированный LRC • Нажмите на строку для перехода" else "Обычный текст",
+                            text = if (lyricsState.source.isNotBlank()) "${lyricsState.artist.ifBlank { song.artist }} • ${lyricsState.source}"
+                            else lyricsState.artist.ifBlank { song.artist },
                             style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { isSearchExpanded = !isSearchExpanded },
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = "Поиск текста",
+                            tint = if (isSearchExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(
+                        onClick = { viewModel.loadLyrics(song) },
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Refresh,
+                            contentDescription = "Обновить текст",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(
+                        onClick = { isEditMode = !isEditMode },
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.EditNote,
+                            contentDescription = "Свой текст",
+                            tint = if (isEditMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Search Bar (collapsible)
+            AnimatedVisibility(visible = isSearchExpanded) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Исполнитель и название песни...", style = MaterialTheme.typography.bodySmall) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = {
+                                if (searchQuery.isNotBlank()) {
+                                    focusManager.clearFocus()
+                                    viewModel.searchLyricsManually(searchQuery)
+                                }
+                            }),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        TextButton(
+                            onClick = {
+                                if (searchQuery.isNotBlank()) {
+                                    focusManager.clearFocus()
+                                    viewModel.searchLyricsManually(searchQuery)
+                                }
+                            }
+                        ) {
+                            Text("Искать")
+                        }
+                    }
+                }
+            }
+
+            // Display Mode Selector Chips
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = displayMode == LyricsDisplayMode.SYNCED,
+                    onClick = {
+                        haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
+                        displayMode = LyricsDisplayMode.SYNCED
+                    },
+                    label = { Text("Синхронно") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Lyrics,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+
+                FilterChip(
+                    selected = displayMode == LyricsDisplayMode.PARALLEL,
+                    onClick = {
+                        haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
+                        displayMode = LyricsDisplayMode.PARALLEL
+                    },
+                    label = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Параллельно")
+                            if (lyricsState.hasDualLines) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .background(MaterialTheme.colorScheme.primary, CircleShape)
+                                )
+                            }
+                        }
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Subtitles,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+
+                FilterChip(
+                    selected = displayMode == LyricsDisplayMode.PLAIN,
+                    onClick = {
+                        haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
+                        displayMode = LyricsDisplayMode.PLAIN
+                    },
+                    label = { Text("Текст") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.TextFields,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Content Area
+            if (lyricsState.isLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(36.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Поиск синхронизированных слов...",
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-
-                IconButton(onClick = { isEditMode = !isEditMode }) {
-                    Icon(
-                        imageVector = Icons.Rounded.EditNote,
-                        contentDescription = "Редактировать текст",
-                        tint = if (isEditMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            if (isEditMode) {
+            } else if (isEditMode) {
                 Column(modifier = Modifier.fillMaxSize()) {
+                    Text(
+                        text = "Вставьте текст или LRC разметку [00:12.30] Текст песни:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
                     OutlinedTextField(
-                        value = lyricsText,
-                        onValueChange = { lyricsText = it },
+                        value = customLyricsText,
+                        onValueChange = { customLyricsText = it },
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
-                        label = { Text("Вставьте текст в формате [мм:сс.хх] или без меток") },
+                        placeholder = { Text("[00:05.00] Строка песни // Перевод строки") },
                         shape = RoundedCornerShape(16.dp)
                     )
                     Spacer(modifier = Modifier.height(12.dp))
-                    TextButton(
-                        onClick = { isEditMode = false },
-                        modifier = Modifier.align(Alignment.End)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Готово")
+                        TextButton(onClick = { customLyricsText = "" }) {
+                            Text("Очистить")
+                        }
+                        TextButton(onClick = { isEditMode = false }) {
+                            Text("Применить")
+                        }
+                    }
+                }
+            } else if (effectiveLines.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Lyrics,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(56.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = lyricsState.errorMessage ?: "Текст не найден",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Surface(
+                            onClick = { isSearchExpanded = true },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = "Найти вручную",
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                            )
+                        }
                     }
                 }
             } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    itemsIndexed(parsedLines) { index, line ->
-                        val isActive = index == activeIndex
-                        val textColor by animateColorAsState(
-                            targetValue = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-                            label = "lyric_color"
-                        )
-
-                        Surface(
+                when (displayMode) {
+                    LyricsDisplayMode.PLAIN -> {
+                        val plainContent = lyricsState.plainLyrics.ifBlank {
+                            effectiveLines.joinToString("\n") { it.primaryText }
+                        }
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(14.dp))
-                                .clickable {
-                                    if (line.timeMs >= 0) {
-                                        haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                        onSeekTo(line.timeMs)
-                                    }
-                                }
-                                .padding(vertical = 6.dp, horizontal = 12.dp),
-                            color = if (isActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else androidx.compose.ui.graphics.Color.Transparent,
-                            shape = RoundedCornerShape(14.dp)
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(vertical = 12.dp)
                         ) {
                             Text(
-                                text = line.text,
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
-                                    fontSize = if (isActive) 20.sp else 16.sp,
-                                    lineHeight = if (isActive) 28.sp else 22.sp
+                                text = plainContent,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    lineHeight = 28.sp,
+                                    fontSize = 17.sp
                                 ),
-                                color = textColor,
-                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.fillMaxWidth()
                             )
+                        }
+                    }
+                    LyricsDisplayMode.SYNCED, LyricsDisplayMode.PARALLEL -> {
+                        val showSecondary = (displayMode == LyricsDisplayMode.PARALLEL)
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(vertical = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            itemsIndexed(effectiveLines) { index, line ->
+                                val isActive = index == activeIndex
+                                val primaryColor by animateColorAsState(
+                                    targetValue = if (isActive) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                    label = "lyric_color"
+                                )
+
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .clickable {
+                                            if (line.timestampMs >= 0) {
+                                                haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
+                                                onSeekTo(line.timestampMs)
+                                            }
+                                        }
+                                        .padding(vertical = 6.dp, horizontal = 12.dp),
+                                    color = if (isActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                    else Color.Transparent,
+                                    shape = RoundedCornerShape(16.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            text = line.primaryText,
+                                            style = MaterialTheme.typography.titleMedium.copy(
+                                                fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
+                                                fontSize = if (isActive) 21.sp else 16.sp,
+                                                lineHeight = if (isActive) 29.sp else 23.sp
+                                            ),
+                                            color = primaryColor,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+
+                                        if (showSecondary && !line.secondaryText.isNullOrBlank()) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = line.secondaryText,
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                                                    fontSize = if (isActive) 16.sp else 13.sp,
+                                                    lineHeight = if (isActive) 22.sp else 18.sp
+                                                ),
+                                                color = if (isActive) MaterialTheme.colorScheme.tertiary
+                                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                                textAlign = TextAlign.Center,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+private fun parseCustomLrc(raw: String): List<DualLyricLine> {
+    val regex = Regex("""\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\](.*)""")
+    val lines = mutableListOf<DualLyricLine>()
+
+    for (line in raw.lines()) {
+        val trimmed = line.trim()
+        val match = regex.find(trimmed)
+        if (match != null) {
+            val min = match.groupValues[1].toLongOrNull() ?: 0L
+            val sec = match.groupValues[2].toLongOrNull() ?: 0L
+            val msStr = match.groupValues[3]
+            val ms = if (msStr.isNotEmpty()) {
+                if (msStr.length == 2) msStr.toLong() * 10L else msStr.toLong()
+            } else 0L
+            val totalMs = (min * 60 + sec) * 1000L + ms
+            val text = match.groupValues[4].trim()
+
+            val (primary, secondary) = when {
+                text.contains(" // ") -> {
+                    val p = text.split(" // ", limit = 2)
+                    Pair(p[0].trim(), p.getOrNull(1)?.trim())
+                }
+                text.contains(" | ") -> {
+                    val p = text.split(" | ", limit = 2)
+                    Pair(p[0].trim(), p.getOrNull(1)?.trim())
+                }
+                else -> Pair(text, null)
+            }
+
+            if (primary.isNotBlank()) {
+                lines.add(DualLyricLine(totalMs, primary, secondary, isSynced = true))
+            }
+        } else if (trimmed.isNotBlank() && !trimmed.startsWith("[")) {
+            lines.add(DualLyricLine(-1L, trimmed, null, isSynced = false))
+        }
+    }
+    return lines.sortedBy { it.timestampMs }
 }

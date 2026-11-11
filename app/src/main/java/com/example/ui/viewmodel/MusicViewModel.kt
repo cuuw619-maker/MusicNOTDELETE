@@ -17,6 +17,10 @@ import com.example.model.SleepTimerOption
 import com.example.model.SleepTimerState
 import com.example.model.Song
 import com.example.model.SortOrder
+import android.net.Uri
+import com.example.lyrics.LyricsState
+import com.example.online.OnlineTrack
+import com.example.spotify.SpotifyPlaylist
 import com.example.playback.SleepTimerManager
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -162,6 +166,26 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _songToAddToPlaylist = MutableStateFlow<Song?>(null)
     val songToAddToPlaylist: StateFlow<Song?> = _songToAddToPlaylist.asStateFlow()
+
+    private val _isSpotifySheetVisible = MutableStateFlow(false)
+    val isSpotifySheetVisible: StateFlow<Boolean> = _isSpotifySheetVisible.asStateFlow()
+
+    // Spotify
+    val spotifyManager = app.spotifyManager
+    val spotifyAuthState = spotifyManager.authState
+
+    // YouTube Music Online
+    val youTubeStreamManager = app.youTubeStreamManager
+    private val _onlineSearchResults = MutableStateFlow<List<OnlineTrack>>(emptyList())
+    val onlineSearchResults: StateFlow<List<OnlineTrack>> = _onlineSearchResults.asStateFlow()
+
+    private val _isOnlineSearchLoading = MutableStateFlow(false)
+    val isOnlineSearchLoading: StateFlow<Boolean> = _isOnlineSearchLoading.asStateFlow()
+
+    // Lyrics
+    val lyricsManager = app.lyricsManager
+    private val _lyricsState = MutableStateFlow(LyricsState())
+    val lyricsState: StateFlow<LyricsState> = _lyricsState.asStateFlow()
 
     // Navigation drill down (detail screens inside Library/Playlists)
     private val _selectedAlbum = MutableStateFlow<Album?>(null)
@@ -445,4 +469,105 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun setLoudnessEnhancer(targetGainmB: Int) = equalizerManager.setLoudnessEnhancer(targetGainmB)
     fun useEqualizerPreset(presetIndex: Short) = equalizerManager.usePreset(presetIndex)
     fun applyEqualizerPreset(presetName: String) = equalizerManager.applyPreset(presetName)
+
+    // ==========================================
+    // SPOTIFY CONNECT & PLAYLIST SYNC
+    // ==========================================
+    fun setSpotifySheetVisible(visible: Boolean) {
+        _isSpotifySheetVisible.value = visible
+        if (visible && spotifyAuthState.value.isConnected) {
+            fetchSpotifyPlaylists()
+        }
+    }
+
+    fun handleSpotifyRedirect(uri: Uri) {
+        viewModelScope.launch {
+            val success = spotifyManager.handleRedirectUri(uri)
+            if (success) {
+                fetchSpotifyPlaylists()
+            }
+        }
+    }
+
+    fun fetchSpotifyPlaylists() {
+        viewModelScope.launch {
+            spotifyManager.fetchUserPlaylists()
+        }
+    }
+
+    fun importSpotifyPlaylist(playlist: SpotifyPlaylist, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            spotifyManager.importPlaylist(playlist)
+            repository.scanLibrary()
+            onDone()
+        }
+    }
+
+    fun importSpotifyPlaylistByUrl(urlOrId: String, onDone: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val res = spotifyManager.importPublicPlaylistByUrl(urlOrId)
+            repository.scanLibrary()
+            onDone(res != null)
+        }
+    }
+
+    fun disconnectSpotify() {
+        spotifyManager.disconnect()
+    }
+
+    // ==========================================
+    // YOUTUBE MUSIC ONLINE STREAMING
+    // ==========================================
+    fun searchOnline(query: String) {
+        if (query.isBlank()) {
+            _onlineSearchResults.value = emptyList()
+            return
+        }
+        viewModelScope.launch {
+            _isOnlineSearchLoading.value = true
+            val results = youTubeStreamManager.search(query)
+            _onlineSearchResults.value = results
+            _isOnlineSearchLoading.value = false
+        }
+    }
+
+    fun playOnlineTrack(track: OnlineTrack) {
+        viewModelScope.launch {
+            val streamUrl = youTubeStreamManager.resolveStreamUrl(track.id)
+            val song = track.toSong(streamUrl)
+            controllerManager.playSong(song)
+        }
+    }
+
+    // ==========================================
+    // DYNAMIC MULTI-SOURCE & DUAL LYRICS
+    // ==========================================
+    fun loadLyrics(song: Song) {
+        viewModelScope.launch {
+            _lyricsState.value = _lyricsState.value.copy(
+                title = song.title,
+                artist = song.artist,
+                isLoading = true,
+                errorMessage = null
+            )
+            val state = lyricsManager.getLyrics(
+                title = song.title,
+                artist = song.artist,
+                durationSeconds = song.durationMs / 1000L
+            )
+            _lyricsState.value = state
+        }
+    }
+
+    fun searchLyricsManually(query: String) {
+        viewModelScope.launch {
+            _lyricsState.value = _lyricsState.value.copy(isLoading = true, errorMessage = null)
+            val state = lyricsManager.getLyrics(
+                title = query,
+                artist = "",
+                durationSeconds = 0L
+            )
+            _lyricsState.value = state
+        }
+    }
 }

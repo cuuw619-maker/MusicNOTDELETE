@@ -86,6 +86,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        intent?.data?.let { uri ->
+            if (uri.scheme == "imux" && uri.host == "spotify-callback") {
+                viewModel.handleSpotifyRedirect(uri)
+            }
+        }
+
         setContent {
             val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
             val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
@@ -99,6 +105,15 @@ class MainActivity : ComponentActivity() {
                 com.example.ui.theme.ProvideResponsiveLayout {
                     MainApp(viewModel = viewModel, checkPermission = ::hasAudioPermission)
                 }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        intent.data?.let { uri ->
+            if (uri.scheme == "imux" && uri.host == "spotify-callback") {
+                viewModel.handleSpotifyRedirect(uri)
             }
         }
     }
@@ -144,6 +159,7 @@ fun MainApp(
     val bookmarksMap by viewModel.bookmarksState.collectAsStateWithLifecycle()
     val isBookmarksVisible by viewModel.isBookmarksSheetVisible.collectAsStateWithLifecycle()
     val currentSongBookmarks = playbackState.currentSong?.let { bookmarksMap[it.id] } ?: emptyList()
+    val isSpotifySheetVisible by viewModel.isSpotifySheetVisible.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -403,8 +419,16 @@ fun MainApp(
         com.example.ui.player.LyricsBottomSheet(
             song = playbackState.currentSong!!,
             currentPositionMs = playbackState.currentPositionMs,
+            viewModel = viewModel,
             onSeekTo = { viewModel.seekTo(it) },
             onDismiss = { viewModel.setLyricsSheetVisible(false) }
+        )
+    }
+
+    if (isSpotifySheetVisible) {
+        com.example.ui.spotify.SpotifySyncSheet(
+            viewModel = viewModel,
+            onDismiss = { viewModel.setSpotifySheetVisible(false) }
         )
     }
 

@@ -39,6 +39,15 @@ class MusicApplication : Application() {
     lateinit var pluginManager: PluginManager
         private set
 
+    lateinit var spotifyManager: com.example.spotify.SpotifyManager
+        private set
+
+    lateinit var youTubeStreamManager: com.example.online.YouTubeStreamManager
+        private set
+
+    lateinit var lyricsManager: com.example.lyrics.LyricsManager
+        private set
+
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -49,6 +58,9 @@ class MusicApplication : Application() {
         preferencesManager = PreferencesManager(this)
         musicRepository = MusicRepository(this, database.musicDao(), preferencesManager)
         equalizerManager = EqualizerManager(preferencesManager)
+        spotifyManager = com.example.spotify.SpotifyManager(this, musicRepository)
+        youTubeStreamManager = com.example.online.YouTubeStreamManager()
+        lyricsManager = com.example.lyrics.LyricsManager()
 
         musicControllerManager = MusicControllerManager(
             context = this,
