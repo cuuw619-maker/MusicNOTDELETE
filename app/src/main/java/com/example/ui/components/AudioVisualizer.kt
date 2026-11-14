@@ -39,25 +39,32 @@ fun AudioVisualizer(
     barCount: Int = 28,
     barHeight: Dp = 36.dp,
     primaryColor: Color = MaterialTheme.colorScheme.primary,
-    secondaryColor: Color = MaterialTheme.colorScheme.tertiary
+    secondaryColor: Color = MaterialTheme.colorScheme.tertiary,
+    currentPositionProvider: (() -> Long)? = null
 ) {
-    // High-frequency transient shimmer
-    val infiniteTransition = rememberInfiniteTransition(label = "transient_shimmer")
-    val shimmer by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(450, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "shimmer_anim"
-    )
+    // High-frequency transient shimmer (only ticks when playing to save GPU/battery)
+    val shimmer = if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "transient_shimmer")
+        val animValue by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(450, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "shimmer_anim"
+        )
+        animValue
+    } else {
+        0f
+    }
 
     Canvas(
         modifier = modifier
             .fillMaxWidth()
             .height(barHeight)
     ) {
+        val posMs = currentPositionProvider?.invoke() ?: currentPositionMs
         val width = size.width
         val height = size.height
         val totalSpacing = width * 0.32f
@@ -79,8 +86,8 @@ fun AudioVisualizer(
         val beatDurationMs = (60000.0 / tempoBpm).toFloat()
 
         // Real beat phase from track playback position
-        val beatPhase = if (currentPositionMs > 0) {
-            ((currentPositionMs % beatDurationMs.toLong()) / beatDurationMs)
+        val beatPhase = if (posMs > 0) {
+            ((posMs % beatDurationMs.toLong()) / beatDurationMs)
         } else shimmer
 
         // Beat pulse envelope (sharp attack, exponential decay for kick/bass drum)

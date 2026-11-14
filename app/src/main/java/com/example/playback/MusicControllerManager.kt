@@ -52,6 +52,9 @@ class MusicControllerManager(
     private val _playbackState = MutableStateFlow(PlaybackState())
     val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
 
+    private val _playbackPositionMs = MutableStateFlow(0L)
+    val playbackPositionMs: StateFlow<Long> = _playbackPositionMs.asStateFlow()
+
     private val _abPointA = MutableStateFlow<Long?>(null)
     val abPointA: StateFlow<Long?> = _abPointA.asStateFlow()
 
@@ -63,6 +66,9 @@ class MusicControllerManager(
     private var positionUpdateJob: Job? = null
     private var volumeFadeJob: Job? = null
     private var isCrossfading = false
+    @Volatile
+    private var isResolvingOnline = false
+    private val onlineSourceBySongId = java.util.concurrent.ConcurrentHashMap<Long, String>()
     private var pendingRestore: Triple<Song, List<Song>, Long>? = null
     var playbackService: MusicPlaybackService? = null
         private set
@@ -137,6 +143,12 @@ class MusicControllerManager(
                     onSongPlayed(currentSong.id)
                     preferencesManager.setLastPlayedSong(currentSong.id, 0L)
                     pluginManager?.dispatchTrackChanged(currentSong)
+                    val idx = controller.currentMediaItemIndex
+                    if (currentSong.contentUriString.startsWith("online://")) {
+                        resolveAndPlayIndex(idx, currentSong)
+                    } else {
+                        preresolveUpcomingQueue(idx)
+                    }
                 }
             }
 
@@ -150,8 +162,17 @@ class MusicControllerManager(
 
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("MusicControllerManager", "Player error: ${error.message}", error)
+                val cur = _playbackState.value.currentSong
+                val idx = controller.currentMediaItemIndex
+                if (cur != null && (cur.contentUriString.startsWith("online://") || cur.id < 0L || onlineSourceBySongId.containsKey(cur.id))) {
+                    recoverOnlineStreamError(idx, cur)
+                    return
+                }
+                isResolvingOnline = false
                 _playbackState.value = _playbackState.value.copy(
-                    errorMessage = "Ошибка воспроизведения: ${error.localizedMessage ?: "Не удалось воспроизвести файл"}"
+                    isPlaying = false,
+                    isBuffering = false,
+                    errorMessage = "Ошибка воспроизведения: ${error.localizedMessage ?: "Не удалось воспроизвести трек"}"
                 )
             }
 
@@ -233,35 +254,66 @@ class MusicControllerManager(
 
         val duration = if (controller.duration > 0) controller.duration else (currentSong?.durationMs ?: 0L)
 
+        val pos = controller.currentPosition.coerceAtLeast(0L)
+        _playbackPositionMs.value = pos
+
+        val keepError = if (controller.playbackState == Player.STATE_IDLE && !controller.isPlaying && !isResolvingOnline) {
+            _playbackState.value.errorMessage
+        } else {
+            null
+        }
+
         val newState = _playbackState.value.copy(
             currentSong = currentSong,
             isPlaying = controller.isPlaying,
-            currentPositionMs = controller.currentPosition.coerceAtLeast(0L),
+            isBuffering = isResolvingOnline || controller.playbackState == Player.STATE_BUFFERING,
+            currentPositionMs = pos,
             durationMs = duration,
             bufferedPositionMs = controller.bufferedPosition,
             shuffleModeEnabled = controller.shuffleModeEnabled,
             repeatMode = repeat,
             queue = currentQueueSongs.toList(),
             currentQueueIndex = controller.currentMediaItemIndex,
-            errorMessage = null
+            errorMessage = keepError
         )
         _playbackState.value = newState
         pluginManager?.dispatchPlaybackStateChanged(newState)
     }
 
+    fun clearError() {
+        _playbackState.value = _playbackState.value.copy(errorMessage = null)
+    }
+
+    fun retryCurrentTrack() {
+        val current = _playbackState.value.currentSong ?: return
+        val sourceUri = onlineSourceBySongId[current.id] ?: current.contentUriString
+        val retrySong = if (sourceUri.startsWith("online://")) current.copy(contentUriString = sourceUri) else current
+        val queue = currentQueueSongs.toList().ifEmpty { listOf(retrySong) }
+        playSong(retrySong, queue)
+    }
+
     private fun startPositionUpdates() {
         positionUpdateJob?.cancel()
         positionUpdateJob = scope.launch {
+            var tickCount = 0
             while (isActive) {
                 val controller = mediaController
                 if (controller != null && controller.isPlaying) {
                     val pos = controller.currentPosition.coerceAtLeast(0L)
+                    _playbackPositionMs.value = pos
+
+                    // Throttle full PlaybackState emission (~160ms) to cut unnecessary UI recompositions
+                    if (tickCount % 4 == 0) {
+                        val dur = if (controller.duration > 0) controller.duration else (_playbackState.value.currentSong?.durationMs ?: 0L)
+                        _playbackState.value = _playbackState.value.copy(
+                            currentPositionMs = pos,
+                            durationMs = dur,
+                            bufferedPositionMs = controller.bufferedPosition
+                        )
+                    }
+                    tickCount++
+
                     val dur = if (controller.duration > 0) controller.duration else (_playbackState.value.currentSong?.durationMs ?: 0L)
-                    _playbackState.value = _playbackState.value.copy(
-                        currentPositionMs = pos,
-                        durationMs = dur,
-                        bufferedPositionMs = controller.bufferedPosition
-                    )
 
                     // A-B Repeat Loop Check
                     val pA = _abPointA.value
@@ -320,7 +372,7 @@ class MusicControllerManager(
                         }
                     }
                 }
-                delay(50)
+                delay(40)
             }
         }
     }
@@ -388,59 +440,257 @@ class MusicControllerManager(
         pluginManager?.dispatchQueueChanged(currentQueueSongs)
     }
 
+    private var resolveJob: Job? = null
+    private var preResolveJob: Job? = null
+    private val onlineRetryCounts = mutableMapOf<Long, Int>()
+
     suspend fun resolveOnlineUriIfNeeded(song: Song): Song = withContext(Dispatchers.IO) {
         if (!song.contentUriString.startsWith("online://")) return@withContext song
+        onlineSourceBySongId[song.id] = song.contentUriString
 
-        val uri = Uri.parse(song.contentUriString)
-        val host = uri.host // "youtube" or "spotify"
-        val path = uri.path?.removePrefix("/") ?: ""
-        val app = context.applicationContext as? com.example.MusicApplication
-        val streamManager = app?.youTubeStreamManager
+        val resolved = kotlinx.coroutines.withTimeoutOrNull(14_500L) {
+            val uri = Uri.parse(song.contentUriString)
+            val host = uri.host // "youtube", "spotify", "saavn", "audius"
+            val path = uri.path?.removePrefix("/") ?: ""
+            val metaTitle = uri.getQueryParameter("title")?.takeIf { it.isNotBlank() } ?: song.title
+            val metaArtist = uri.getQueryParameter("artist")?.takeIf { it.isNotBlank() } ?: song.artist
+            val metaDur = uri.getQueryParameter("dur")?.toLongOrNull() ?: song.durationMs
+            val embeddedStream = uri.getQueryParameter("stream")?.takeIf { it.startsWith("http") }
 
-        if (host == "youtube" && streamManager != null) {
-            val resolved = streamManager.resolveStreamUrl(path)
-            if (resolved != null) {
-                return@withContext song.copy(contentUriString = resolved)
+            if (embeddedStream != null) {
+                return@withTimeoutOrNull song.copy(contentUriString = embeddedStream)
             }
-        } else if (host == "spotify" && streamManager != null) {
-            // Find audio stream on YouTube Music by track title + artist
-            val query = "${song.artist} ${song.title}"
-            val searchResults = streamManager.search(query)
-            val first = searchResults.firstOrNull()
-            if (first != null) {
-                val resolved = streamManager.resolveStreamUrl(first.id)
-                if (resolved != null) {
-                    return@withContext song.copy(contentUriString = resolved)
+
+            val app = context.applicationContext as? com.example.MusicApplication
+            val streamManager = app?.youTubeStreamManager ?: return@withTimeoutOrNull song
+
+            if (host == "youtube" && path.isNotBlank()) {
+                val resolvedUrl = streamManager.resolveStreamUrl(path)
+                if (resolvedUrl != null) {
+                    return@withTimeoutOrNull song.copy(contentUriString = resolvedUrl)
+                }
+            }
+
+            val matched = streamManager.resolveTrackStreamForMetadata(metaTitle, metaArtist, metaDur)
+            if (matched != null) {
+                return@withTimeoutOrNull song.copy(
+                    contentUriString = matched.first,
+                    durationMs = if (song.durationMs <= 0L) matched.second else song.durationMs
+                )
+            }
+            song
+        }
+        resolved ?: song
+    }
+
+    private fun resolveAndPlayIndex(index: Int, song: Song) {
+        val controller = mediaController ?: return
+        resolveJob?.cancel()
+        isResolvingOnline = true
+        _playbackState.value = _playbackState.value.copy(isBuffering = true, errorMessage = null)
+        resolveJob = scope.launch {
+            try {
+                val resolvedSong = resolveOnlineUriIfNeeded(song)
+                if (resolvedSong.contentUriString.startsWith("online://")) {
+                    isResolvingOnline = false
+                    _playbackState.value = _playbackState.value.copy(
+                        isPlaying = false,
+                        isBuffering = false,
+                        errorMessage = "Не удалось загрузить поток для «${song.title}». Проверьте сеть или повторите."
+                    )
+                    return@launch
+                }
+                onlineRetryCounts[song.id] = 0
+                isResolvingOnline = false
+                if (index in currentQueueSongs.indices && currentQueueSongs[index].id == song.id) {
+                    currentQueueSongs[index] = resolvedSong
+                    val oIdx = originalQueue.indexOfFirst { it.id == song.id }
+                    if (oIdx in originalQueue.indices) originalQueue[oIdx] = resolvedSong
+
+                    val mediaItem = songToMediaItem(resolvedSong)
+                    controller.replaceMediaItem(index, mediaItem)
+                    controller.seekTo(index, 0L)
+                    controller.prepare()
+                    controller.play()
+                    updatePlaybackState()
+                    preresolveUpcomingQueue(index)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                isResolvingOnline = false
+                throw e
+            } catch (e: Exception) {
+                isResolvingOnline = false
+                _playbackState.value = _playbackState.value.copy(
+                    isPlaying = false,
+                    isBuffering = false,
+                    errorMessage = "Ошибка потока для «${song.title}»"
+                )
+            }
+        }
+    }
+
+    private fun recoverOnlineStreamError(index: Int, song: Song) {
+        val controller = mediaController ?: return
+        val attempts = onlineRetryCounts[song.id] ?: 0
+        if (attempts >= 2) {
+            onlineRetryCounts[song.id] = 0
+            isResolvingOnline = false
+            _playbackState.value = _playbackState.value.copy(
+                isPlaying = false,
+                isBuffering = false,
+                errorMessage = "Источник временно недоступен для «${song.title}». Попробуйте повторить."
+            )
+            return
+        }
+        onlineRetryCounts[song.id] = attempts + 1
+        resolveJob?.cancel()
+        isResolvingOnline = true
+        _playbackState.value = _playbackState.value.copy(isBuffering = true, errorMessage = null)
+        resolveJob = scope.launch {
+            try {
+                if (song.contentUriString.startsWith("online://")) {
+                    resolveAndPlayIndex(index, song)
+                    return@launch
+                }
+                val originalOnlineUri = onlineSourceBySongId[song.id]
+                val parsedVideoId = originalOnlineUri?.let { raw ->
+                    val u = Uri.parse(raw)
+                    if (u.host == "youtube") u.path?.removePrefix("/") else null
+                }
+
+                val app = context.applicationContext as? com.example.MusicApplication
+                val streamManager = app?.youTubeStreamManager
+                val alternate = streamManager?.resolveAlternateStream(
+                    failedUrl = song.contentUriString,
+                    videoId = parsedVideoId,
+                    title = song.title,
+                    artist = song.artist,
+                    expectedDurationMs = song.durationMs
+                )
+                isResolvingOnline = false
+                if (alternate != null && index in currentQueueSongs.indices && currentQueueSongs[index].id == song.id) {
+                    val updated = song.copy(contentUriString = alternate.url)
+                    currentQueueSongs[index] = updated
+                    val oIdx = originalQueue.indexOfFirst { it.id == song.id }
+                    if (oIdx in originalQueue.indices) originalQueue[oIdx] = updated
+                    controller.replaceMediaItem(index, songToMediaItem(updated))
+                    controller.seekTo(index, 0L)
+                    controller.prepare()
+                    controller.play()
+                    updatePlaybackState()
+                } else {
+                    _playbackState.value = _playbackState.value.copy(
+                        isPlaying = false,
+                        isBuffering = false,
+                        errorMessage = "Не удалось подобрать рабочее зеркало для «${song.title}»"
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                isResolvingOnline = false
+                throw e
+            } catch (_: Exception) {
+                isResolvingOnline = false
+                _playbackState.value = _playbackState.value.copy(
+                    isPlaying = false,
+                    isBuffering = false,
+                    errorMessage = "Сбой загрузки потока для «${song.title}»"
+                )
+            }
+        }
+    }
+
+    private fun preresolveUpcomingQueue(currentIndex: Int) {
+        val controller = mediaController ?: return
+        preResolveJob?.cancel()
+        preResolveJob = scope.launch {
+            val queueCopy = currentQueueSongs.toList()
+            val indicesToCheck = listOf(currentIndex + 1, currentIndex + 2)
+                .filter { it in queueCopy.indices }
+
+            for (idx in indicesToCheck) {
+                val candidate = queueCopy[idx]
+                if (candidate.contentUriString.startsWith("online://")) {
+                    val resolved = resolveOnlineUriIfNeeded(candidate)
+                    if (!resolved.contentUriString.startsWith("online://") &&
+                        idx in currentQueueSongs.indices &&
+                        currentQueueSongs[idx].id == candidate.id
+                    ) {
+                        currentQueueSongs[idx] = resolved
+                        controller.replaceMediaItem(idx, songToMediaItem(resolved))
+                    }
                 }
             }
         }
-        song
     }
 
     fun playSong(song: Song, queue: List<Song> = listOf(song)) {
         val controller = mediaController ?: return
         getService()?.cancelCrossfade()
+        resolveJob?.cancel()
+        preResolveJob?.cancel()
+        isResolvingOnline = false
         isCrossfading = false
         originalQueue = queue.toMutableList()
         currentQueueSongs.clear()
         currentQueueSongs.addAll(queue)
 
         if (song.contentUriString.startsWith("online://")) {
-            scope.launch {
-                val resolvedSong = resolveOnlineUriIfNeeded(song)
-                val resolvedQueue = queue.map { if (it.id == song.id) resolvedSong else it }
-                currentQueueSongs.clear()
-                currentQueueSongs.addAll(resolvedQueue)
-                originalQueue = resolvedQueue.toMutableList()
+            onlineSourceBySongId[song.id] = song.contentUriString
+            val idx = queue.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
+            isResolvingOnline = true
+            _playbackState.value = _playbackState.value.copy(
+                currentSong = song,
+                isPlaying = false,
+                isBuffering = true,
+                currentPositionMs = 0L,
+                durationMs = song.durationMs,
+                queue = queue,
+                currentQueueIndex = idx,
+                errorMessage = null
+            )
+            _playbackPositionMs.value = 0L
 
-                val startIndex = resolvedQueue.indexOfFirst { it.id == resolvedSong.id }.coerceAtLeast(0)
-                val mediaItems = resolvedQueue.map { songToMediaItem(it) }
+            resolveJob = scope.launch {
+                try {
+                    val resolvedSong = resolveOnlineUriIfNeeded(song)
+                    if (resolvedSong.contentUriString.startsWith("online://")) {
+                        isResolvingOnline = false
+                        _playbackState.value = _playbackState.value.copy(
+                            isPlaying = false,
+                            isBuffering = false,
+                            errorMessage = "Не удалось загрузить поток для «${song.title}». Проверьте сеть или повторите."
+                        )
+                        return@launch
+                    }
 
-                controller.setMediaItems(mediaItems, startIndex, 0L)
-                controller.prepare()
-                controller.play()
-                updatePlaybackState()
-                pluginManager?.dispatchQueueChanged(currentQueueSongs)
+                    isResolvingOnline = false
+                    onlineRetryCounts[song.id] = 0
+                    val resolvedQueue = queue.map { if (it.id == song.id) resolvedSong else it }
+                    currentQueueSongs.clear()
+                    currentQueueSongs.addAll(resolvedQueue)
+                    originalQueue = resolvedQueue.toMutableList()
+
+                    val startIndex = resolvedQueue.indexOfFirst { it.id == resolvedSong.id }.coerceAtLeast(0)
+                    val mediaItems = resolvedQueue.map { songToMediaItem(it) }
+
+                    controller.setMediaItems(mediaItems, startIndex, 0L)
+                    controller.prepare()
+                    controller.volume = preferencesManager.playerVolume.value
+                    controller.play()
+                    updatePlaybackState()
+                    pluginManager?.dispatchQueueChanged(currentQueueSongs)
+                    preresolveUpcomingQueue(startIndex)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    isResolvingOnline = false
+                    throw e
+                } catch (_: Exception) {
+                    isResolvingOnline = false
+                    _playbackState.value = _playbackState.value.copy(
+                        isPlaying = false,
+                        isBuffering = false,
+                        errorMessage = "Не удалось запустить поток для «${song.title}»"
+                    )
+                }
             }
             return
         }
@@ -455,18 +705,25 @@ class MusicControllerManager(
             scope.launch {
                 controller.volume = 0f
                 controller.play()
-                fadeVolume(0f, 1f, 350L)
+                fadeVolume(0f, preferencesManager.playerVolume.value, 350L)
             }
         } else {
-            controller.volume = 1f
+            controller.volume = preferencesManager.playerVolume.value
             controller.play()
         }
         updatePlaybackState()
         pluginManager?.dispatchQueueChanged(currentQueueSongs)
+        preresolveUpcomingQueue(startIndex)
     }
 
     fun playQueue(queue: List<Song>, startIndex: Int = 0) {
         if (queue.isEmpty()) return
+        val safeIdx = startIndex.coerceIn(0, queue.size - 1)
+        val firstSong = queue[safeIdx]
+        if (firstSong.contentUriString.startsWith("online://")) {
+            playSong(firstSong, queue)
+            return
+        }
         val controller = mediaController ?: return
         getService()?.cancelCrossfade()
         isCrossfading = false
@@ -475,11 +732,13 @@ class MusicControllerManager(
         currentQueueSongs.addAll(queue)
 
         val mediaItems = queue.map { songToMediaItem(it) }
-        controller.setMediaItems(mediaItems, startIndex.coerceIn(0, queue.size - 1), 0L)
+        controller.setMediaItems(mediaItems, safeIdx, 0L)
         controller.prepare()
+        controller.volume = preferencesManager.playerVolume.value
         controller.play()
         updatePlaybackState()
         pluginManager?.dispatchQueueChanged(currentQueueSongs)
+        preresolveUpcomingQueue(safeIdx)
     }
 
     fun playPause() {
@@ -506,6 +765,13 @@ class MusicControllerManager(
                 updatePlaybackState()
             }
         } else {
+            val activeSong = _playbackState.value.currentSong
+            val activeIdx = controller.currentMediaItemIndex.coerceAtLeast(0)
+            if (activeSong != null && activeSong.contentUriString.startsWith("online://")) {
+                _playbackState.value = _playbackState.value.copy(isBuffering = true)
+                resolveAndPlayIndex(activeIdx, activeSong)
+                return
+            }
             // Instantly update UI state so play/pause button morphs with ZERO delay!
             _playbackState.value = _playbackState.value.copy(isPlaying = true)
             if (controller.playbackState == Player.STATE_IDLE || controller.mediaItemCount == 0) {
@@ -671,6 +937,17 @@ class MusicControllerManager(
 
     fun addToQueue(song: Song) {
         val controller = mediaController ?: return
+        if (song.contentUriString.startsWith("online://")) {
+            scope.launch {
+                val resolved = resolveOnlineUriIfNeeded(song)
+                currentQueueSongs.add(resolved)
+                originalQueue.add(resolved)
+                controller.addMediaItem(songToMediaItem(resolved))
+                updatePlaybackState()
+                pluginManager?.dispatchQueueChanged(currentQueueSongs)
+            }
+            return
+        }
         currentQueueSongs.add(song)
         originalQueue.add(song)
         controller.addMediaItem(songToMediaItem(song))
@@ -707,7 +984,20 @@ class MusicControllerManager(
     fun playQueueIndex(index: Int) {
         val controller = mediaController ?: return
         if (index in currentQueueSongs.indices) {
+            val targetSong = currentQueueSongs[index]
+            if (targetSong.contentUriString.startsWith("online://")) {
+                _playbackState.value = _playbackState.value.copy(
+                    currentSong = targetSong,
+                    currentQueueIndex = index,
+                    currentPositionMs = 0L,
+                    durationMs = targetSong.durationMs,
+                    errorMessage = null
+                )
+                resolveAndPlayIndex(index, targetSong)
+                return
+            }
             controller.seekTo(index, 0L)
+            controller.prepare()
             controller.play()
             updatePlaybackState()
         }

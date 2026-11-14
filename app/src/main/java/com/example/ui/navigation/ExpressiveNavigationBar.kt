@@ -113,7 +113,6 @@ fun ExpressiveFloatingNavigationBar(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f),
                     shape = CircleShape
                 )
-                .clip(CircleShape)
                 .testTag("floating_navigation_bar"),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             tonalElevation = 3.dp,
@@ -140,29 +139,30 @@ fun ExpressiveFloatingNavigationBar(
                 var dragVisualXPx by remember { mutableFloatStateOf(0f) }
                 var isPressed by remember { mutableStateOf(false) }
                 var isDragging by remember { mutableStateOf(false) }
+                var pressedSlotIndex by remember { mutableStateOf<Int?>(null) }
 
-                // Organic subtle squash & stretch scale for the indicator oval
+                // M3 Expressive noticeable swell when pressing or dragging the selection oval
                 val capsuleScaleX by animateFloatAsState(
                     targetValue = when {
-                        isDragging -> 1.04f
-                        isPressed -> 1.02f
+                        isDragging -> 1.15f
+                        isPressed -> 1.13f
                         else -> 1.0f
                     },
                     animationSpec = spring(
-                        dampingRatio = 0.82f,
-                        stiffness = 500f
+                        dampingRatio = 0.56f,
+                        stiffness = 460f
                     ),
                     label = "inner_oval_scale_x"
                 )
                 val capsuleScaleY by animateFloatAsState(
                     targetValue = when {
-                        isDragging -> 0.98f
-                        isPressed -> 0.99f
+                        isDragging -> 1.18f
+                        isPressed -> 1.15f
                         else -> 1.0f
                     },
                     animationSpec = spring(
-                        dampingRatio = 0.82f,
-                        stiffness = 500f
+                        dampingRatio = 0.56f,
+                        stiffness = 460f
                     ),
                     label = "inner_oval_scale_y"
                 )
@@ -176,7 +176,7 @@ fun ExpressiveFloatingNavigationBar(
                         indicatorOffsetXPx.animateTo(
                             targetValue = clampedTarget,
                             animationSpec = spring(
-                                dampingRatio = 0.82f,
+                                dampingRatio = 0.72f,
                                 stiffness = 450f
                             )
                         )
@@ -187,6 +187,30 @@ fun ExpressiveFloatingNavigationBar(
                 // LAYER 1: THE INTERACTIVE INNER OVAL (Visual indicator)
                 // ==========================================
                 val indicatorWidthDp = with(density) { indicatorWidthPx.toDp() }
+
+                val targetPressIdx = pressedSlotIndex
+                if (targetPressIdx != null && targetPressIdx != selectedIndex && !isDragging) {
+                    val pressLeftPx = ((targetPressIdx + 0.5f) * slotWidthPx - indicatorWidthPx / 2f)
+                        .coerceIn(minAllowedLeft, maxAllowedLeft)
+                    val pressScale by animateFloatAsState(
+                        targetValue = 1.08f,
+                        animationSpec = spring(dampingRatio = 0.58f, stiffness = 480f),
+                        label = "nav_press_ghost_scale"
+                    )
+                    Box(
+                        modifier = Modifier
+                            .offset { IntOffset(x = pressLeftPx.roundToInt(), y = 0) }
+                            .width(indicatorWidthDp)
+                            .height(indicatorHeightDp)
+                            .align(Alignment.CenterStart)
+                            .graphicsLayer {
+                                scaleX = pressScale
+                                scaleY = pressScale
+                            }
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                    )
+                }
 
                 Box(
                     modifier = Modifier
@@ -203,12 +227,13 @@ fun ExpressiveFloatingNavigationBar(
                         .graphicsLayer {
                             scaleX = capsuleScaleX
                             scaleY = capsuleScaleY
+                            shadowElevation = if (isPressed || isDragging) 14f else 2f
                         }
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primaryContainer)
                         .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f),
+                            width = if (isPressed || isDragging) 1.5.dp else 1.dp,
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = if (isPressed || isDragging) 0.42f else 0.20f),
                             shape = CircleShape
                         )
                         .testTag("nav_selected_indicator")
@@ -224,9 +249,12 @@ fun ExpressiveFloatingNavigationBar(
                 ) {
                     destinations.forEachIndexed { index, destination ->
                         val isSelected = selectedIndex == index
+                        val isSlotPressed = pressedSlotIndex == index
                         val contentColor by animateColorAsState(
                             targetValue = if (isSelected) {
                                 MaterialTheme.colorScheme.onPrimaryContainer
+                            } else if (isSlotPressed) {
+                                MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
@@ -235,7 +263,11 @@ fun ExpressiveFloatingNavigationBar(
                         )
 
                         val tabIconScale by animateFloatAsState(
-                            targetValue = if (isSelected) 1.12f else 1.0f,
+                            targetValue = when {
+                                isSlotPressed -> 1.18f
+                                isSelected -> 1.12f
+                                else -> 1.0f
+                            },
                             animationSpec = spring(
                                 dampingRatio = 0.52f,
                                 stiffness = 420f
@@ -285,7 +317,7 @@ fun ExpressiveFloatingNavigationBar(
                                     text = destination.title,
                                     color = contentColor,
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        fontWeight = if (isSelected || isSlotPressed) FontWeight.Bold else FontWeight.Medium,
                                         fontSize = 10.sp
                                     ),
                                     maxLines = 1,
@@ -310,13 +342,10 @@ fun ExpressiveFloatingNavigationBar(
                                 val dragStartFingerX = down.position.x
                                 val dragStartOvalX = indicatorOffsetXPx.value
 
-                                val ovalLeft = dragStartOvalX
-                                val ovalRight = dragStartOvalX + indicatorWidthPx
-                                val isTouchOnOval = down.position.x in (ovalLeft - 16.dp.toPx())..(ovalRight + 16.dp.toPx())
-
-                                if (isTouchOnOval) {
-                                    isPressed = true
-                                }
+                                val touchedSlot = (down.position.x / slotWidthPx).toInt()
+                                    .coerceIn(0, destinations.size - 1)
+                                pressedSlotIndex = touchedSlot
+                                isPressed = true
 
                                 var isDragStarted = false
                                 var currentVisualX = dragStartOvalX
@@ -341,7 +370,6 @@ fun ExpressiveFloatingNavigationBar(
                                                 isDragStarted = true
                                                 isDragging = true
                                                 change.consume()
-                                                // newX = dragStartOvalX + (currentFingerX - dragStartFingerX) * 0.94f
                                                 val newX = dragStartOvalX + totalFingerDeltaX * VISUAL_DRAG_FACTOR
                                                 currentVisualX = newX.coerceIn(minAllowedLeft, maxAllowedLeft)
                                                 dragVisualXPx = currentVisualX
@@ -361,6 +389,7 @@ fun ExpressiveFloatingNavigationBar(
                                                 val tabCenter = (i + 0.5f) * slotWidthPx
                                                 abs(tabCenter - currentCenter)
                                             } ?: selectedIndex
+                                            pressedSlotIndex = hoveredIndex
 
                                             if (hoveredIndex != lastHapticIndex) {
                                                 lastHapticIndex = hoveredIndex
@@ -370,6 +399,7 @@ fun ExpressiveFloatingNavigationBar(
                                     }
                                 } finally {
                                     isPressed = false
+                                    pressedSlotIndex = null
                                     if (isDragStarted) {
                                         isDragging = false
                                         // Take actual current center of oval on release

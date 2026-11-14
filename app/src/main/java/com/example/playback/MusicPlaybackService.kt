@@ -9,11 +9,18 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.TransferListener
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
@@ -90,7 +97,51 @@ class MusicPlaybackService : MediaSessionService() {
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
+        val app = applicationContext as? MusicApplication
+        val streamManager = app?.youTubeStreamManager
+
+        // Header-aware DataSource so YouTube CDN URLs receive the matching client User-Agent & Referer
+        val httpBaseFactory = DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(20_000)
+
+        val headerAwareDataSourceFactory = DataSource.Factory {
+            val delegate = DefaultDataSource.Factory(this, httpBaseFactory).createDataSource()
+            object : DataSource {
+                override fun addTransferListener(transferListener: TransferListener) {
+                    delegate.addTransferListener(transferListener)
+                }
+
+                override fun open(dataSpec: DataSpec): Long {
+                    val urlStr = dataSpec.uri.toString()
+                    val headerMeta = streamManager?.getHeadersForStreamUrl(urlStr)
+                    val modifiedSpec = if (headerMeta != null) {
+                        val mergedHeaders = HashMap<String, String>(dataSpec.httpRequestHeaders)
+                        mergedHeaders["User-Agent"] = headerMeta.first
+                        mergedHeaders.putAll(headerMeta.second)
+                        dataSpec.buildUpon().setHttpRequestHeaders(mergedHeaders).build()
+                    } else {
+                        dataSpec
+                    }
+                    return delegate.open(modifiedSpec)
+                }
+
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                    delegate.read(buffer, offset, length)
+
+                override fun getUri() = delegate.uri
+
+                override fun getResponseHeaders() = delegate.responseHeaders
+
+                override fun close() = delegate.close()
+            }
+        }
+
+        val mediaSourceFactory = DefaultMediaSourceFactory(headerAwareDataSourceFactory)
+
         player = ExoPlayer.Builder(this, renderersFactory)
+            .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(audioAttributes, true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
@@ -114,12 +165,12 @@ class MusicPlaybackService : MediaSessionService() {
         }
 
         crossfadePlayer = ExoPlayer.Builder(this, crossfadeRenderersFactory)
+            .setMediaSourceFactory(mediaSourceFactory)
             .setAudioAttributes(audioAttributes, false)
             .setLoadControl(loadControl)
             .build()
 
         // Bind equalizer directly to player session
-        val app = applicationContext as? MusicApplication
         if (app != null && player.audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
             app.equalizerManager.bindAudioSession(player.audioSessionId)
         }

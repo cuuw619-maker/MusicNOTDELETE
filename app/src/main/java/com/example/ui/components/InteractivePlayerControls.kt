@@ -1,9 +1,14 @@
 package com.example.ui.components
 
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -19,7 +24,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -39,8 +43,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathOperation
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -55,15 +61,18 @@ import com.example.model.Song
 import com.example.ui.animation.HapticType
 import com.example.ui.animation.fluidPress
 import com.example.ui.animation.performHapticFeedback
+import com.example.ui.theme.MonoFontFamily
+import com.example.ui.theme.SpringTokens
+import kotlin.math.PI
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 /**
- * Geometric Morphing Play/Pause Button:
- * - Rounded Rectangle shape (NOT circle)
- * - Exact symmetrical geometry:
- *     * In Pause (progress = 1): two identical, perfectly centered vertical bars of equal width and height.
- *     * In Play (progress = 0): symmetrical play triangle centered precisely in the button.
- *     * Morph continuously animates between the two shapes without fade or clipping.
+ * Material 3 Expressive Morphing Play/Pause Button:
+ * - Outer container shape morphs seamlessly between a full pill/circle (when paused)
+ *   and an expressive rounded squircle (when playing).
+ * - Inner glyph continuously morphs between a play triangle and pause bars.
+ * - Optional buffering indicator arc for online streams.
  */
 @Composable
 fun MorphingPlayPauseButton(
@@ -74,12 +83,20 @@ fun MorphingPlayPauseButton(
     height: Dp = 56.dp,
     size: Dp? = null,
     iconSize: Dp = 28.dp,
-    cornerRadius: Dp = 20.dp,
+    cornerRadius: Dp = 18.dp,
     containerColor: Color = MaterialTheme.colorScheme.primary,
-    contentColor: Color = MaterialTheme.colorScheme.onPrimary
+    contentColor: Color = MaterialTheme.colorScheme.onPrimary,
+    isBuffering: Boolean = false
 ) {
     val finalWidth = size ?: width
     val finalHeight = size ?: height
+
+    val animatedCorner by animateDpAsState(
+        targetValue = if (isPlaying) cornerRadius else (finalHeight / 2f),
+        animationSpec = SpringTokens.spatialDefault(),
+        label = "play_pause_container_morph"
+    )
+    val shape = RoundedCornerShape(animatedCorner)
 
     // 0f = Paused (Play triangle ▸), 1f = Playing (Pause bars ❚❚)
     val progress by animateFloatAsState(
@@ -88,16 +105,29 @@ fun MorphingPlayPauseButton(
         label = "play_pause_geometric_morph"
     )
 
+    val bufferingRotation = if (isBuffering) {
+        val transition = rememberInfiniteTransition(label = "btn_buffering")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 900, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "buf_arc"
+        ).value
+    } else 0f
+
     Surface(
         modifier = modifier
             .size(width = finalWidth, height = finalHeight)
-            .shadow(elevation = 6.dp, shape = RoundedCornerShape(cornerRadius))
+            .shadow(elevation = 8.dp, shape = shape, spotColor = containerColor.copy(alpha = 0.45f))
             .fluidPress(
-                scaleDown = 0.94f,
+                scaleDown = 0.93f,
                 hapticType = HapticType.MEDIUM,
                 onClick = onClick
             ),
-        shape = RoundedCornerShape(cornerRadius),
+        shape = shape,
         color = containerColor,
         contentColor = contentColor
     ) {
@@ -105,13 +135,24 @@ fun MorphingPlayPauseButton(
             contentAlignment = Alignment.Center,
             modifier = Modifier.testTag(if (isPlaying) "pause_button" else "play_button")
         ) {
+            if (isBuffering) {
+                Canvas(modifier = Modifier.size(iconSize + 14.dp)) {
+                    drawArc(
+                        color = contentColor.copy(alpha = 0.72f),
+                        startAngle = bufferingRotation,
+                        sweepAngle = 220f,
+                        useCenter = false,
+                        style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+            }
+
             Canvas(modifier = Modifier.size(iconSize)) {
                 val w = this.size.width
                 val h = this.size.height
                 val t = progress
 
                 if (t <= 0.04f) {
-                    // Pristine, 100% seamless straight equilateral play triangle
                     val trianglePath = Path().apply {
                         moveTo(0.24f * w, 0.16f * h)
                         lineTo(0.84f * w, 0.50f * h)
@@ -120,7 +161,6 @@ fun MorphingPlayPauseButton(
                     }
                     drawPath(trianglePath, color = contentColor, style = Fill)
                 } else if (t >= 0.96f) {
-                    // Perfectly symmetrical pause bars
                     val barCorner = CornerRadius(2.5.dp.toPx(), 2.5.dp.toPx())
                     drawRoundRect(
                         color = contentColor,
@@ -135,7 +175,6 @@ fun MorphingPlayPauseButton(
                         cornerRadius = barCorner
                     )
                 } else {
-                    // Mathematically exact collinear morphing: top and bottom slopes are 100% straight!
                     val overlap = (1f - t) * 0.02f * w
 
                     val leftP1x = lerp(0.24f, 0.20f, t) * w
@@ -181,12 +220,11 @@ fun MorphingPlayPauseButton(
 }
 
 /**
- * Modern Interactive Progress Bar with Vertical Pill/Thumb:
- * - Vertical pill thumb (6dp width, 28dp height, rounded capsule)
- * - Dynamic feedback on touch (thumb height 28dp -> 34dp, width 6dp -> 8dp)
- * - Large 48dp hit area for effortless touch
- * - Real-time floating time bubble indicator during scrub
- * - Smooth, responsive drag and seek with haptic ticks
+ * Material 3 Expressive Wavy Interactive Progress Bar:
+ * - Renders an animated organic sinusoidal wave on the active portion while playing,
+ *   flattening smoothly to a clean straight bar when paused or scrubbing.
+ * - Vertical pill thumb expands smoothly on touch + floating time bubble.
+ * - Tabular monospace timecodes prevent horizontal jitter.
  */
 @Composable
 fun InteractiveProgressBar(
@@ -194,6 +232,7 @@ fun InteractiveProgressBar(
     durationMs: Long,
     onSeekTo: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    isPlaying: Boolean = false,
     bookmarks: List<Long> = emptyList(),
     activeColor: Color = MaterialTheme.colorScheme.primary,
     inactiveColor: Color = MaterialTheme.colorScheme.surfaceVariant
@@ -207,22 +246,40 @@ fun InteractiveProgressBar(
     val playbackFraction = (currentPositionMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
     val displayFraction = if (isDragging) dragFraction else playbackFraction
 
-    // Subtle track height expansion on touch
-    val barHeightDp by animateDpAsState(
+    // Smooth wave amplitude: ripples gently when playing, flattens cleanly on pause/drag
+    val waveAmplitudeFraction by animateFloatAsState(
+        targetValue = if (isPlaying && !isDragging) 1f else 0f,
+        animationSpec = SpringTokens.effectsDefault(),
+        label = "wave_amplitude"
+    )
+
+    val wavePhase = if (isPlaying && !isDragging) {
+        val infinite = rememberInfiniteTransition(label = "squiggly_progress_phase")
+        infinite.animateFloat(
+            initialValue = 0f,
+            targetValue = (2f * PI.toFloat()),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 1500, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "wave_phase"
+        ).value
+    } else 0f
+
+    val barThicknessDp by animateDpAsState(
         targetValue = if (isDragging) 6.dp else 4.dp,
         animationSpec = tween(150, easing = LinearOutSlowInEasing),
         label = "bar_thickness"
     )
 
-    // Vertical pill thumb dimensions
     val thumbWidth by animateDpAsState(
-        targetValue = if (isDragging) 8.dp else 6.dp,
+        targetValue = if (isDragging) 8.dp else 5.5.dp,
         animationSpec = tween(150, easing = LinearOutSlowInEasing),
         label = "thumb_width"
     )
     val thumbHeight by animateDpAsState(
         targetValue = if (isDragging) 34.dp else 28.dp,
-        animationSpec = tween(150, easing = LinearOutSlowInEasing),
+        animationSpec = SpringTokens.spatialFast(),
         label = "thumb_height"
     )
 
@@ -243,7 +300,6 @@ fun InteractiveProgressBar(
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             if (!change.pressed) {
-                                // Released
                                 isDragging = false
                                 val targetMs = (dragFraction * safeDuration).toLong()
                                 performHapticFeedback(view, HapticType.MEDIUM)
@@ -259,78 +315,111 @@ fun InteractiveProgressBar(
             contentAlignment = Alignment.CenterStart
         ) {
             val totalWidthPx = constraints.maxWidth.toFloat()
-            val activeWidthPx = totalWidthPx * displayFraction
-            val barHeightPx = with(density) { barHeightDp.toPx() }
+            val activeWidthPx = (totalWidthPx * displayFraction).coerceIn(0f, totalWidthPx)
+            val strokePx = with(density) { barThicknessDp.toPx() }
+            val maxAmplitudePx = with(density) { 3.2.dp.toPx() }
+            val wavelengthPx = with(density) { 26.dp.toPx() }
 
-            // High-performance GPU Canvas track rendering (zero layout passes during continuous drag)
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(barHeightDp)
+                    .height(14.dp)
                     .align(Alignment.Center)
             ) {
-                val corner = CornerRadius(barHeightPx / 2f, barHeightPx / 2f)
-                // Inactive track background
-                drawRoundRect(
-                    color = inactiveColor,
-                    topLeft = Offset(0f, 0f),
-                    size = Size(totalWidthPx, barHeightPx),
-                    cornerRadius = corner
-                )
-                // Active track progress
-                if (activeWidthPx > 0f) {
-                    drawRoundRect(
-                        color = activeColor,
-                        topLeft = Offset(0f, 0f),
-                        size = Size(activeWidthPx.coerceIn(0f, totalWidthPx), barHeightPx),
-                        cornerRadius = corner
+                val centerY = this.size.height / 2f
+
+                // Inactive track (drawn from active tip to end so there's zero ghosting under wave)
+                val inactiveStart = (activeWidthPx + strokePx * 0.5f).coerceAtMost(totalWidthPx)
+                if (inactiveStart < totalWidthPx) {
+                    drawLine(
+                        color = inactiveColor,
+                        start = Offset(inactiveStart, centerY),
+                        end = Offset(totalWidthPx, centerY),
+                        strokeWidth = strokePx,
+                        cap = StrokeCap.Round
                     )
                 }
 
-                // Render glowing bookmark pins along the track
+                // Active M3 Expressive wavy progress path
+                if (activeWidthPx > 1f) {
+                    val amp = maxAmplitudePx * waveAmplitudeFraction
+                    if (amp < 0.25f) {
+                        drawLine(
+                            color = activeColor,
+                            start = Offset(0f, centerY),
+                            end = Offset(activeWidthPx, centerY),
+                            strokeWidth = strokePx,
+                            cap = StrokeCap.Round
+                        )
+                    } else {
+                        val wavePath = Path().apply {
+                            val step = 4f
+                            var x = 0f
+                            val startY = centerY + sin(wavePhase) * amp
+                            moveTo(0f, startY)
+                            while (x < activeWidthPx) {
+                                x = (x + step).coerceAtMost(activeWidthPx)
+                                // Smooth envelope near the thumb so the wave flows cleanly into the thumb
+                                val edgeTaper = ((activeWidthPx - x) / (wavelengthPx * 0.4f)).coerceIn(0f, 1f)
+                                val y = centerY + sin((x / wavelengthPx) * (2f * PI.toFloat()) - wavePhase) * amp * edgeTaper
+                                lineTo(x, y)
+                            }
+                        }
+                        drawPath(
+                            path = wavePath,
+                            color = activeColor,
+                            style = Stroke(
+                                width = strokePx,
+                                cap = StrokeCap.Round,
+                                join = StrokeJoin.Round
+                            )
+                        )
+                    }
+                }
+
+                // Glowing bookmark pins along the track
                 for (bMs in bookmarks) {
                     val bFrac = (bMs.toFloat() / safeDuration.toFloat()).coerceIn(0f, 1f)
                     val bx = bFrac * totalWidthPx
                     drawCircle(
                         color = Color.White,
-                        radius = 2.5.dp.toPx(),
-                        center = Offset(bx, barHeightPx / 2f)
+                        radius = 2.6.dp.toPx(),
+                        center = Offset(bx, centerY)
                     )
                 }
             }
 
-            // Floating Time Bubble Indicator on Drag
             if (isDragging) {
                 val currentDragMs = (dragFraction * safeDuration).toLong()
-                val bubbleOffset = (activeWidthPx - 32f).coerceIn(0f, totalWidthPx - 64f)
+                val bubbleOffset = (activeWidthPx - 36f).coerceIn(0f, (totalWidthPx - 72f).coerceAtLeast(0f))
                 Box(
                     modifier = Modifier
-                        .offset { IntOffset(bubbleOffset.roundToInt(), -55) }
-                        .clip(RoundedCornerShape(8.dp))
+                        .offset { IntOffset(bubbleOffset.roundToInt(), -56) }
+                        .clip(RoundedCornerShape(12.dp))
                         .background(MaterialTheme.colorScheme.inverseSurface)
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = Song.formatDuration(currentDragMs),
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = MonoFontFamily,
+                            fontWeight = FontWeight.Bold
+                        ),
                         color = MaterialTheme.colorScheme.inverseOnSurface
                     )
                 }
             }
 
-            // Draggable Thumb: Vertical Pill / Stick
             val thumbWidthPx = with(density) { thumbWidth.toPx() }
             val thumbOffsetPx = (activeWidthPx - (thumbWidthPx / 2f)).coerceIn(
                 0f,
-                totalWidthPx - thumbWidthPx
+                (totalWidthPx - thumbWidthPx).coerceAtLeast(0f)
             )
 
             Box(
                 modifier = Modifier
-                    .offset {
-                        IntOffset(thumbOffsetPx.roundToInt(), 0)
-                    }
+                    .offset { IntOffset(thumbOffsetPx.roundToInt(), 0) }
                     .size(width = thumbWidth, height = thumbHeight)
                     .shadow(
                         elevation = if (isDragging) 6.dp else 3.dp,
@@ -342,7 +431,6 @@ fun InteractiveProgressBar(
             )
         }
 
-        // Time labels: elapsed & remaining
         val currentMs = if (isDragging) (dragFraction * safeDuration).toLong() else currentPositionMs
         val remainingMs = (durationMs - currentMs).coerceAtLeast(0L)
 
@@ -354,13 +442,21 @@ fun InteractiveProgressBar(
         ) {
             Text(
                 text = Song.formatDuration(currentMs),
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = MonoFontFamily,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium
+                ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.weight(1f))
             Text(
                 text = "-${Song.formatDuration(remainingMs)}",
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = MonoFontFamily,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium
+                ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }

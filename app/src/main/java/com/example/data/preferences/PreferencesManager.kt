@@ -425,7 +425,16 @@ class PreferencesManager(context: Context) {
         prefs.edit().putInt(key, value).apply()
     }
 
+    // Per-song lyrics timing offset in milliseconds
+    fun getLyricsOffset(songId: Long): Long =
+        prefs.getLong("${KEY_LYRICS_OFFSET_PREFIX}$songId", 0L)
+
+    fun setLyricsOffset(songId: Long, offsetMs: Long) {
+        prefs.edit().putLong("${KEY_LYRICS_OFFSET_PREFIX}$songId", offsetMs.coerceIn(-5000L, 5000L)).apply()
+    }
+
     companion object {
+        private const val KEY_LYRICS_OFFSET_PREFIX = "key_lyrics_offset_"
         private const val KEY_THEME_MODE = "key_theme_mode"
         private const val KEY_DYNAMIC_COLOR = "key_dynamic_color"
         private const val KEY_RESUME_PLAYBACK = "key_resume_playback"

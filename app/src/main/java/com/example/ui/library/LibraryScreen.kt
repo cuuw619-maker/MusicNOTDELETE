@@ -10,7 +10,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,18 +19,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -44,11 +42,10 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -56,7 +53,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,15 +61,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.ui.components.OvalTabItem
-import com.example.ui.components.OvalTabRow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.Album
 import com.example.model.Artist
@@ -85,8 +80,12 @@ import com.example.ui.components.AlbumCard
 import com.example.ui.components.ArtistListItem
 import com.example.ui.components.EmptyStateView
 import com.example.ui.components.FolderListItem
+import com.example.ui.components.OvalTabItem
+import com.example.ui.components.OvalTabRow
 import com.example.ui.components.SongListItem
+import com.example.ui.components.groupedItemShape
 import com.example.ui.viewmodel.MusicViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -222,150 +221,152 @@ fun LibraryScreen(
                         .fillMaxSize()
                         .testTag("library_screen")
                 ) {
-        // Search Bar & Sort Button
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { viewModel.setSearchQuery(it) },
-                placeholder = { Text("Поиск трека, альбома, артиста...") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.Search,
-                        contentDescription = "Поиск",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.setSearchQuery("") }) {
-                            Icon(Icons.Filled.Clear, contentDescription = "Очистить")
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(16.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                ),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("library_search_input")
-            )
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            // Sort Menu Button
-            Box {
-                IconButton(
-                    onClick = { showSortMenu = true },
-                    modifier = Modifier.testTag("library_sort_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Sort,
-                        contentDescription = "Сортировка",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                DropdownMenu(
-                    expanded = showSortMenu,
-                    onDismissRequest = { showSortMenu = false }
-                ) {
-                    SortOrder.values().forEach { order ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = order.displayName,
-                                    fontWeight = if (currentSort == order) FontWeight.Bold else FontWeight.Normal,
-                                    color = if (currentSort == order) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                    // Pill Search Bar & Expressive Sort Button
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { viewModel.setSearchQuery(it) },
+                            placeholder = { Text("Поиск трека, альбома, артиста...") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Filled.Search,
+                                    contentDescription = "Поиск",
+                                    tint = MaterialTheme.colorScheme.primary
                                 )
                             },
-                            onClick = {
-                                viewModel.setSortOrder(order)
-                                showSortMenu = false
-                                scope.launch {
-                                    songsListState.scrollToItem(0, 0)
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { viewModel.setSearchQuery("") }) {
+                                        Icon(Icons.Filled.Clear, contentDescription = "Очистить")
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            shape = CircleShape,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = Color.Transparent
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("library_search_input")
+                        )
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        Box {
+                            FilledTonalIconButton(
+                                onClick = { showSortMenu = true },
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("library_sort_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Sort,
+                                    contentDescription = "Сортировка",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = showSortMenu,
+                                onDismissRequest = { showSortMenu = false }
+                            ) {
+                                SortOrder.values().forEach { order ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = order.displayName,
+                                                fontWeight = if (currentSort == order) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (currentSort == order) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                            )
+                                        },
+                                        onClick = {
+                                            viewModel.setSortOrder(order)
+                                            showSortMenu = false
+                                            scope.launch {
+                                                songsListState.scrollToItem(0, 0)
+                                            }
+                                        }
+                                    )
                                 }
                             }
+                        }
+                    }
+
+                    val libraryTabs = remember {
+                        listOf(
+                            OvalTabItem("Песни", Icons.Rounded.MusicNote),
+                            OvalTabItem("Альбомы", Icons.Rounded.Album),
+                            OvalTabItem("Артисты", Icons.Rounded.Person),
+                            OvalTabItem("Папки", Icons.Rounded.Folder),
+                            OvalTabItem("Жанры", Icons.Rounded.GraphicEq)
                         )
                     }
+
+                    OvalTabRow(
+                        tabs = libraryTabs,
+                        selectedIndex = selectedTab,
+                        onTabSelected = { selectedTab = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        containerHeightDp = 46
+                    )
+
+                    AnimatedContent(
+                        targetState = selectedTab,
+                        transitionSpec = {
+                            if (targetState > initialState) {
+                                (slideInHorizontally(tween(200, easing = LinearOutSlowInEasing)) { it / 4 } + fadeIn(tween(180))) togetherWith
+                                (slideOutHorizontally(tween(160, easing = FastOutLinearInEasing)) { -it / 4 } + fadeOut(tween(140)))
+                            } else {
+                                (slideInHorizontally(tween(200, easing = LinearOutSlowInEasing)) { -it / 4 } + fadeIn(tween(180))) togetherWith
+                                (slideOutHorizontally(tween(160, easing = FastOutLinearInEasing)) { it / 4 } + fadeOut(tween(140)))
+                            }
+                        },
+                        label = "library_tab_transition"
+                    ) { tabIndex ->
+                        when (tabIndex) {
+                            0 -> SongsTab(
+                                songs = songs,
+                                playbackState = playbackState,
+                                listState = songsListState,
+                                onPlaySong = { song -> viewModel.playSong(song, songs) },
+                                onToggleFavorite = { viewModel.toggleFavorite(it) },
+                                onAddToPlaylist = { viewModel.setSongToAddToPlaylist(it) },
+                                onAddToQueue = { viewModel.addToQueue(it) }
+                            )
+                            1 -> AlbumsTab(
+                                albums = albums,
+                                onSelectAlbum = { viewModel.selectAlbum(it) }
+                            )
+                            2 -> ArtistsTab(
+                                artists = artists,
+                                onSelectArtist = { viewModel.selectArtist(it) }
+                            )
+                            3 -> FoldersTab(
+                                folders = folders,
+                                onSelectFolder = { viewModel.selectFolder(it) }
+                            )
+                            4 -> GenresTab(
+                                genres = genres,
+                                onSelectGenre = { viewModel.selectGenre(it) }
+                            )
+                        }
+                    }
                 }
-            }
-        }
-
-        // Oval in Oval Tabs: Songs, Albums, Artists, Folders, Genres
-        val libraryTabs = remember {
-            listOf(
-                OvalTabItem("Песни", Icons.Rounded.MusicNote),
-                OvalTabItem("Альбомы", Icons.Rounded.Album),
-                OvalTabItem("Артисты", Icons.Rounded.Person),
-                OvalTabItem("Папки", Icons.Rounded.Folder),
-                OvalTabItem("Жанры", Icons.Rounded.GraphicEq)
-            )
-        }
-
-        OvalTabRow(
-            tabs = libraryTabs,
-            selectedIndex = selectedTab,
-            onTabSelected = { selectedTab = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-            containerHeightDp = 46
-        )
-
-        // Content for selected Tab with expressive transitions
-        AnimatedContent(
-            targetState = selectedTab,
-            transitionSpec = {
-                if (targetState > initialState) {
-                    (slideInHorizontally(tween(200, easing = LinearOutSlowInEasing)) { it / 4 } + fadeIn(tween(180))) togetherWith
-                    (slideOutHorizontally(tween(160, easing = FastOutLinearInEasing)) { -it / 4 } + fadeOut(tween(140)))
-                } else {
-                    (slideInHorizontally(tween(200, easing = LinearOutSlowInEasing)) { -it / 4 } + fadeIn(tween(180))) togetherWith
-                    (slideOutHorizontally(tween(160, easing = FastOutLinearInEasing)) { it / 4 } + fadeOut(tween(140)))
-                }
-            },
-            label = "library_tab_transition"
-        ) { tabIndex ->
-            when (tabIndex) {
-                0 -> SongsTab(
-                    songs = songs,
-                    playbackState = playbackState,
-                    listState = songsListState,
-                    onPlaySong = { song -> viewModel.playSong(song, songs) },
-                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                    onAddToPlaylist = { viewModel.setSongToAddToPlaylist(it) },
-                    onAddToQueue = { viewModel.addToQueue(it) }
-                )
-                1 -> AlbumsTab(
-                    albums = albums,
-                    onSelectAlbum = { viewModel.selectAlbum(it) }
-                )
-                2 -> ArtistsTab(
-                    artists = artists,
-                    onSelectArtist = { viewModel.selectArtist(it) }
-                )
-                3 -> FoldersTab(
-                    folders = folders,
-                    onSelectFolder = { viewModel.selectFolder(it) }
-                )
-                4 -> GenresTab(
-                    genres = genres,
-                    onSelectGenre = { viewModel.selectGenre(it) }
-                )
             }
         }
     }
-}
-}
-}
 }
 
 @Composable
@@ -388,13 +389,13 @@ private fun SongsTab(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp)
+            contentPadding = PaddingValues(bottom = 128.dp, top = 8.dp)
         ) {
-            items(
+            itemsIndexed(
                 items = songs,
-                key = { it.id },
-                contentType = { "song" }
-            ) { song ->
+                key = { _, song -> song.id },
+                contentType = { _, _ -> "song" }
+            ) { index, song ->
                 SongListItem(
                     song = song,
                     isPlaying = playbackState.currentSong?.id == song.id && playbackState.isPlaying,
@@ -403,9 +404,10 @@ private fun SongsTab(
                     onToggleFavorite = { onToggleFavorite(song.id) },
                     onAddToPlaylist = { onAddToPlaylist(song) },
                     onAddToQueue = { onAddToQueue(song) },
+                    shape = groupedItemShape(index, songs.size),
                     modifier = Modifier
                         .animateItem()
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp, vertical = 1.5.dp)
                 )
             }
         }
@@ -427,7 +429,7 @@ private fun AlbumsTab(
         LazyVerticalGrid(
             columns = GridCells.Adaptive(150.dp),
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 120.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 128.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -455,19 +457,20 @@ private fun ArtistsTab(
     } else {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp)
+            contentPadding = PaddingValues(bottom = 128.dp, top = 8.dp)
         ) {
-            items(
+            itemsIndexed(
                 items = artists,
-                key = { it.name },
-                contentType = { "artist" }
-            ) { artist ->
+                key = { _, artist -> artist.name },
+                contentType = { _, _ -> "artist" }
+            ) { index, artist ->
                 ArtistListItem(
                     artist = artist,
                     onClick = { onSelectArtist(artist) },
+                    shape = groupedItemShape(index, artists.size),
                     modifier = Modifier
                         .animateItem()
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp, vertical = 1.5.dp)
                 )
             }
         }
@@ -488,19 +491,20 @@ private fun FoldersTab(
     } else {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp)
+            contentPadding = PaddingValues(bottom = 128.dp, top = 8.dp)
         ) {
-            items(
+            itemsIndexed(
                 items = folders,
-                key = { it.path + it.name },
-                contentType = { "folder" }
-            ) { folder ->
+                key = { _, folder -> folder.path + folder.name },
+                contentType = { _, _ -> "folder" }
+            ) { index, folder ->
                 FolderListItem(
                     folder = folder,
                     onClick = { onSelectFolder(folder) },
+                    shape = groupedItemShape(index, folders.size),
                     modifier = Modifier
                         .animateItem()
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp, vertical = 1.5.dp)
                 )
             }
         }
@@ -521,20 +525,22 @@ private fun GenresTab(
     } else {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp)
+            contentPadding = PaddingValues(bottom = 128.dp, top = 8.dp)
         ) {
-            items(
+            itemsIndexed(
                 items = genres,
-                key = { it.name },
-                contentType = { "genre" }
-            ) { genre ->
+                key = { _, genre -> genre.name },
+                contentType = { _, _ -> "genre" }
+            ) { index, genre ->
+                val shape = groupedItemShape(index, genres.size)
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .padding(horizontal = 16.dp, vertical = 1.5.dp)
+                        .clip(shape)
                         .clickable { onSelectGenre(genre) }
                         .animateItem(),
-                    shape = RoundedCornerShape(12.dp),
+                    shape = shape,
                     color = MaterialTheme.colorScheme.surfaceContainerLow
                 ) {
                     Row(
@@ -546,13 +552,19 @@ private fun GenresTab(
                     ) {
                         Text(
                             text = genre.name,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
-                        Text(
-                            text = "${genre.songCount} треков",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                        ) {
+                            Text(
+                                text = "${genre.songCount} треков",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -579,10 +591,13 @@ fun DetailListScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.size(48.dp)
+            ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                     contentDescription = "Назад"
@@ -592,18 +607,24 @@ fun DetailListScreen(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    maxLines = 1
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             if (songs.isNotEmpty()) {
-                IconButton(onClick = onPlayAll) {
+                FilledTonalIconButton(
+                    onClick = onPlayAll,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.size(48.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Filled.PlayArrow,
                         contentDescription = "Воспроизвести всё",
@@ -615,13 +636,13 @@ fun DetailListScreen(
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = 128.dp, top = 4.dp)
         ) {
-            items(
+            itemsIndexed(
                 items = songs,
-                key = { it.id },
-                contentType = { "song" }
-            ) { song ->
+                key = { _, song -> song.id },
+                contentType = { _, _ -> "song" }
+            ) { index, song ->
                 SongListItem(
                     song = song,
                     isPlaying = playbackState.currentSong?.id == song.id && playbackState.isPlaying,
@@ -630,9 +651,10 @@ fun DetailListScreen(
                     onToggleFavorite = { onToggleFavorite(song.id) },
                     onAddToPlaylist = { onAddToPlaylist(song) },
                     onAddToQueue = { onAddToQueue(song) },
+                    shape = groupedItemShape(index, songs.size),
                     modifier = Modifier
                         .animateItem()
-                        .padding(horizontal = 12.dp)
+                        .padding(horizontal = 16.dp, vertical = 1.5.dp)
                 )
             }
         }

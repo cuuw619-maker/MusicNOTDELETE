@@ -1,6 +1,5 @@
 package com.example.ui.theme
 
-import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
@@ -8,14 +7,11 @@ import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 
 /**
- * Unified Motion Tokens for 2026 Material 3 Expressive motion system.
- * Fast, predictable, physics-driven, and interruptible.
+ * Unified Motion Tokens for Material 3 Expressive motion system.
+ * Spatial springs (with controlled overshoot) vs Effects springs (critically damped).
  */
 object MotionTokens {
     const val DurationInstant = 100
@@ -33,6 +29,30 @@ object MotionTokens {
 }
 
 object SpringTokens {
+    /** Fast spatial spring for switches, chips, and icon morphs */
+    fun <T> spatialFast(): SpringSpec<T> = spring(
+        dampingRatio = 0.72f,
+        stiffness = 800f
+    )
+
+    /** Standard Material 3 Expressive spatial spring for cards, pills, and indicators */
+    fun <T> spatialDefault(): SpringSpec<T> = spring(
+        dampingRatio = 0.76f,
+        stiffness = 380f
+    )
+
+    /** Slow spatial spring for full-screen artwork and sheet transitions */
+    fun <T> spatialSlow(): SpringSpec<T> = spring(
+        dampingRatio = 0.80f,
+        stiffness = 200f
+    )
+
+    /** Critically damped spring for color, alpha, and luminance fades (no overshoot) */
+    fun <T> effectsDefault(): SpringSpec<T> = spring(
+        dampingRatio = 1.0f,
+        stiffness = 800f
+    )
+
     /** Bouncy spring for playful micro-interactions (buttons, pills, indicators) */
     fun <T> bouncy(): SpringSpec<T> = spring(
         dampingRatio = 0.65f,

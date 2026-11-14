@@ -10,9 +10,10 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -85,11 +86,16 @@ import com.example.ui.animation.performHapticFeedback
 import com.example.ui.components.AmbientGlowCanvas
 import com.example.ui.components.AppIcons
 import com.example.ui.components.AudioVisualizer
+import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.InteractiveProgressBar
 import com.example.ui.components.MorphingPlayPauseButton
 import com.example.ui.components.TrackArtwork
 import com.example.ui.components.VinylRecordArtwork
+import com.example.ui.theme.MonoFontFamily
+import com.example.ui.theme.SpringTokens
 import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -132,6 +138,8 @@ fun NowPlayingScreen(
     onToggleVinylMode: () -> Unit = {},
     currentVolume: Float = 1.0f,
     onVolumeChanged: (Float) -> Unit = {},
+    onRetryPlayback: () -> Unit = {},
+    playbackPositionFlow: StateFlow<Long>? = null,
     modifier: Modifier = Modifier
 ) {
     val currentSong = playbackState.currentSong ?: return
@@ -392,15 +400,20 @@ fun NowPlayingScreen(
                             modifier = Modifier.fillMaxSize()
                         )
                     } else {
+                        val artworkCorner by animateDpAsState(
+                            targetValue = if (playbackState.isPlaying) 30.dp else 20.dp,
+                            animationSpec = SpringTokens.spatialDefault(),
+                            label = "now_playing_art_corner"
+                        )
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .shadow(
-                                    elevation = 16.dp,
-                                    shape = RoundedCornerShape(24.dp),
-                                    spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                                    elevation = if (playbackState.isPlaying) 20.dp else 10.dp,
+                                    shape = RoundedCornerShape(artworkCorner),
+                                    spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.40f)
                                 )
-                                .clip(RoundedCornerShape(24.dp))
+                                .clip(RoundedCornerShape(artworkCorner))
                         ) {
                             AnimatedContent(
                                 targetState = currentSong,
@@ -418,7 +431,7 @@ fun NowPlayingScreen(
                                 TrackArtwork(
                                     artUriString = song.albumArtUriString,
                                     contentDescription = song.title,
-                                    cornerRadius = 24.dp,
+                                    cornerRadius = artworkCorner,
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
@@ -430,15 +443,12 @@ fun NowPlayingScreen(
 
                 // Live Audio Waveform Visualizer with real song acoustic dynamics
                 Box(modifier = Modifier.padding(horizontal = 32.dp)) {
-                    AudioVisualizer(
+                    LiveAudioVisualizerWrapper(
+                        playbackPositionFlow = playbackPositionFlow,
                         isPlaying = playbackState.isPlaying,
-                        currentPositionMs = playbackState.currentPositionMs,
+                        fallbackPositionMs = playbackState.currentPositionMs,
                         durationMs = playbackState.durationMs,
-                        songId = currentSong.id,
-                        barCount = 28,
-                        barHeight = 32.dp,
-                        primaryColor = MaterialTheme.colorScheme.primary,
-                        secondaryColor = MaterialTheme.colorScheme.tertiary
+                        songId = currentSong.id
                     )
                 }
 
@@ -494,18 +504,62 @@ fun NowPlayingScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Audio Inspector pill
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                        modifier = Modifier.clickable { onOpenAudioInspector() }
-                    ) {
-                        Text(
-                            text = "320 kbps • Studio DSP • 44.1 kHz",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
+                    // Audio Inspector pill / Online Stream Buffering or Error-Retry indicator
+                    val hasStreamError = !playbackState.isBuffering && !playbackState.errorMessage.isNullOrBlank()
+                    if (playbackState.isBuffering) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ExpressiveLoadingIndicator(
+                                    size = 18.dp,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    containerColor = Color.Transparent
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Загрузка потока...",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                    } else if (hasStreamError) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            modifier = Modifier.clickable {
+                                performHapticFeedback(view, HapticType.LIGHT)
+                                onRetryPlayback()
+                            }
+                        ) {
+                            Text(
+                                text = "Ошибка • Повторить",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                            )
+                        }
+                    } else {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            modifier = Modifier.clickable { onOpenAudioInspector() }
+                        ) {
+                            Text(
+                                text = "320 kbps • Studio DSP • 44.1 kHz",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = MonoFontFamily,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
                     }
 
                     // A-B Repeat Controller
@@ -537,11 +591,13 @@ fun NowPlayingScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Progress Bar
+                // Progress Bar (smooth 40ms position collector isolated from screen root)
                 Box(modifier = Modifier.padding(horizontal = 24.dp)) {
-                    InteractiveProgressBar(
-                        currentPositionMs = playbackState.currentPositionMs,
+                    LiveInteractiveProgressBarWrapper(
+                        playbackPositionFlow = playbackPositionFlow,
+                        fallbackPositionMs = playbackState.currentPositionMs,
                         durationMs = playbackState.durationMs,
+                        isPlaying = playbackState.isPlaying,
                         onSeekTo = onSeekTo,
                         bookmarks = bookmarks
                     )
@@ -596,11 +652,12 @@ fun NowPlayingScreen(
 
                     MorphingPlayPauseButton(
                         isPlaying = playbackState.isPlaying,
+                        isBuffering = playbackState.isBuffering,
                         onClick = onPlayPause,
-                        width = 86.dp,
-                        height = 62.dp,
+                        width = 88.dp,
+                        height = 64.dp,
                         iconSize = 32.dp,
-                        cornerRadius = 24.dp,
+                        cornerRadius = 20.dp,
                         modifier = Modifier.testTag("now_playing_play_pause")
                     )
 
@@ -648,80 +705,95 @@ fun NowPlayingScreen(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Quick Action Bar: Queue, Equalizer, Lyrics, Vinyl Toggle, Playlist
-                Row(
+                // Material 3 Expressive Floating Pill Action Toolbar
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
+                    tonalElevation = 4.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 24.dp)
                 ) {
-                    IconButton(
-                        onClick = {
-                            performHapticFeedback(view, HapticType.LIGHT)
-                            onOpenQueue()
-                        },
-                        modifier = Modifier.testTag("now_playing_queue")
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = AppIcons.Queue,
-                            contentDescription = "Очередь воспроизведения",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            performHapticFeedback(view, HapticType.LIGHT)
-                            onOpenEqualizer()
-                        },
-                        modifier = Modifier.testTag("now_playing_equalizer")
-                    ) {
-                        Icon(
-                            imageVector = AppIcons.Equalizer,
-                            contentDescription = "Эквалайзер",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            performHapticFeedback(view, HapticType.LIGHT)
-                            onOpenLyrics()
+                        IconButton(
+                            onClick = {
+                                performHapticFeedback(view, HapticType.LIGHT)
+                                onOpenQueue()
+                            },
+                            modifier = Modifier.testTag("now_playing_queue")
+                        ) {
+                            Icon(
+                                imageVector = AppIcons.Queue,
+                                contentDescription = "Очередь воспроизведения",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Lyrics,
-                            contentDescription = "Текст песни",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
 
-                    IconButton(
-                        onClick = {
-                            performHapticFeedback(view, HapticType.LIGHT)
-                            onToggleVinylMode()
+                        IconButton(
+                            onClick = {
+                                performHapticFeedback(view, HapticType.LIGHT)
+                                onOpenEqualizer()
+                            },
+                            modifier = Modifier.testTag("now_playing_equalizer")
+                        ) {
+                            Icon(
+                                imageVector = AppIcons.Equalizer,
+                                contentDescription = "Эквалайзер",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Album,
-                            contentDescription = "Режим винила",
-                            tint = if (vinylModeEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
 
-                    IconButton(
-                        onClick = {
-                            performHapticFeedback(view, HapticType.LIGHT)
-                            onAddToPlaylist(currentSong)
-                        },
-                        modifier = Modifier.testTag("now_playing_add_to_playlist")
-                    ) {
-                        Icon(
-                            imageVector = AppIcons.PlaylistAdd,
-                            contentDescription = "Добавить в плейлист",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Surface(
+                            onClick = {
+                                performHapticFeedback(view, HapticType.LIGHT)
+                                onOpenLyrics()
+                            },
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Lyrics,
+                                    contentDescription = "Текст песни",
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+
+                        IconButton(
+                            onClick = {
+                                performHapticFeedback(view, HapticType.LIGHT)
+                                onToggleVinylMode()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Album,
+                                contentDescription = "Режим винила",
+                                tint = if (vinylModeEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                performHapticFeedback(view, HapticType.LIGHT)
+                                onAddToPlaylist(currentSong)
+                            },
+                            modifier = Modifier.testTag("now_playing_add_to_playlist")
+                        ) {
+                            Icon(
+                                imageVector = AppIcons.PlaylistAdd,
+                                contentDescription = "Добавить в плейлист",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
 
@@ -803,4 +875,49 @@ fun NowPlayingScreen(
             onDismiss = { showSpeedPitchSheet = false }
         )
     }
+}
+
+@Composable
+private fun LiveAudioVisualizerWrapper(
+    playbackPositionFlow: StateFlow<Long>?,
+    isPlaying: Boolean,
+    fallbackPositionMs: Long,
+    durationMs: Long,
+    songId: Long
+) {
+    val livePos by (playbackPositionFlow?.collectAsStateWithLifecycle()
+        ?: remember(fallbackPositionMs) { mutableStateOf(fallbackPositionMs) })
+
+    AudioVisualizer(
+        isPlaying = isPlaying,
+        currentPositionMs = livePos,
+        durationMs = durationMs,
+        songId = songId,
+        barCount = 28,
+        barHeight = 32.dp,
+        primaryColor = MaterialTheme.colorScheme.primary,
+        secondaryColor = MaterialTheme.colorScheme.tertiary,
+        currentPositionProvider = { livePos }
+    )
+}
+
+@Composable
+private fun LiveInteractiveProgressBarWrapper(
+    playbackPositionFlow: StateFlow<Long>?,
+    fallbackPositionMs: Long,
+    durationMs: Long,
+    isPlaying: Boolean,
+    onSeekTo: (Long) -> Unit,
+    bookmarks: List<Long>
+) {
+    val livePos by (playbackPositionFlow?.collectAsStateWithLifecycle()
+        ?: remember(fallbackPositionMs) { mutableStateOf(fallbackPositionMs) })
+
+    InteractiveProgressBar(
+        currentPositionMs = livePos,
+        durationMs = durationMs,
+        isPlaying = isPlaying,
+        onSeekTo = onSeekTo,
+        bookmarks = bookmarks
+    )
 }

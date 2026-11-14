@@ -59,3 +59,19 @@ data class SearchHistoryEntity(
     val query: String,
     val timestamp: Long = System.currentTimeMillis()
 )
+
+@Entity(tableName = "online_songs")
+data class OnlineSongEntity(
+    @PrimaryKey
+    val id: Long,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val durationMs: Long,
+    val contentUriString: String,
+    val albumArtUriString: String? = null,
+    val genre: String = "Online Stream",
+    val sourceExternalId: String = "",
+    val dateAdded: Long = System.currentTimeMillis()
+)
+

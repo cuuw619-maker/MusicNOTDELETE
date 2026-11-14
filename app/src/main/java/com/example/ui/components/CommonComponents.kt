@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -51,10 +52,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -63,8 +67,6 @@ import com.example.model.Album
 import com.example.model.Artist
 import com.example.model.Folder
 import com.example.model.Song
-import com.example.ui.animation.HapticType
-import com.example.ui.animation.bouncyClickable
 
 @Composable
 fun SongListItem(
@@ -76,6 +78,7 @@ fun SongListItem(
     onAddToPlaylist: () -> Unit,
     onAddToQueue: () -> Unit,
     onDelete: (() -> Unit)? = null,
+    shape: Shape = RoundedCornerShape(16.dp),
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -83,30 +86,36 @@ fun SongListItem(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick),
-        color = if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else Color.Transparent,
-        shape = RoundedCornerShape(12.dp)
+            .clip(shape)
+            .clickable(onClick = onClick)
+            .testTag("song_item_${song.id}"),
+        color = if (isCurrent) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        shape = shape
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Album art with current playing overlay
             Box(
                 modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                    .size(50.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                 contentAlignment = Alignment.Center
             ) {
                 if (!song.albumArtUriString.isNullOrEmpty()) {
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(song.albumArtUriString)
-                            .crossfade(true).placeholder(com.example.R.drawable.ic_album_placeholder).error(com.example.R.drawable.ic_album_placeholder)
+                            .crossfade(true)
+                            .placeholder(com.example.R.drawable.ic_album_placeholder)
+                            .error(com.example.R.drawable.ic_album_placeholder)
                             .build(),
                         contentDescription = song.title,
                         contentScale = ContentScale.Crop,
@@ -135,17 +144,17 @@ fun SongListItem(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            // Title and Artist
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = song.title,
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = if (isCurrent) FontWeight.ExtraBold else FontWeight.SemiBold
                     ),
                     color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = "${song.artist} • ${song.durationFormatted}",
                     style = MaterialTheme.typography.bodySmall,
@@ -155,10 +164,9 @@ fun SongListItem(
                 )
             }
 
-            // Favorite button
             IconButton(
                 onClick = onToggleFavorite,
-                modifier = Modifier.size(40.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     imageVector = if (song.isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
@@ -168,11 +176,10 @@ fun SongListItem(
                 )
             }
 
-            // More options menu
             Box {
                 IconButton(
                     onClick = { showMenu = true },
-                    modifier = Modifier.size(40.dp)
+                    modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.MoreVert,
@@ -294,17 +301,18 @@ fun AlbumCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(22.dp))
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(22.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f)),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
+        Column(modifier = Modifier.padding(10.dp)) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(1f)
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(16.dp))
                     .background(
                         Brush.linearGradient(
                             listOf(
@@ -319,7 +327,9 @@ fun AlbumCard(
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(album.albumArtUriString)
-                            .crossfade(true).placeholder(com.example.R.drawable.ic_album_placeholder).error(com.example.R.drawable.ic_album_placeholder)
+                            .crossfade(true)
+                            .placeholder(com.example.R.drawable.ic_album_placeholder)
+                            .error(com.example.R.drawable.ic_album_placeholder)
                             .build(),
                         contentDescription = album.title,
                         contentScale = ContentScale.Crop,
@@ -335,11 +345,11 @@ fun AlbumCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             Text(
                 text = album.title,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -359,20 +369,21 @@ fun AlbumCard(
 fun ArtistListItem(
     artist: Artist,
     onClick: () -> Unit,
+    shape: Shape = RoundedCornerShape(16.dp),
     modifier: Modifier = Modifier
 ) {
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(shape)
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        color = Color.Transparent
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -395,7 +406,7 @@ fun ArtistListItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = artist.name,
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -413,26 +424,27 @@ fun ArtistListItem(
 fun FolderListItem(
     folder: Folder,
     onClick: () -> Unit,
+    shape: Shape = RoundedCornerShape(16.dp),
     modifier: Modifier = Modifier
 ) {
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
+            .clip(shape)
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        color = Color.Transparent
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(14.dp))
                     .background(MaterialTheme.colorScheme.tertiaryContainer),
                 contentAlignment = Alignment.Center
             ) {
@@ -449,7 +461,7 @@ fun FolderListItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = folder.name,
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -482,15 +494,15 @@ fun EmptyStateView(
     ) {
         Box(
             modifier = Modifier
-                .size(72.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .size(80.dp)
+                .clip(RoundedCornerShape(26.dp))
+                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.size(36.dp),
+                modifier = Modifier.size(38.dp),
                 tint = MaterialTheme.colorScheme.primary
             )
         }
@@ -498,14 +510,15 @@ fun EmptyStateView(
         Text(
             text = title,
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-            color = MaterialTheme.colorScheme.onSurface
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = subtitle,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            textAlign = TextAlign.Center
         )
         if (actionButton != null) {
             Spacer(modifier = Modifier.height(20.dp))

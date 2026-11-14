@@ -12,9 +12,10 @@ import androidx.room.RoomDatabase
         PlaylistSongCrossRef::class,
         PlaybackHistoryEntity::class,
         SavedQueueEntity::class,
-        SearchHistoryEntity::class
+        SearchHistoryEntity::class,
+        OnlineSongEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class MusicDatabase : RoomDatabase() {

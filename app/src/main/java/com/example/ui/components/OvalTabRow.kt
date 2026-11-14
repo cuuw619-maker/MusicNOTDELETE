@@ -95,15 +95,14 @@ fun OvalTabRow(
             .shadow(
                 elevation = 6.dp,
                 shape = CircleShape,
-                spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                 ambientColor = Color.Black.copy(alpha = 0.08f)
             )
             .border(
                 width = 1.dp,
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
                 shape = CircleShape
-            )
-            .clip(CircleShape),
+            ),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         tonalElevation = 3.dp,
         shape = CircleShape
@@ -128,24 +127,25 @@ fun OvalTabRow(
             var dragVisualXPx by remember { mutableFloatStateOf(0f) }
             var isPressed by remember { mutableStateOf(false) }
             var isDragging by remember { mutableStateOf(false) }
+            var pressedSlotIndex by remember { mutableStateOf<Int?>(null) }
 
-            // Calibrated dynamic squash & stretch
+            // Dynamic M3 Expressive swell on press & drag ("овал при нажатии становится больше")
             val capsuleScaleX by animateFloatAsState(
                 targetValue = when {
-                    isDragging -> 1.03f
-                    isPressed -> 1.01f
+                    isDragging -> 1.14f
+                    isPressed -> 1.12f
                     else -> 1.0f
                 },
-                animationSpec = spring(dampingRatio = 0.82f, stiffness = 600f),
+                animationSpec = spring(dampingRatio = 0.58f, stiffness = 480f),
                 label = "oval_scale_x"
             )
             val capsuleScaleY by animateFloatAsState(
                 targetValue = when {
-                    isDragging -> 0.98f
-                    isPressed -> 0.99f
+                    isDragging -> 1.16f
+                    isPressed -> 1.14f
                     else -> 1.0f
                 },
-                animationSpec = spring(dampingRatio = 0.82f, stiffness = 600f),
+                animationSpec = spring(dampingRatio = 0.58f, stiffness = 480f),
                 label = "oval_scale_y"
             )
 
@@ -157,12 +157,37 @@ fun OvalTabRow(
                     val clampedTarget = targetLeftPx.coerceIn(minAllowedLeft, maxAllowedLeft)
                     indicatorOffsetXPx.animateTo(
                         targetValue = clampedTarget,
-                        animationSpec = spring(dampingRatio = 0.82f, stiffness = 550f)
+                        animationSpec = spring(dampingRatio = 0.72f, stiffness = 480f)
                     )
                 }
             }
 
             val indicatorWidthDp = with(density) { indicatorWidthPx.toDp() }
+
+            // Secondary soft swelling oval when pressing an unselected slot prior to release
+            val targetPressIndex = pressedSlotIndex
+            if (targetPressIndex != null && targetPressIndex != selectedIndex && !isDragging) {
+                val pressLeftPx = ((targetPressIndex + 0.5f) * slotWidthPx - indicatorWidthPx / 2f)
+                    .coerceIn(minAllowedLeft, maxAllowedLeft)
+                val pressScale by animateFloatAsState(
+                    targetValue = 1.08f,
+                    animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f),
+                    label = "oval_press_ghost_scale"
+                )
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset(x = pressLeftPx.roundToInt(), y = 0) }
+                        .width(indicatorWidthDp)
+                        .height(indicatorHeightDp)
+                        .align(Alignment.CenterStart)
+                        .graphicsLayer {
+                            scaleX = pressScale
+                            scaleY = pressScale
+                        }
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                )
+            }
 
             // ==========================================
             // LAYER 1: THE INTERACTIVE INNER OVAL
@@ -179,12 +204,13 @@ fun OvalTabRow(
                     .graphicsLayer {
                         scaleX = capsuleScaleX
                         scaleY = capsuleScaleY
+                        shadowElevation = if (isPressed || isDragging) 12f else 2f
                     }
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primaryContainer)
                     .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                        width = if (isPressed || isDragging) 1.5.dp else 1.dp,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = if (isPressed || isDragging) 0.40f else 0.18f),
                         shape = CircleShape
                     )
             )
@@ -199,9 +225,12 @@ fun OvalTabRow(
             ) {
                 tabs.forEachIndexed { index, tab ->
                     val isSelected = selectedIndex == index
+                    val isSlotPressed = pressedSlotIndex == index
                     val contentColor by animateColorAsState(
                         targetValue = if (isSelected) {
                             MaterialTheme.colorScheme.onPrimaryContainer
+                        } else if (isSlotPressed) {
+                            MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
@@ -210,8 +239,12 @@ fun OvalTabRow(
                     )
 
                     val tabScale by animateFloatAsState(
-                        targetValue = if (isSelected) 1.08f else 1.0f,
-                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 400f),
+                        targetValue = when {
+                            isSlotPressed -> 1.12f
+                            isSelected -> 1.07f
+                            else -> 1.0f
+                        },
+                        animationSpec = spring(dampingRatio = 0.55f, stiffness = 420f),
                         label = "oval_tab_scale_$index"
                     )
 
@@ -243,7 +276,7 @@ fun OvalTabRow(
                                 text = tab.title,
                                 color = contentColor,
                                 style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    fontWeight = if (isSelected || isSlotPressed) FontWeight.Bold else FontWeight.Medium,
                                     fontSize = if (tabCount > 4) 10.5.sp else 12.sp
                                 ),
                                 maxLines = 1,
@@ -267,13 +300,10 @@ fun OvalTabRow(
                             val dragStartFingerX = down.position.x
                             val dragStartOvalX = indicatorOffsetXPx.value
 
-                            val ovalLeft = dragStartOvalX
-                            val ovalRight = dragStartOvalX + indicatorWidthPx
-                            val isTouchOnOval = down.position.x in (ovalLeft - 16.dp.toPx())..(ovalRight + 16.dp.toPx())
-
-                            if (isTouchOnOval) {
-                                isPressed = true
-                            }
+                            val touchedSlot = (down.position.x / slotWidthPx).toInt()
+                                .coerceIn(0, tabs.size - 1)
+                            pressedSlotIndex = touchedSlot
+                            isPressed = true
 
                             var isDragStarted = false
                             var currentVisualX = dragStartOvalX
@@ -314,6 +344,7 @@ fun OvalTabRow(
                                             val tabCenter = (i + 0.5f) * slotWidthPx
                                             abs(tabCenter - currentCenter)
                                         } ?: selectedIndex
+                                        pressedSlotIndex = hoveredIndex
 
                                         if (hoveredIndex != lastHapticIndex) {
                                             lastHapticIndex = hoveredIndex
@@ -323,6 +354,7 @@ fun OvalTabRow(
                                 }
                             } finally {
                                 isPressed = false
+                                pressedSlotIndex = null
                                 if (isDragStarted) {
                                     isDragging = false
                                     val finalCenter = currentVisualX + indicatorWidthPx / 2f

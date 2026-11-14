@@ -18,15 +18,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -38,10 +38,10 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.QueueMusic
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -71,6 +72,7 @@ import com.example.model.Playlist
 import com.example.model.Song
 import com.example.ui.components.EmptyStateView
 import com.example.ui.components.SongListItem
+import com.example.ui.components.groupedItemShape
 import com.example.ui.dialogs.ConfirmDeleteDialog
 import com.example.ui.dialogs.RenamePlaylistDialog
 import com.example.ui.viewmodel.MusicViewModel
@@ -88,7 +90,6 @@ fun PlaylistsScreen(
     var playlistToRename by remember { mutableStateOf<Playlist?>(null) }
     var playlistToDelete by remember { mutableStateOf<Playlist?>(null) }
 
-    // Dialogs
     playlistToRename?.let { playlist ->
         RenamePlaylistDialog(
             initialName = playlist.name,
@@ -143,7 +144,6 @@ fun PlaylistsScreen(
                 onAddToQueue = { viewModel.addToQueue(it) }
             )
         } else {
-            // Playlists List View
             Scaffold(
                 modifier = modifier
                     .fillMaxSize()
@@ -151,8 +151,9 @@ fun PlaylistsScreen(
                 floatingActionButton = {
                     FloatingActionButton(
                         onClick = { viewModel.setCreatePlaylistDialogVisible(true) },
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        shape = RoundedCornerShape(20.dp),
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier
                             .padding(bottom = 90.dp)
                             .testTag("create_playlist_fab")
@@ -169,23 +170,31 @@ fun PlaylistsScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                            .padding(horizontal = 20.dp, vertical = 14.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Плейлисты",
-                            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold)
-                        )
+                        Column {
+                            Text(
+                                text = "Плейлисты",
+                                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.ExtraBold)
+                            )
+                            Text(
+                                text = "${playlists.size} коллекций",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
 
                         Surface(
                             onClick = { viewModel.setSpotifySheetVisible(true) },
-                            shape = RoundedCornerShape(16.dp),
-                            color = Color(0xFF1DB954).copy(alpha = 0.15f),
-                            contentColor = Color(0xFF1DB954)
+                            shape = CircleShape,
+                            color = Color(0xFF1DB954).copy(alpha = 0.16f),
+                            contentColor = Color(0xFF1DB954),
+                            modifier = Modifier.testTag("open_spotify_sync")
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
@@ -196,7 +205,7 @@ fun PlaylistsScreen(
                                 )
                                 Text(
                                     text = "Spotify",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                                 )
                             }
                         }
@@ -206,10 +215,11 @@ fun PlaylistsScreen(
                         EmptyStateView(
                             icon = Icons.Rounded.QueueMusic,
                             title = "Нет плейлистов",
-                            subtitle = "Создавайте свои подборки и любимые миксы",
+                            subtitle = "Создавайте свои подборки или импортируйте плейлисты напрямую из Spotify",
                             actionButton = {
-                                androidx.compose.material3.Button(
-                                    onClick = { viewModel.setCreatePlaylistDialogVisible(true) }
+                                Button(
+                                    onClick = { viewModel.setCreatePlaylistDialogVisible(true) },
+                                    shape = CircleShape
                                 ) {
                                     Icon(Icons.Filled.Add, contentDescription = null)
                                     Spacer(modifier = Modifier.width(6.dp))
@@ -221,15 +231,16 @@ fun PlaylistsScreen(
                     } else {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(bottom = 120.dp)
+                            contentPadding = PaddingValues(bottom = 128.dp, top = 4.dp)
                         ) {
-                            items(
+                            itemsIndexed(
                                 items = playlists,
-                                key = { it.id },
-                                contentType = { "playlist" }
-                            ) { playlist ->
+                                key = { _, item -> item.id },
+                                contentType = { _, _ -> "playlist" }
+                            ) { index, playlist ->
                                 PlaylistItem(
                                     playlist = playlist,
+                                    shape = groupedItemShape(index, playlists.size),
                                     onClick = { viewModel.selectPlaylist(playlist) },
                                     onRename = { playlistToRename = playlist },
                                     onDelete = { playlistToDelete = playlist },
@@ -247,6 +258,7 @@ fun PlaylistsScreen(
 @Composable
 private fun PlaylistItem(
     playlist: Playlist,
+    shape: Shape,
     onClick: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
@@ -257,21 +269,22 @@ private fun PlaylistItem(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .padding(horizontal = 16.dp, vertical = 1.5.dp)
+            .clip(shape)
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
+        shape = shape,
         color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(52.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .size(54.dp)
+                    .clip(RoundedCornerShape(14.dp))
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
@@ -300,7 +313,7 @@ private fun PlaylistItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = playlist.name,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -312,7 +325,10 @@ private fun PlaylistItem(
             }
 
             Box {
-                IconButton(onClick = { showMenu = true }) {
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = Modifier.size(48.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.MoreVert,
                         contentDescription = "Опции",
@@ -370,10 +386,13 @@ private fun PlaylistDetailScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
+            IconButton(
+                onClick = onBack,
+                modifier = Modifier.size(48.dp)
+            ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                     contentDescription = "Назад"
@@ -385,8 +404,9 @@ private fun PlaylistDetailScreen(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = playlist.name,
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    maxLines = 1
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = "${songs.size} треков",
@@ -396,7 +416,10 @@ private fun PlaylistDetailScreen(
             }
 
             Box {
-                IconButton(onClick = { showMenu = true }) {
+                IconButton(
+                    onClick = { showMenu = true },
+                    modifier = Modifier.size(48.dp)
+                ) {
                     Icon(Icons.Default.MoreVert, contentDescription = "Меню")
                 }
                 DropdownMenu(
@@ -423,30 +446,46 @@ private fun PlaylistDetailScreen(
             }
         }
 
-        // Action buttons (Play all & Shuffle)
+        // Connected Action Pills (Play all & Shuffle)
         if (songs.isNotEmpty()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                androidx.compose.material3.Button(
+                Button(
                     onClick = onPlayAll,
-                    modifier = Modifier.weight(1f)
+                    shape = RoundedCornerShape(
+                        topStart = 24.dp,
+                        bottomStart = 24.dp,
+                        topEnd = 10.dp,
+                        bottomEnd = 10.dp
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
                 ) {
                     Icon(Icons.Filled.PlayArrow, contentDescription = null)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Воспроизвести")
+                    Text("Воспроизвести", fontWeight = FontWeight.Bold)
                 }
 
-                androidx.compose.material3.OutlinedButton(
+                FilledTonalButton(
                     onClick = onShuffleAll,
-                    modifier = Modifier.weight(1f)
+                    shape = RoundedCornerShape(
+                        topStart = 10.dp,
+                        bottomStart = 10.dp,
+                        topEnd = 24.dp,
+                        bottomEnd = 24.dp
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
                 ) {
                     Icon(Icons.Filled.Shuffle, contentDescription = null)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Перемешать")
+                    Text("Перемешать", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -461,13 +500,13 @@ private fun PlaylistDetailScreen(
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 120.dp)
+                contentPadding = PaddingValues(bottom = 128.dp, top = 4.dp)
             ) {
-                items(
+                itemsIndexed(
                     items = songs,
-                    key = { it.id },
-                    contentType = { "song" }
-                ) { song ->
+                    key = { _, song -> song.id },
+                    contentType = { _, _ -> "song" }
+                ) { index, song ->
                     SongListItem(
                         song = song,
                         isPlaying = playbackState.currentSong?.id == song.id && playbackState.isPlaying,
@@ -476,9 +515,10 @@ private fun PlaylistDetailScreen(
                         onToggleFavorite = { onToggleFavorite(song.id) },
                         onAddToPlaylist = { onAddToPlaylist(song) },
                         onAddToQueue = { onAddToQueue(song) },
+                        shape = groupedItemShape(index, songs.size),
                         modifier = Modifier
                             .animateItem()
-                            .padding(horizontal = 12.dp)
+                            .padding(horizontal = 16.dp, vertical = 1.5.dp)
                     )
                 }
             }

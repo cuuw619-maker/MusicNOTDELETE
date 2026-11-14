@@ -114,6 +114,25 @@ interface MusicDao {
 
     @Query("DELETE FROM search_history")
     suspend fun clearSearchHistory()
+
+    // --- Online & Imported Tracks ---
+    @Query("SELECT * FROM online_songs ORDER BY dateAdded DESC")
+    fun getAllOnlineSongs(): Flow<List<OnlineSongEntity>>
+
+    @Query("SELECT * FROM online_songs")
+    suspend fun getAllOnlineSongsSync(): List<OnlineSongEntity>
+
+    @Query("SELECT * FROM online_songs WHERE id = :id LIMIT 1")
+    suspend fun getOnlineSongById(id: Long): OnlineSongEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOnlineSong(song: OnlineSongEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOnlineSongs(songs: List<OnlineSongEntity>)
+
+    @Query("UPDATE online_songs SET contentUriString = :uri, durationMs = :durationMs WHERE id = :id")
+    suspend fun updateOnlineSongStream(id: Long, uri: String, durationMs: Long)
 }
 
 data class SongStatTuple(

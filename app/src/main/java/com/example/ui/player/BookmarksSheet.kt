@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.example.model.Song
 import com.example.ui.animation.HapticType
 import com.example.ui.animation.performHapticFeedback
+import com.example.ui.components.groupedItemShape
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,7 +77,7 @@ fun BookmarksSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                     Box(
                         modifier = Modifier
                             .size(40.dp)
@@ -95,7 +96,7 @@ fun BookmarksSheet(
                     Column {
                         Text(
                             text = "Аудио-закладки",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold)
                         )
                         Text(
                             text = song?.title ?: "Текущий трек",
@@ -137,23 +138,29 @@ fun BookmarksSheet(
                 }
             } else {
                 LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(260.dp)
                 ) {
-                    items(bookmarks) { bMs ->
+                    itemsIndexed(
+                        items = bookmarks,
+                        key = { _, bMs -> "bm_$bMs" },
+                        contentType = { _, _ -> "bookmark" }
+                    ) { index, bMs ->
+                        val itemShape = groupedItemShape(index, bookmarks.size, outerRadius = 20.dp, innerRadius = 8.dp)
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
+                                .animateItem()
+                                .clip(itemShape)
                                 .clickable {
                                     performHapticFeedback(view, HapticType.LIGHT)
                                     onSeekTo(bMs)
                                     onDismiss()
                                 },
                             color = MaterialTheme.colorScheme.surfaceContainer,
-                            shape = RoundedCornerShape(16.dp)
+                            shape = itemShape
                         ) {
                             Row(
                                 modifier = Modifier

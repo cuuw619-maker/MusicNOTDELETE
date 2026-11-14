@@ -5,24 +5,27 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -30,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.components.EmptyStateView
 import com.example.ui.components.SongListItem
+import com.example.ui.components.groupedItemShape
 import com.example.ui.viewmodel.MusicViewModel
 
 @Composable
@@ -46,14 +50,14 @@ fun FavoritesScreen(
             .fillMaxSize()
             .testTag("favorites_screen")
     ) {
-        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
             Text(
                 text = "Избранное",
-                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold)
+                style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.ExtraBold)
             )
             Text(
                 text = "${favoriteSongs.size} треков сохранено",
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -62,25 +66,44 @@ fun FavoritesScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Button(
                     onClick = { viewModel.playQueue(favoriteSongs, 0) },
-                    modifier = Modifier.weight(1f)
+                    shape = RoundedCornerShape(
+                        topStart = 24.dp,
+                        bottomStart = 24.dp,
+                        topEnd = 10.dp,
+                        bottomEnd = 10.dp
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
                 ) {
                     Icon(Icons.Filled.PlayArrow, contentDescription = null)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Воспроизвести")
+                    Text("Воспроизвести", fontWeight = FontWeight.Bold)
                 }
 
-                OutlinedButton(
+                FilledTonalButton(
                     onClick = { viewModel.playQueue(favoriteSongs.shuffled(), 0) },
-                    modifier = Modifier.weight(1f)
+                    shape = RoundedCornerShape(
+                        topStart = 10.dp,
+                        bottomStart = 10.dp,
+                        topEnd = 24.dp,
+                        bottomEnd = 24.dp
+                    ),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 48.dp)
                 ) {
                     Icon(Icons.Filled.Shuffle, contentDescription = null)
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Перемешать")
+                    Text("Перемешать", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -91,7 +114,10 @@ fun FavoritesScreen(
                 title = "Нет избранных треков",
                 subtitle = "Нажимайте сердечко рядом с понравившимися песнями, чтобы собирать их здесь",
                 actionButton = {
-                    Button(onClick = onNavigateToLibrary) {
+                    Button(
+                        onClick = onNavigateToLibrary,
+                        shape = CircleShape
+                    ) {
                         Text("Перейти к медиатеке")
                     }
                 },
@@ -100,9 +126,13 @@ fun FavoritesScreen(
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp)
+                contentPadding = PaddingValues(bottom = 128.dp, top = 8.dp)
             ) {
-                items(favoriteSongs, key = { it.id }) { song ->
+                itemsIndexed(
+                    items = favoriteSongs,
+                    key = { _, song -> song.id },
+                    contentType = { _, _ -> "song" }
+                ) { index, song ->
                     SongListItem(
                         song = song,
                         isPlaying = playbackState.currentSong?.id == song.id && playbackState.isPlaying,
@@ -111,7 +141,10 @@ fun FavoritesScreen(
                         onToggleFavorite = { viewModel.toggleFavorite(song.id) },
                         onAddToPlaylist = { viewModel.setSongToAddToPlaylist(song) },
                         onAddToQueue = { viewModel.addToQueue(song) },
-                        modifier = Modifier.padding(horizontal = 12.dp)
+                        shape = groupedItemShape(index, favoriteSongs.size),
+                        modifier = Modifier
+                            .animateItem()
+                            .padding(horizontal = 16.dp, vertical = 1.5.dp)
                     )
                 }
             }

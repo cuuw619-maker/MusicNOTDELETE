@@ -1,5 +1,8 @@
 package com.example.model
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class Song(
     val id: Long,
     val title: String,
@@ -91,6 +94,7 @@ data class Folder(
     val songCount: Int
 )
 
+@Immutable
 data class Playlist(
     val id: Long,
     val name: String,
@@ -121,9 +125,11 @@ enum class RepeatMode(val value: Int, val label: String) {
     ONE(2, "Повторять один")
 }
 
+@Immutable
 data class PlaybackState(
     val currentSong: Song? = null,
     val isPlaying: Boolean = false,
+    val isBuffering: Boolean = false,
     val currentPositionMs: Long = 0L,
     val durationMs: Long = 0L,
     val bufferedPositionMs: Long = 0L,

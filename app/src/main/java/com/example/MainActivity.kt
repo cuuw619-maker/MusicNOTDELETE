@@ -160,13 +160,25 @@ fun MainApp(
     val isBookmarksVisible by viewModel.isBookmarksSheetVisible.collectAsStateWithLifecycle()
     val currentSongBookmarks = playbackState.currentSong?.let { bookmarksMap[it.id] } ?: emptyList()
     val isSpotifySheetVisible by viewModel.isSpotifySheetVisible.collectAsStateWithLifecycle()
+    val spatialReverbPreset by viewModel.spatialReverbPreset.collectAsStateWithLifecycle()
+    val stereoWidener by viewModel.stereoWidener.collectAsStateWithLifecycle()
+    val audioBalance by viewModel.audioBalance.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(playbackState.errorMessage) {
         val err = playbackState.errorMessage
         if (!err.isNullOrEmpty()) {
-            snackbarHostState.showSnackbar(err)
+            val result = snackbarHostState.showSnackbar(
+                message = err,
+                actionLabel = "Повторить",
+                withDismissAction = true
+            )
+            if (result == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+                viewModel.retryPlayback()
+            } else {
+                viewModel.clearPlaybackError()
+            }
         }
     }
 
@@ -202,8 +214,7 @@ fun MainApp(
                             .fillMaxHeight()
                     ) {
                         Scaffold(
-                            modifier = Modifier.fillMaxSize(),
-                            snackbarHost = { SnackbarHost(snackbarHostState) }
+                            modifier = Modifier.fillMaxSize()
                         ) { innerPadding ->
                             Box(
                                 modifier = Modifier
@@ -218,6 +229,16 @@ fun MainApp(
                                 )
                             }
                         }
+
+                        SnackbarHost(
+                            hostState = snackbarHostState,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(
+                                    horizontal = 16.dp,
+                                    vertical = if (playbackState.currentSong != null && !isNowPlayingExpanded) 96.dp else 16.dp
+                                )
+                        )
 
                         if (playbackState.currentSong != null && !isNowPlayingExpanded) {
                             Box(
@@ -236,6 +257,8 @@ fun MainApp(
                                     onOpenLyrics = { viewModel.setLyricsSheetVisible(true) },
                                     onOpenSleepTimer = { viewModel.setSleepTimerSheetVisible(true) },
                                     onToggleFavorite = { playbackState.currentSong?.let { viewModel.toggleFavorite(it.id) } },
+                                    onRetryPlayback = { viewModel.retryPlayback() },
+                                    playbackPositionFlow = viewModel.playbackPositionMs,
                                     modifier = Modifier.testTag("mini_player")
                                 )
                             }
@@ -246,8 +269,7 @@ fun MainApp(
                 // Phone layout: Expressive Floating Navigation Bar + Mini Player
                 Box(modifier = Modifier.fillMaxSize()) {
                     Scaffold(
-                        modifier = Modifier.fillMaxSize(),
-                        snackbarHost = { SnackbarHost(snackbarHostState) }
+                        modifier = Modifier.fillMaxSize()
                     ) { innerPadding ->
                         Box(
                             modifier = Modifier
@@ -262,6 +284,17 @@ fun MainApp(
                             )
                         }
                     }
+
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(
+                                start = 14.dp,
+                                end = 14.dp,
+                                bottom = if (playbackState.currentSong != null && !isNowPlayingExpanded) 160.dp else 88.dp
+                            )
+                    )
 
                     // Bottom Navigation + Mini Player stacked cleanly
                     Column(
@@ -280,6 +313,8 @@ fun MainApp(
                                 onOpenLyrics = { viewModel.setLyricsSheetVisible(true) },
                                 onOpenSleepTimer = { viewModel.setSleepTimerSheetVisible(true) },
                                 onToggleFavorite = { playbackState.currentSong?.let { viewModel.toggleFavorite(it.id) } },
+                                onRetryPlayback = { viewModel.retryPlayback() },
+                                playbackPositionFlow = viewModel.playbackPositionMs,
                                 modifier = Modifier.testTag("mini_player")
                             )
                         }
@@ -340,15 +375,17 @@ fun MainApp(
                 onPitchCentsChanged = { viewModel.setPitchCents(it) },
                 abPointA = abPointA,
                 abPointB = abPointB,
-                onSetABPointA = { viewModel.setABPointA(playbackState.currentPositionMs) },
-                onSetABPointB = { viewModel.setABPointB(playbackState.currentPositionMs) },
+                onSetABPointA = { viewModel.setABPointA(viewModel.playbackPositionMs.value) },
+                onSetABPointB = { viewModel.setABPointB(viewModel.playbackPositionMs.value) },
                 onClearABRepeat = { viewModel.clearABRepeat() },
                 vinylModeEnabled = vinylModeEnabled,
                 onToggleVinylMode = { viewModel.setVinylModeEnabled(!vinylModeEnabled) },
                 currentVolume = currentVolume,
                 onVolumeChanged = { viewModel.preferencesManager.setPlayerVolume(it) },
+                onRetryPlayback = { viewModel.retryPlayback() },
                 bookmarks = currentSongBookmarks,
                 onOpenBookmarks = { viewModel.setBookmarksSheetVisible(true) },
+                playbackPositionFlow = viewModel.playbackPositionMs,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -375,6 +412,12 @@ fun MainApp(
             onBassBoostChange = { viewModel.setBassBoost(it) },
             onVirtualizerChange = { viewModel.setVirtualizer(it) },
             onLoudnessEnhancerChange = { viewModel.setLoudnessEnhancer(it) },
+            spatialReverbPreset = spatialReverbPreset,
+            stereoWidener = stereoWidener,
+            audioBalance = audioBalance,
+            onReverbPresetChange = { viewModel.setSpatialReverbPreset(it) },
+            onStereoWidenerChange = { viewModel.setStereoWidener(it) },
+            onAudioBalanceChange = { viewModel.setAudioBalance(it) },
             onSelectPreset = { viewModel.useEqualizerPreset(it) },
             onDismiss = { viewModel.setEqualizerSheetVisible(false) }
         )

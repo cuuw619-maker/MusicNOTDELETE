@@ -2,13 +2,16 @@ package com.example.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import com.example.data.preferences.PreferencesManager
 
 private val DarkColorScheme = darkColorScheme(
@@ -53,6 +56,14 @@ private val LightColorScheme = lightColorScheme(
     onSurfaceVariant = OnSurfaceVariantLight
 )
 
+val ExpressiveShapes = Shapes(
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(14.dp),
+    medium = RoundedCornerShape(20.dp),
+    large = RoundedCornerShape(26.dp),
+    extraLarge = RoundedCornerShape(32.dp)
+)
+
 @Composable
 fun MusicAppTheme(
     themeMode: PreferencesManager.ThemeMode = PreferencesManager.ThemeMode.SYSTEM,
@@ -93,6 +104,7 @@ fun MusicAppTheme(
     MaterialTheme(
         colorScheme = finalColorScheme,
         typography = Typography,
+        shapes = ExpressiveShapes,
         content = content
     )
 }

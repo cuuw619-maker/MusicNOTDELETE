@@ -10,6 +10,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,7 +32,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.AllInclusive
 import androidx.compose.material.icons.rounded.CallMerge
-import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ColorLens
 import androidx.compose.material.icons.rounded.Contrast
 import androidx.compose.material.icons.rounded.DarkMode
@@ -37,19 +39,15 @@ import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.FilterAlt
 import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.MotionPhotosOn
-import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PauseCircle
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.Speed
@@ -60,15 +58,12 @@ import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Vibration
 import androidx.compose.material.icons.rounded.VolumeDown
-import androidx.compose.material.icons.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.Waves
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -80,16 +75,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.preferences.PreferencesManager
+import com.example.ui.components.ExpressiveOvalChoiceChip
 import com.example.ui.components.OvalTabItem
 import com.example.ui.components.OvalTabRow
 import com.example.ui.player.SpeedPitchBottomSheet
+import com.example.ui.theme.MonoFontFamily
 import com.example.ui.util.HapticFeedbackType
 import com.example.ui.util.rememberHapticHelper
 import com.example.ui.viewmodel.MusicViewModel
@@ -175,37 +172,27 @@ fun SettingsScreen(
     if (showThemeDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showThemeDialog = false },
-            title = { Text("Выбор темы оформления") },
+            shape = RoundedCornerShape(28.dp),
+            title = { Text("Выбор темы оформления", fontWeight = FontWeight.ExtraBold) },
             text = {
-                Column {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     PreferencesManager.ThemeMode.values().forEach { mode ->
                         val label = when (mode) {
                             PreferencesManager.ThemeMode.SYSTEM -> "Как в системе"
                             PreferencesManager.ThemeMode.LIGHT -> "Светлая тема"
                             PreferencesManager.ThemeMode.DARK -> "Тёмная тема"
                         }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    viewModel.setThemeMode(mode)
-                                    showThemeDialog = false
-                                }
-                                .padding(vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = themeMode == mode,
-                                onClick = {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    viewModel.setThemeMode(mode)
-                                    showThemeDialog = false
-                                }
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(text = label, style = MaterialTheme.typography.bodyLarge)
-                        }
+                        ExpressiveOvalChoiceChip(
+                            label = label,
+                            selected = themeMode == mode,
+                            onClick = {
+                                viewModel.setThemeMode(mode)
+                                showThemeDialog = false
+                            },
+                            minHeight = 46.dp,
+                            fontSizeSp = 13f,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
             },
@@ -221,36 +208,27 @@ fun SettingsScreen(
     if (showSwipeDirDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showSwipeDirDialog = false },
-            title = { Text("Направление свайпа в плеере") },
+            shape = RoundedCornerShape(28.dp),
+            title = { Text("Направление свайпа", fontWeight = FontWeight.ExtraBold) },
             text = {
-                Column {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     val options = listOf(
-                        "RIGHT_NEXT_LEFT_PREV" to "Свайп влево: Предыдущий • Вправо: Следующий",
-                        "LEFT_NEXT_RIGHT_PREV" to "Свайп влево: Следующий • Вправо: Предыдущий"
+                        "RIGHT_NEXT_LEFT_PREV" to ("Влево: Назад • Вправо: Вперёд" to "Классический жест"),
+                        "LEFT_NEXT_RIGHT_PREV" to ("Влево: Вперёд • Вправо: Назад" to "Зеркальный жест")
                     )
-                    options.forEach { (key, title) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    viewModel.setPlayerSwipeDirection(key)
-                                    showSwipeDirDialog = false
-                                }
-                                .padding(vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = playerSwipeDirection == key,
-                                onClick = {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    viewModel.setPlayerSwipeDirection(key)
-                                    showSwipeDirDialog = false
-                                }
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(text = title, style = MaterialTheme.typography.bodyMedium)
-                        }
+                    options.forEach { (key, titlePair) ->
+                        ExpressiveOvalChoiceChip(
+                            label = titlePair.first,
+                            subtitle = titlePair.second,
+                            selected = playerSwipeDirection == key,
+                            onClick = {
+                                viewModel.setPlayerSwipeDirection(key)
+                                showSwipeDirDialog = false
+                            },
+                            minHeight = 52.dp,
+                            fontSizeSp = 12.5f,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
             },
@@ -266,32 +244,25 @@ fun SettingsScreen(
     if (showDoubleTapSeekDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showDoubleTapSeekDialog = false },
-            title = { Text("Шаг перемотки по обложке") },
+            shape = RoundedCornerShape(28.dp),
+            title = { Text("Шаг перемотки", fontWeight = FontWeight.ExtraBold) },
             text = {
-                Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     listOf(5, 10, 15, 30).forEach { sec ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    viewModel.setDoubleTapSeekSeconds(sec)
-                                    showDoubleTapSeekDialog = false
-                                }
-                                .padding(vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = doubleTapSeekSeconds == sec,
-                                onClick = {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    viewModel.setDoubleTapSeekSeconds(sec)
-                                    showDoubleTapSeekDialog = false
-                                }
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(text = "$sec секунд", style = MaterialTheme.typography.bodyLarge)
-                        }
+                        ExpressiveOvalChoiceChip(
+                            label = "${sec}с",
+                            selected = doubleTapSeekSeconds == sec,
+                            onClick = {
+                                viewModel.setDoubleTapSeekSeconds(sec)
+                                showDoubleTapSeekDialog = false
+                            },
+                            minHeight = 46.dp,
+                            fontSizeSp = 13f,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             },
@@ -309,14 +280,12 @@ fun SettingsScreen(
             .fillMaxSize()
             .testTag("settings_screen")
     ) {
-        // Top Header
         Text(
             text = "Настройки",
-            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+            style = MaterialTheme.typography.headlineLarge.copy(fontWeight = FontWeight.ExtraBold),
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp)
         )
 
-        // Oval-in-Oval Category Selector
         OvalTabRow(
             tabs = categoryTabs,
             selectedIndex = selectedCategoryIndex,
@@ -329,7 +298,6 @@ fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Animated Category Contents
         AnimatedContent(
             targetState = selectedCategoryIndex,
             transitionSpec = {
@@ -345,423 +313,361 @@ fun SettingsScreen(
         ) { categoryIndex ->
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 120.dp, top = 6.dp)
+                contentPadding = PaddingValues(bottom = 128.dp, top = 6.dp)
             ) {
                 when (categoryIndex) {
                     0 -> {
-                        // ==========================================
-                        // CATEGORY 0: SOUND & DSP ENGINE
-                        // ==========================================
                         item {
                             SectionTitle(title = "Студийный движок обработки звука (DSP)")
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-                            ) {
-                                Column {
-                                    SettingsRow(
-                                        icon = Icons.Rounded.Tune,
-                                        title = "Режим аудиодвижка",
-                                        subtitle = if (audioEngineMode == "STUDIO") "Studio Master Native (аппаратный sinc-интерполятор 64-bit)" else "Software Sonic (Exo)",
-                                        onClick = {
-                                            val newMode = if (audioEngineMode == "STUDIO") "SONIC" else "STUDIO"
-                                            viewModel.setAudioEngineMode(newMode)
-                                        }
-                                    )
+                            ExpressiveSettingsCard {
+                                SettingsRow(
+                                    icon = Icons.Rounded.Tune,
+                                    title = "Режим аудиодвижка",
+                                    subtitle = if (audioEngineMode == "STUDIO") "Studio Master Native (аппаратный sinc-интерполятор 64-bit)" else "Software Sonic (Exo)",
+                                    onClick = {
+                                        val newMode = if (audioEngineMode == "STUDIO") "SONIC" else "STUDIO"
+                                        viewModel.setAudioEngineMode(newMode)
+                                    }
+                                )
 
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.Memory,
-                                        title = "Студийный 4x буфер против треска",
-                                        subtitle = "Предотвращает щелчки и 'репение' звука при сильном замедлении (до 0.5x)",
-                                        checked = antiCrackleBuffer,
-                                        onCheckedChange = { viewModel.setAntiCrackleBuffer(it) }
-                                    )
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.Memory,
+                                    title = "Студийный 4x буфер против треска",
+                                    subtitle = "Предотвращает щелчки и 'репение' звука при замедлении (до 0.5x)",
+                                    checked = antiCrackleBuffer,
+                                    onCheckedChange = { viewModel.setAntiCrackleBuffer(it) }
+                                )
 
-                                    SettingsRow(
-                                        icon = Icons.Rounded.Speed,
-                                        title = "Скорость и Тональность",
-                                        subtitle = "Скорость: %.2fx • Тон: %+d st • Микро: %+d центов".format(playbackSpeed, pitchSemitones, pitchCents),
-                                        onClick = { showSpeedPitchSheet = true }
-                                    )
+                                SettingsRow(
+                                    icon = Icons.Rounded.Speed,
+                                    title = "Скорость и Тональность",
+                                    subtitle = "Скорость: %.2fx • Тон: %+d st • Микро: %+d центов".format(playbackSpeed, pitchSemitones, pitchCents),
+                                    onClick = { showSpeedPitchSheet = true }
+                                )
 
-                                    SettingsRow(
-                                        icon = Icons.Rounded.Equalizer,
-                                        title = "Эквалайзер и полосы частот",
-                                        subtitle = "Настройка тембра, усиление басов Bass Boost и Virtualizer",
-                                        onClick = { viewModel.setEqualizerSheetVisible(true) }
-                                    )
-                                }
+                                SettingsRow(
+                                    icon = Icons.Rounded.Equalizer,
+                                    title = "Эквалайзер и полосы частот",
+                                    subtitle = "Настройка тембра, усиление басов Bass Boost и Virtualizer",
+                                    onClick = { viewModel.setEqualizerSheetVisible(true) }
+                                )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
                         item {
                             SectionTitle(title = "Бесшовный переход (Crossfade & Gapless)")
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-                            ) {
-                                Column {
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.CallMerge,
-                                        title = "Плавный переход (Crossfade)",
-                                        subtitle = if (crossfadeEnabled) "Длительность: %.1f сек (Equal-Power)" else "Выключен",
-                                        checked = crossfadeEnabled,
-                                        onCheckedChange = { viewModel.setCrossfadeEnabled(it) }
-                                    )
+                            ExpressiveSettingsCard {
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.CallMerge,
+                                    title = "Плавный переход (Crossfade)",
+                                    subtitle = if (crossfadeEnabled) "Длительность: %.1f сек (Equal-Power)".format(crossfadeDuration) else "Выключен",
+                                    checked = crossfadeEnabled,
+                                    onCheckedChange = { viewModel.setCrossfadeEnabled(it) }
+                                )
 
-                                    if (crossfadeEnabled) {
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                                if (crossfadeEnabled) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Text(
-                                                    text = "Длительность плавного перехода",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                                Text(
-                                                    text = "%.1f с".format(crossfadeDuration),
-                                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
-                                            }
-                                            Slider(
-                                                value = crossfadeDuration.coerceIn(0.5f, 10.0f),
-                                                onValueChange = {
-                                                    val rounded = (it * 2).roundToInt() / 2f
-                                                    viewModel.setCrossfadeDuration(rounded)
-                                                },
-                                                valueRange = 0.5f..10.0f,
-                                                steps = 18
+                                            Text(
+                                                text = "Длительность плавного перехода",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = "%.1f с".format(crossfadeDuration),
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontFamily = MonoFontFamily,
+                                                    fontWeight = FontWeight.Bold
+                                                ),
+                                                color = MaterialTheme.colorScheme.primary
                                             )
                                         }
+                                        Slider(
+                                            value = crossfadeDuration.coerceIn(0.5f, 10.0f),
+                                            onValueChange = {
+                                                val rounded = (it * 2).roundToInt() / 2f
+                                                viewModel.setCrossfadeDuration(rounded)
+                                            },
+                                            valueRange = 0.5f..10.0f,
+                                            steps = 18
+                                        )
                                     }
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.TrendingDown,
-                                        title = "Затухание в конце трека",
-                                        subtitle = if (trackEndFadeOutEnabled) "Плавный уход в тишину (%.1f с) перед окончанием".format(trackEndFadeOutDuration) else "Выключено",
-                                        checked = trackEndFadeOutEnabled,
-                                        onCheckedChange = { viewModel.setTrackEndFadeOutEnabled(it) }
-                                    )
-
-                                    if (trackEndFadeOutEnabled) {
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 16.dp, vertical = 6.dp)
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween
-                                            ) {
-                                                Text(
-                                                    text = "Время затухания в конце",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                                Text(
-                                                    text = "%.1f с".format(trackEndFadeOutDuration),
-                                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
-                                            }
-                                            Slider(
-                                                value = trackEndFadeOutDuration.coerceIn(1.0f, 10.0f),
-                                                onValueChange = {
-                                                    val rounded = (it * 2).roundToInt() / 2f
-                                                    viewModel.setTrackEndFadeOutDuration(rounded)
-                                                },
-                                                valueRange = 1.0f..10.0f,
-                                                steps = 17
-                                            )
-                                        }
-                                    }
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.TrendingUp,
-                                        title = "Плавное нарастание при старте",
-                                        subtitle = "Мягкий старт громкости без резких ударов по ушам",
-                                        checked = fadeInOnStart,
-                                        onCheckedChange = { viewModel.setFadeInOnStart(it) }
-                                    )
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.PauseCircle,
-                                        title = "Плавное затухание при паузе",
-                                        subtitle = "Мягкий сход громкости перед остановкой трека",
-                                        checked = fadeOutOnPause,
-                                        onCheckedChange = { viewModel.setFadeOutOnPause(it) }
-                                    )
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.AllInclusive,
-                                        title = "Устранение микропауз",
-                                        subtitle = "Предварительная буферизация двух движков исключает тишину и разрывы",
-                                        checked = true,
-                                        onCheckedChange = { /* Always active in 2.0 */ }
-                                    )
                                 }
+
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.TrendingDown,
+                                    title = "Затухание в конце трека",
+                                    subtitle = if (trackEndFadeOutEnabled) "Плавный уход в тишину (%.1f с) перед окончанием".format(trackEndFadeOutDuration) else "Выключено",
+                                    checked = trackEndFadeOutEnabled,
+                                    onCheckedChange = { viewModel.setTrackEndFadeOutEnabled(it) }
+                                )
+
+                                if (trackEndFadeOutEnabled) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = "Время затухания в конце",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = "%.1f с".format(trackEndFadeOutDuration),
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontFamily = MonoFontFamily,
+                                                    fontWeight = FontWeight.Bold
+                                                ),
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                        Slider(
+                                            value = trackEndFadeOutDuration.coerceIn(1.0f, 10.0f),
+                                            onValueChange = {
+                                                val rounded = (it * 2).roundToInt() / 2f
+                                                viewModel.setTrackEndFadeOutDuration(rounded)
+                                            },
+                                            valueRange = 1.0f..10.0f,
+                                            steps = 17
+                                        )
+                                    }
+                                }
+
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.TrendingUp,
+                                    title = "Плавное нарастание при старте",
+                                    subtitle = "Мягкий старт громкости без резких ударов",
+                                    checked = fadeInOnStart,
+                                    onCheckedChange = { viewModel.setFadeInOnStart(it) }
+                                )
+
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.PauseCircle,
+                                    title = "Плавное затухание при паузе",
+                                    subtitle = "Мягкий сход громкости перед остановкой трека",
+                                    checked = fadeOutOnPause,
+                                    onCheckedChange = { viewModel.setFadeOutOnPause(it) }
+                                )
+
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.AllInclusive,
+                                    title = "Устранение микропауз",
+                                    subtitle = "Предварительная буферизация двух движков исключает тишину",
+                                    checked = true,
+                                    onCheckedChange = {}
+                                )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                         }
                     }
 
                     1 -> {
-                        // ==========================================
-                        // CATEGORY 1: APPEARANCE
-                        // ==========================================
                         item {
                             SectionTitle(title = "Цвета и темы")
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-                            ) {
-                                Column {
-                                    val themeLabel = when (themeMode) {
-                                        PreferencesManager.ThemeMode.SYSTEM -> "Как в системе"
-                                        PreferencesManager.ThemeMode.LIGHT -> "Светлая"
-                                        PreferencesManager.ThemeMode.DARK -> "Тёмная"
-                                    }
-                                    SettingsRow(
-                                        icon = when (themeMode) {
-                                            PreferencesManager.ThemeMode.SYSTEM -> Icons.Rounded.Smartphone
-                                            PreferencesManager.ThemeMode.LIGHT -> Icons.Rounded.LightMode
-                                            PreferencesManager.ThemeMode.DARK -> Icons.Rounded.DarkMode
-                                        },
-                                        title = "Тема оформления",
-                                        subtitle = themeLabel,
-                                        onClick = { showThemeDialog = true }
-                                    )
+                            ExpressiveSettingsCard {
+                                val themeLabel = when (themeMode) {
+                                    PreferencesManager.ThemeMode.SYSTEM -> "Как в системе"
+                                    PreferencesManager.ThemeMode.LIGHT -> "Светлая"
+                                    PreferencesManager.ThemeMode.DARK -> "Тёмная"
+                                }
+                                SettingsRow(
+                                    icon = when (themeMode) {
+                                        PreferencesManager.ThemeMode.SYSTEM -> Icons.Rounded.Smartphone
+                                        PreferencesManager.ThemeMode.LIGHT -> Icons.Rounded.LightMode
+                                        PreferencesManager.ThemeMode.DARK -> Icons.Rounded.DarkMode
+                                    },
+                                    title = "Тема оформления",
+                                    subtitle = themeLabel,
+                                    onClick = { showThemeDialog = true }
+                                )
 
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.Contrast,
+                                    title = "AMOLED Тёмная тема",
+                                    subtitle = "Глубокий чёрный цвет фона для экранов OLED",
+                                    checked = amoledDark,
+                                    onCheckedChange = { viewModel.setAmoledDark(it) }
+                                )
+
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                     SettingsSwitchRow(
-                                        icon = Icons.Rounded.Contrast,
-                                        title = "AMOLED Тёмная тема",
-                                        subtitle = "Глубокий чёрный цвет фона для экранов OLED",
-                                        checked = amoledDark,
-                                        onCheckedChange = { viewModel.setAmoledDark(it) }
-                                    )
-
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                        SettingsSwitchRow(
-                                            icon = Icons.Rounded.Palette,
-                                            title = "Динамические цвета (Material You)",
-                                            subtitle = "Палитра на основе системных обоев устройства",
-                                            checked = dynamicColor,
-                                            onCheckedChange = { viewModel.setDynamicColor(it) }
-                                        )
-                                    }
-
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.Album,
-                                        title = "Режим виниловой пластинки",
-                                        subtitle = "Вращающийся виниловый диск со звуковыми дорожками в плеере",
-                                        checked = vinylModeEnabled,
-                                        onCheckedChange = { viewModel.setVinylModeEnabled(it) }
+                                        icon = Icons.Rounded.Palette,
+                                        title = "Динамические цвета (Material You)",
+                                        subtitle = "Палитра на основе системных обоев устройства",
+                                        checked = dynamicColor,
+                                        onCheckedChange = { viewModel.setDynamicColor(it) }
                                     )
                                 }
+
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.Album,
+                                    title = "Режим виниловой пластинки",
+                                    subtitle = "Вращающийся виниловый диск со звуковыми дорожками в плеере",
+                                    checked = vinylModeEnabled,
+                                    onCheckedChange = { viewModel.setVinylModeEnabled(it) }
+                                )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
                         item {
                             SectionTitle(title = "Анимации интерфейса")
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-                            ) {
-                                Column {
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.MotionPhotosOn,
-                                        title = "Уменьшение движения (Reduced Motion)",
-                                        subtitle = "Отключает пружинные и инерционные эффекты",
-                                        checked = reducedMotion,
-                                        onCheckedChange = { viewModel.setReducedMotion(it) }
-                                    )
-                                }
+                            ExpressiveSettingsCard {
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.MotionPhotosOn,
+                                    title = "Уменьшение движения (Reduced Motion)",
+                                    subtitle = "Отключает пружинные и инерционные эффекты",
+                                    checked = reducedMotion,
+                                    onCheckedChange = { viewModel.setReducedMotion(it) }
+                                )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                         }
                     }
 
                     2 -> {
-                        // ==========================================
-                        // CATEGORY 2: GESTURES & UX
-                        // ==========================================
                         item {
                             SectionTitle(title = "Жесты полноэкранного плеера")
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-                            ) {
-                                Column {
-                                    SettingsRow(
-                                        icon = Icons.Rounded.Swipe,
-                                        title = "Направление свайпа по обложке",
-                                        subtitle = if (playerSwipeDirection == "RIGHT_NEXT_LEFT_PREV") "Свайп влево: Предыдущий • Вправо: Следующий" else "Свайп влево: Следующий • Вправо: Предыдущий",
-                                        onClick = { showSwipeDirDialog = true }
-                                    )
+                            ExpressiveSettingsCard {
+                                SettingsRow(
+                                    icon = Icons.Rounded.Swipe,
+                                    title = "Направление свайпа по обложке",
+                                    subtitle = if (playerSwipeDirection == "RIGHT_NEXT_LEFT_PREV") "Свайп влево: Предыдущий • Вправо: Следующий" else "Свайп влево: Следующий • Вправо: Предыдущий",
+                                    onClick = { showSwipeDirDialog = true }
+                                )
 
-                                    SettingsRow(
-                                        icon = Icons.Rounded.TouchApp,
-                                        title = "Двойное касание по краям обложки",
-                                        subtitle = "Перемотка назад / вперед на $doubleTapSeekSeconds сек",
-                                        onClick = { showDoubleTapSeekDialog = true }
-                                    )
+                                SettingsRow(
+                                    icon = Icons.Rounded.TouchApp,
+                                    title = "Двойное касание по краям обложки",
+                                    subtitle = "Перемотка назад / вперед на $doubleTapSeekSeconds сек",
+                                    onClick = { showDoubleTapSeekDialog = true }
+                                )
 
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.VolumeDown,
-                                        title = "Жест громкости на экране",
-                                        subtitle = "Вертикальное скольжение по экрану меняет громкость",
-                                        checked = volumeGestureEnabled,
-                                        onCheckedChange = { viewModel.setVolumeGestureEnabled(it) }
-                                    )
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.VolumeDown,
+                                    title = "Жест громкости на экране",
+                                    subtitle = "Вертикальное скольжение по экрану меняет громкость",
+                                    checked = volumeGestureEnabled,
+                                    onCheckedChange = { viewModel.setVolumeGestureEnabled(it) }
+                                )
 
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.Vibration,
-                                        title = "Тактильный отклик (Haptic Feedback)",
-                                        subtitle = "Вибрация при свайпах, переключении треков и табов",
-                                        checked = hapticEnabled,
-                                        onCheckedChange = { viewModel.setHapticEnabled(it) }
-                                    )
-                                }
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.Vibration,
+                                    title = "Тактильный отклик (Haptic Feedback)",
+                                    subtitle = "Вибрация при свайпах, переключении треков и табов",
+                                    checked = hapticEnabled,
+                                    onCheckedChange = { viewModel.setHapticEnabled(it) }
+                                )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                         }
                     }
 
                     3 -> {
-                        // ==========================================
-                        // CATEGORY 3: LIBRARY & SCANNER
-                        // ==========================================
                         item {
                             SectionTitle(title = "Медиатека и поиск")
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-                            ) {
-                                Column {
-                                    SettingsRow(
-                                        icon = Icons.Rounded.Refresh,
-                                        title = "Сканировать аудиофайлы",
-                                        subtitle = if (isScanning) "Идет сканирование..." else "В библиотеке ${allSongs.size} треков",
-                                        onClick = { viewModel.scanLibrary() }
-                                    )
+                            ExpressiveSettingsCard {
+                                SettingsRow(
+                                    icon = Icons.Rounded.Refresh,
+                                    title = "Сканировать аудиофайлы",
+                                    subtitle = if (isScanning) "Идет сканирование..." else "В библиотеке ${allSongs.size} треков",
+                                    onClick = { viewModel.scanLibrary() }
+                                )
 
-                                    SettingsRow(
-                                        icon = Icons.Rounded.Tune,
-                                        title = "Поведение при смене сортировки",
-                                        subtitle = "Всегда закреплять список вверху (без прыжков к треку)",
-                                        onClick = { /* Informational */ }
-                                    )
+                                SettingsRow(
+                                    icon = Icons.Rounded.Tune,
+                                    title = "Поведение при смене сортировки",
+                                    subtitle = "Всегда закреплять список вверху (без прыжков к треку)",
+                                    onClick = {}
+                                )
 
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.FilterAlt,
-                                        title = "Скрывать короткие аудиозаписи (< 30с)",
-                                        subtitle = "Исключать системные звуки, рингтоны и диктофон",
-                                        checked = filterShortAudio,
-                                        onCheckedChange = { viewModel.setFilterShortAudio(it) }
-                                    )
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.FilterAlt,
+                                    title = "Скрывать короткие аудиозаписи (< 30с)",
+                                    subtitle = "Исключать системные звуки, рингтоны и диктофон",
+                                    checked = filterShortAudio,
+                                    onCheckedChange = { viewModel.setFilterShortAudio(it) }
+                                )
 
-                                    SettingsSwitchRow(
-                                        icon = Icons.Rounded.History,
-                                        title = "Возобновлять воспроизведение",
-                                        subtitle = "Запоминать последний трек и позицию при старте",
-                                        checked = resumePlayback,
-                                        onCheckedChange = { viewModel.setResumePlayback(it) }
-                                    )
-                                }
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.History,
+                                    title = "Возобновлять воспроизведение",
+                                    subtitle = "Запоминать последний трек и позицию при старте",
+                                    checked = resumePlayback,
+                                    onCheckedChange = { viewModel.setResumePlayback(it) }
+                                )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                         }
                     }
 
                     4 -> {
-                        // ==========================================
-                        // CATEGORY 4: PLUGINS & LAB
-                        // ==========================================
                         item {
                             SectionTitle(title = "Расширения и модули")
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-                            ) {
-                                Column {
-                                    val activeCount = plugins.count { it.isEnabled }
-                                    SettingsRow(
-                                        icon = Icons.Rounded.Extension,
-                                        title = "Менеджер плагинов",
-                                        subtitle = "Активно: $activeCount из ${plugins.size} модулей",
-                                        onClick = { showPluginSheet = true }
-                                    )
+                            ExpressiveSettingsCard {
+                                val activeCount = plugins.count { it.isEnabled }
+                                SettingsRow(
+                                    icon = Icons.Rounded.Extension,
+                                    title = "Менеджер плагинов",
+                                    subtitle = "Активно: $activeCount из ${plugins.size} модулей",
+                                    onClick = { showPluginSheet = true }
+                                )
 
-                                    SettingsRow(
-                                        icon = Icons.Rounded.Science,
-                                        title = "Экспериментальная лаборатория",
-                                        subtitle = "Пользовательские скрипты и DSP фильтры",
-                                        onClick = { showPluginSheet = true }
-                                    )
-                                }
+                                SettingsRow(
+                                    icon = Icons.Rounded.Science,
+                                    title = "Экспериментальная лаборатория",
+                                    subtitle = "Пользовательские скрипты и DSP фильтры",
+                                    onClick = { showPluginSheet = true }
+                                )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
                         item {
                             SectionTitle(title = "О приложении")
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                            ExpressiveSettingsCard {
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(MaterialTheme.colorScheme.primaryContainer),
+                                        contentAlignment = Alignment.Center
+                                    ) {
                                         Icon(
                                             imageVector = Icons.Rounded.Info,
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(24.dp)
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(22.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Column {
-                                            Text(
-                                                text = "imux player",
-                                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                                            )
-                                            Text(
-                                                text = "Версия 2.2.0 • Studio Master DSP 2026",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(14.dp))
+                                    Column {
+                                        Text(
+                                            text = "imux player",
+                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
+                                        )
+                                        Text(
+                                            text = "Версия 2.3.0 • Material 3 Expressive & Multi-Engine",
+                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = MonoFontFamily),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
                             }
@@ -775,10 +681,28 @@ fun SettingsScreen(
 }
 
 @Composable
+private fun ExpressiveSettingsCard(
+    content: @Composable () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+    ) {
+        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            content()
+        }
+    }
+}
+
+@Composable
 private fun SectionTitle(title: String) {
     Text(
         text = title,
-        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
     )
@@ -795,24 +719,33 @@ private fun SettingsRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .defaultMinSize(minHeight = 56.dp)
             .clickable {
                 haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
                 onClick()
             }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(24.dp)
-        )
-        Spacer(modifier = Modifier.width(16.dp))
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
@@ -836,24 +769,36 @@ private fun SettingsSwitchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .defaultMinSize(minHeight = 56.dp)
             .clickable {
                 haptic.performHaptic(HapticFeedbackType.MEDIUM_TICK)
                 onCheckedChange(!checked)
             }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(24.dp)
-        )
-        Spacer(modifier = Modifier.width(16.dp))
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(
+                    if (checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                    else MaterialTheme.colorScheme.surfaceContainerHigh
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (checked) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
@@ -862,6 +807,7 @@ private fun SettingsSwitchRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+        Spacer(modifier = Modifier.width(8.dp))
         Switch(
             checked = checked,
             onCheckedChange = {

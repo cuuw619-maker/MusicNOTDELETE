@@ -3,6 +3,7 @@ package com.example.repository
 import android.content.Context
 import com.example.data.database.FavoriteEntity
 import com.example.data.database.MusicDao
+import com.example.data.database.OnlineSongEntity
 import com.example.data.database.PlaybackHistoryEntity
 import com.example.data.database.PlaylistEntity
 import com.example.data.database.PlaylistSongCrossRef
@@ -52,8 +53,10 @@ class MusicRepository(
     val favoriteSongIds: Flow<List<Long>> = musicDao.getAllFavoriteSongIds()
     val searchHistory: Flow<List<String>> = musicDao.getSearchHistory()
 
-    // Real combined songs with favorite flag and play count statistics
-    val allSongs: StateFlow<List<Song>> = combine(_rawSongs, favoriteSongIds) { songs, favIds ->
+    val onlineSongEntities: Flow<List<OnlineSongEntity>> = musicDao.getAllOnlineSongs()
+
+    // Real combined songs (local MediaStore + persistent online/imported tracks) with favorite flag and play count statistics
+    val allSongs: StateFlow<List<Song>> = combine(_rawSongs, onlineSongEntities, favoriteSongIds) { localSongs, onlineEntities, favIds ->
         val favSet = favIds.toHashSet()
         val stats = try {
             musicDao.getAllSongStats().associateBy { it.songId }
@@ -61,7 +64,23 @@ class MusicRepository(
             emptyMap()
         }
 
-        songs.map { song ->
+        val onlineSongs = onlineEntities.map { entity ->
+            Song(
+                id = entity.id,
+                title = entity.title,
+                artist = entity.artist,
+                album = entity.album,
+                albumId = -(entity.album.hashCode().toLong() and 0x7FFFFFFFL) - 1000L,
+                durationMs = entity.durationMs,
+                contentUriString = entity.contentUriString,
+                albumArtUriString = entity.albumArtUriString,
+                genre = entity.genre,
+                mimeType = "audio/mp4",
+                dateAdded = entity.dateAdded
+            )
+        }
+
+        (localSongs + onlineSongs).distinctBy { it.id }.map { song ->
             val stat = stats[song.id]
             song.copy(
                 isFavorite = favSet.contains(song.id),
@@ -160,11 +179,12 @@ class MusicRepository(
         ids.mapNotNull { songMap[it] }.distinctBy { it.id }
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
-    // Playlists
-    val playlists: StateFlow<List<Playlist>> = musicDao.getAllPlaylists().map { entities ->
+    // Playlists (reactive to both playlist changes and allSongs for cover artwork of online & local tracks)
+    val playlists: StateFlow<List<Playlist>> = combine(musicDao.getAllPlaylists(), allSongs) { entities, songs ->
+        val songMap = songs.associateBy { it.id }
         entities.map { entity ->
             val songIds = musicDao.getPlaylistSongIdsSync(entity.id)
-            val firstArt = _rawSongs.value.firstOrNull { it.id in songIds && it.albumArtUriString != null }?.albumArtUriString
+            val firstArt = songIds.firstNotNullOfOrNull { id -> songMap[id]?.albumArtUriString }
             Playlist(
                 id = entity.id,
                 name = entity.name,
@@ -231,6 +251,59 @@ class MusicRepository(
 
     suspend fun deletePlaylist(playlistId: Long) = withContext(Dispatchers.IO) {
         musicDao.deletePlaylistWithSongs(playlistId)
+    }
+
+    suspend fun saveOnlineSong(song: Song, externalId: String = "") = withContext(Dispatchers.IO) {
+        musicDao.insertOnlineSong(
+            OnlineSongEntity(
+                id = song.id,
+                title = song.title,
+                artist = song.artist,
+                album = song.album,
+                durationMs = song.durationMs,
+                contentUriString = song.contentUriString,
+                albumArtUriString = song.albumArtUriString,
+                genre = song.genre,
+                sourceExternalId = externalId,
+                dateAdded = song.dateAdded
+            )
+        )
+    }
+
+    suspend fun saveOnlineSongs(songs: List<Pair<Song, String>>) = withContext(Dispatchers.IO) {
+        if (songs.isEmpty()) return@withContext
+        musicDao.insertOnlineSongs(
+            songs.map { (song, extId) ->
+                OnlineSongEntity(
+                    id = song.id,
+                    title = song.title,
+                    artist = song.artist,
+                    album = song.album,
+                    durationMs = song.durationMs,
+                    contentUriString = song.contentUriString,
+                    albumArtUriString = song.albumArtUriString,
+                    genre = song.genre,
+                    sourceExternalId = extId,
+                    dateAdded = song.dateAdded
+                )
+            }
+        )
+    }
+
+    suspend fun addSongsToPlaylistBatch(playlistId: Long, songIds: List<Long>) = withContext(Dispatchers.IO) {
+        if (songIds.isEmpty()) return@withContext
+        val existing = musicDao.getPlaylistSongIdsSync(playlistId).toHashSet()
+        var orderIdx = existing.size
+        val crossRefs = songIds.distinct().filter { it !in existing }.map { sid ->
+            PlaylistSongCrossRef(
+                playlistId = playlistId,
+                songId = sid,
+                orderIndex = orderIdx++
+            )
+        }
+        if (crossRefs.isNotEmpty()) {
+            musicDao.insertPlaylistSongs(crossRefs)
+        }
     }
 
     suspend fun addSongToPlaylist(playlistId: Long, songId: Long) = withContext(Dispatchers.IO) {

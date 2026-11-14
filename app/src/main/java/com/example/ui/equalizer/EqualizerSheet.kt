@@ -69,6 +69,9 @@ import com.example.model.EqualizerState
 import com.example.ui.animation.HapticType
 import com.example.ui.animation.performHapticFeedback
 import com.example.ui.components.EmptyStateView
+import com.example.ui.components.ExpressiveOvalChoiceChip
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -298,34 +301,24 @@ fun EqualizerSheet(
                 if (equalizerState.presets.isNotEmpty()) {
                     Text(
                         text = "Студийные пресеты",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     LazyRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 4.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         itemsIndexed(equalizerState.presets) { index, presetName ->
                             val isSelected = equalizerState.currentPresetIndex.toInt() == index
-                            FilterChip(
+                            ExpressiveOvalChoiceChip(
+                                label = presetName,
                                 selected = isSelected,
-                                onClick = {
-                                    performHapticFeedback(view, HapticType.LIGHT)
-                                    onSelectPreset(index.toShort())
-                                },
-                                label = { Text(presetName) },
-                                leadingIcon = {
-                                    val icon = when {
-                                        presetName.contains("Rock", true) -> Icons.Rounded.GraphicEq
-                                        presetName.contains("Pop", true) -> Icons.Rounded.MusicNote
-                                        presetName.contains("Bass", true) -> Icons.Rounded.Speaker
-                                        presetName.contains("Jazz", true) || presetName.contains("Classic", true) -> Icons.Rounded.AudioFile
-                                        else -> Icons.Rounded.Tune
-                                    }
-                                    Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
-                                },
-                                enabled = equalizerState.isEnabled
+                                enabled = equalizerState.isEnabled,
+                                onClick = { onSelectPreset(index.toShort()) },
+                                minHeight = 40.dp,
+                                fontSizeSp = 12f
                             )
                         }
                     }
@@ -553,21 +546,21 @@ fun EqualizerSheet(
                             "PLATE" to "Пластина"
                         )
 
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            items(reverbPresets.size) { index ->
-                                val (key, label) = reverbPresets[index]
+                            reverbPresets.forEach { (key, label) ->
                                 val isSelected = spatialReverbPreset == key
-                                FilterChip(
+                                ExpressiveOvalChoiceChip(
+                                    label = label,
                                     selected = isSelected,
-                                    onClick = {
-                                        performHapticFeedback(view, HapticType.LIGHT)
-                                        onReverbPresetChange(key)
-                                    },
-                                    label = { Text(label) },
-                                    enabled = equalizerState.isEnabled
+                                    enabled = equalizerState.isEnabled,
+                                    onClick = { onReverbPresetChange(key) },
+                                    minHeight = 38.dp,
+                                    fontSizeSp = 12f
                                 )
                             }
                         }

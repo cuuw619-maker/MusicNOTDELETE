@@ -1,7 +1,7 @@
 package com.example.ui.player
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -10,8 +10,8 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,10 +44,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,6 +58,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.model.PlaybackState
@@ -67,7 +66,10 @@ import com.example.ui.animation.HapticType
 import com.example.ui.animation.fluidPress
 import com.example.ui.animation.performHapticFeedback
 import com.example.ui.components.AppIcons
+import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.MorphingPlayPauseButton
+import com.example.ui.theme.SpringTokens
+import kotlinx.coroutines.flow.StateFlow
 
 @Composable
 fun MiniPlayer(
@@ -80,25 +82,33 @@ fun MiniPlayer(
     onOpenLyrics: () -> Unit = {},
     onOpenSleepTimer: () -> Unit = {},
     onToggleFavorite: () -> Unit = {},
+    onRetryPlayback: () -> Unit = {},
+    playbackPositionFlow: StateFlow<Long>? = null,
     modifier: Modifier = Modifier
 ) {
     val song = playbackState.currentSong ?: return
     val view = LocalView.current
     var showMenu by remember { mutableStateOf(false) }
 
+    val artCorner by animateDpAsState(
+        targetValue = if (playbackState.isPlaying) 15.dp else 11.dp,
+        animationSpec = SpringTokens.spatialDefault(),
+        label = "mini_art_corner"
+    )
+
     AnimatedVisibility(
         visible = true,
         enter = slideInVertically(
             animationSpec = spring(
-                dampingRatio = 0.82f,
-                stiffness = 400f
+                dampingRatio = 0.80f,
+                stiffness = 380f
             )
         ) { it / 2 } + fadeIn(tween(220)) + scaleIn(
             initialScale = 0.94f,
-            animationSpec = spring(dampingRatio = 0.82f, stiffness = 400f)
+            animationSpec = SpringTokens.spatialDefault()
         ),
         exit = slideOutVertically(
-            animationSpec = spring(dampingRatio = 0.82f, stiffness = 400f)
+            animationSpec = SpringTokens.spatialFast()
         ) { it / 2 } + fadeOut(tween(180)) + scaleOut(targetScale = 0.94f)
     ) {
         Card(
@@ -118,9 +128,13 @@ fun MiniPlayer(
                     }
                 }
                 .testTag("mini_player_card"),
-            shape = RoundedCornerShape(22.dp),
+            shape = RoundedCornerShape(26.dp),
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            ),
+            border = BorderStroke(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
@@ -131,11 +145,10 @@ fun MiniPlayer(
                         .padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Album art
                     Box(
                         modifier = Modifier
-                            .size(46.dp)
-                            .clip(RoundedCornerShape(13.dp))
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(artCorner))
                             .background(MaterialTheme.colorScheme.primaryContainer),
                         contentAlignment = Alignment.Center
                     ) {
@@ -159,42 +172,61 @@ fun MiniPlayer(
                                 modifier = Modifier.size(24.dp)
                             )
                         }
+
+                        if (playbackState.isBuffering) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                ExpressiveLoadingIndicator(size = 28.dp)
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.width(12.dp))
 
-                    // Title & Artist
+                    val hasError = !playbackState.isBuffering && !playbackState.errorMessage.isNullOrBlank()
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = song.title,
-                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = song.artist,
+                            text = when {
+                                playbackState.isBuffering -> "Загрузка потока..."
+                                hasError -> "Ошибка потока • Повторить"
+                                else -> song.artist
+                            },
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = when {
+                                playbackState.isBuffering -> MaterialTheme.colorScheme.primary
+                                hasError -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
 
-                    // Only Essential Controls: Play/Pause
                     MorphingPlayPauseButton(
                         isPlaying = playbackState.isPlaying,
-                        onClick = onPlayPause,
-                        size = 42.dp,
-                        iconSize = 20.dp
+                        isBuffering = playbackState.isBuffering,
+                        onClick = if (hasError) onRetryPlayback else onPlayPause,
+                        size = 44.dp,
+                        iconSize = 20.dp,
+                        cornerRadius = 14.dp
                     )
 
                     Spacer(modifier = Modifier.width(4.dp))
 
-                    // Next button
                     Box(
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(RoundedCornerShape(12.dp))
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(14.dp))
                             .fluidPress(
                                 scaleDown = 0.92f,
                                 hapticType = HapticType.LIGHT,
@@ -211,14 +243,13 @@ fun MiniPlayer(
                         )
                     }
 
-                    // 3-dots Overflow Menu Button
                     Box {
                         IconButton(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
                                 showMenu = true
                             },
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.MoreVert,
@@ -301,20 +332,35 @@ fun MiniPlayer(
                     }
                 }
 
-                // Progress line
-                val progress = if (playbackState.durationMs > 0) {
-                    (playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
-                } else 0f
-
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(3.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                MiniPlayerProgressLine(
+                    playbackPositionFlow = playbackPositionFlow,
+                    fallbackPositionMs = playbackState.currentPositionMs,
+                    durationMs = playbackState.durationMs
                 )
             }
         }
     }
+}
+
+@Composable
+private fun MiniPlayerProgressLine(
+    playbackPositionFlow: StateFlow<Long>?,
+    fallbackPositionMs: Long,
+    durationMs: Long
+) {
+    val livePosMs by (playbackPositionFlow?.collectAsStateWithLifecycle()
+        ?: remember(fallbackPositionMs) { mutableStateOf(fallbackPositionMs) })
+
+    val progress = if (durationMs > 0) {
+        (livePosMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    } else 0f
+
+    LinearProgressIndicator(
+        progress = { progress },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(3.dp),
+        color = MaterialTheme.colorScheme.primary,
+        trackColor = MaterialTheme.colorScheme.surfaceVariant
+    )
 }

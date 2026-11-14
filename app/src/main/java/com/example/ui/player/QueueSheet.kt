@@ -51,6 +51,7 @@ import com.example.model.PlaybackState
 import com.example.ui.animation.bouncyClickable
 import com.example.ui.components.AnimatedSoundwaveBars
 import com.example.ui.components.EmptyStateView
+import com.example.ui.components.groupedItemShape
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,6 +70,7 @@ fun QueueSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         modifier = modifier.testTag("queue_bottom_sheet")
     ) {
         Column(
@@ -95,7 +97,7 @@ fun QueueSheet(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "Очередь (${playbackState.queue.size})",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold)
                     )
                 }
 
@@ -127,21 +129,24 @@ fun QueueSheet(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     itemsIndexed(
                         items = playbackState.queue,
-                        key = { index, song -> "${song.id}_$index" }
+                        key = { index, song -> "${song.id}_$index" },
+                        contentType = { _, _ -> "queue_song" }
                     ) { index, song ->
                         val isCurrent = index == playbackState.currentQueueIndex
+                        val itemShape = groupedItemShape(index, playbackState.queue.size, outerRadius = 20.dp, innerRadius = 8.dp)
 
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .animateItem()
                                 .bouncyClickable { onPlayQueueIndex(index) }
                                 .testTag("queue_item_$index"),
-                            shape = RoundedCornerShape(12.dp),
-                            color = if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surfaceContainer
+                            shape = itemShape,
+                            color = if (isCurrent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.52f) else MaterialTheme.colorScheme.surfaceContainer
                         ) {
                             Row(
                                 modifier = Modifier

@@ -39,11 +39,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.components.ExpressiveOvalChoiceChip
 import com.example.ui.util.HapticFeedbackType
 import com.example.ui.util.rememberHapticHelper
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun SpeedPitchBottomSheet(
     currentSpeed: Float,
@@ -77,14 +78,14 @@ fun SpeedPitchBottomSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Студийный движок звука",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Плавное замедление и тональность без щелчков и репения",
+                        text = "Плавное замедление и тональность без щелчков",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -97,20 +98,20 @@ fun SpeedPitchBottomSheet(
                         onPitchCentsChanged(0)
                     }
                 ) {
-                    Text("Сброс")
+                    Text("Сброс", fontWeight = FontWeight.Bold)
                 }
             }
 
             // High-Fidelity DSP Banner
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp),
+                        .padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
@@ -127,7 +128,7 @@ fun SpeedPitchBottomSheet(
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                         Text(
-                            text = "Аппаратная интерполяция sinc и 4x буфер для естественного тембра",
+                            text = "Аппаратная интерполяция sinc и 4x буфер для чистого тембра",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                         )
@@ -135,12 +136,12 @@ fun SpeedPitchBottomSheet(
                 }
             }
 
-            // Quick Style Presets
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Quick Style Presets (2x2 expanding oval grid)
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
                     text = "Творческие пресеты",
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.primary
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -153,36 +154,27 @@ fun SpeedPitchBottomSheet(
                         Triple("Lo-Fi", 0.88f, -1)
                     )
                     presets.forEach { (name, spd, ptch) ->
-                        val isCurrent = (currentSpeed - spd).let { it in -0.02f..0.02f } && currentPitchSemitones == ptch
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(
-                                    if (isCurrent) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.surfaceContainerHighest
-                                )
-                                .clickable {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    onSpeedChanged(spd)
-                                    onPitchChanged(ptch)
-                                    onPitchCentsChanged(0)
-                                }
-                                .padding(vertical = 8.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = name,
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = if (isCurrent) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
+                        val isCurrent = (currentSpeed - spd) in -0.02f..0.02f && currentPitchSemitones == ptch
+                        ExpressiveOvalChoiceChip(
+                            label = name,
+                            selected = isCurrent,
+                            onClick = {
+                                onSpeedChanged(spd)
+                                onPitchChanged(ptch)
+                                onPitchCentsChanged(0)
+                            },
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedContentColor = MaterialTheme.colorScheme.onPrimary,
+                            minHeight = 44.dp,
+                            fontSizeSp = 12f,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
 
             // Speed Section
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -192,11 +184,17 @@ fun SpeedPitchBottomSheet(
                         text = "Скорость воспроизведения",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
-                    Text(
-                        text = "%.2fx".format(currentSpeed),
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Text(
+                            text = "%.2fx".format(currentSpeed),
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
                 }
 
                 Slider(
@@ -209,42 +207,33 @@ fun SpeedPitchBottomSheet(
                     steps = 29
                 )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    listOf(0.5f, 0.75f, 0.85f, 1.0f, 1.15f, 1.25f, 1.5f, 2.0f).forEach { speedPreset ->
-                        val isSelected = (currentSpeed - speedPreset).let { it in -0.02f..0.02f }
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (isSelected) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.surfaceContainerHighest
-                                )
-                                .clickable {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    onSpeedChanged(speedPreset)
-                                }
-                                .padding(vertical = 6.dp),
-                            contentAlignment = Alignment.Center
+                val speedPresets = listOf(0.5f, 0.75f, 0.85f, 1.0f, 1.15f, 1.25f, 1.5f, 2.0f)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    speedPresets.chunked(4).forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = "${speedPreset}x",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 10.sp
-                                ),
-                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                            )
+                            rowItems.forEach { speedPreset ->
+                                val isSelected = (currentSpeed - speedPreset) in -0.02f..0.02f
+                                ExpressiveOvalChoiceChip(
+                                    label = "${speedPreset}x",
+                                    selected = isSelected,
+                                    onClick = { onSpeedChanged(speedPreset) },
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedContentColor = MaterialTheme.colorScheme.onPrimary,
+                                    minHeight = 40.dp,
+                                    fontSizeSp = 11.5f,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
                         }
                     }
                 }
             }
 
             // Pitch Semitones Section
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -254,11 +243,17 @@ fun SpeedPitchBottomSheet(
                         text = "Тональность (полутоны)",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
-                    Text(
-                        text = if (currentPitchSemitones > 0) "+$currentPitchSemitones st" else "$currentPitchSemitones st",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        Text(
+                            text = if (currentPitchSemitones > 0) "+$currentPitchSemitones st" else "$currentPitchSemitones st",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
                 }
 
                 Slider(
@@ -270,42 +265,29 @@ fun SpeedPitchBottomSheet(
                     steps = 23
                 )
 
+                val semitonePresets = listOf(-6, -4, -2, -1, 0, 1, 2, 4, 6)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
-                    listOf(-6, -4, -2, -1, 0, 1, 2, 4, 6).forEach { semitones ->
+                    semitonePresets.forEach { semitones ->
                         val isSelected = currentPitchSemitones == semitones
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (isSelected) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.surfaceContainerHighest
-                                )
-                                .clickable {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    onPitchChanged(semitones)
-                                }
-                                .padding(vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = if (semitones > 0) "+$semitones" else "$semitones",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 10.sp
-                                ),
-                                color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
+                        ExpressiveOvalChoiceChip(
+                            label = if (semitones > 0) "+$semitones" else "$semitones",
+                            selected = isSelected,
+                            onClick = { onPitchChanged(semitones) },
+                            selectedContainerColor = MaterialTheme.colorScheme.primary,
+                            selectedContentColor = MaterialTheme.colorScheme.onPrimary,
+                            minHeight = 38.dp,
+                            fontSizeSp = 10.5f,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
 
             // Pitch Cents (Micro-tuning) Section
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -315,11 +297,17 @@ fun SpeedPitchBottomSheet(
                         text = "Микроподстройка (центы)",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
-                    Text(
-                        text = if (currentPitchCents > 0) "+$currentPitchCents центов" else "$currentPitchCents центов",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.secondary
-                    )
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.tertiaryContainer
+                    ) {
+                        Text(
+                            text = if (currentPitchCents > 0) "+$currentPitchCents центов" else "$currentPitchCents центов",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold),
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
                 }
 
                 Slider(
@@ -337,30 +325,20 @@ fun SpeedPitchBottomSheet(
                 ) {
                     listOf(-25, 0, 25).forEach { cents ->
                         val isSelected = currentPitchCents == cents
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (isSelected) MaterialTheme.colorScheme.secondary
-                                    else MaterialTheme.colorScheme.surfaceContainerHighest
-                                )
-                                .clickable {
-                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
-                                    onPitchCentsChanged(cents)
-                                }
-                                .padding(vertical = 6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = if (cents > 0) "+$cents c" else "$cents c",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = if (isSelected) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
+                        ExpressiveOvalChoiceChip(
+                            label = if (cents > 0) "+$cents c" else "$cents c",
+                            selected = isSelected,
+                            onClick = { onPitchCentsChanged(cents) },
+                            selectedContainerColor = MaterialTheme.colorScheme.secondary,
+                            selectedContentColor = MaterialTheme.colorScheme.onSecondary,
+                            minHeight = 40.dp,
+                            fontSizeSp = 12f,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
         }
     }
 }
+

@@ -43,6 +43,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val preferencesManager = app.preferencesManager
 
     val playbackState: StateFlow<PlaybackState> = controllerManager.playbackState
+    val playbackPositionMs: StateFlow<Long> = controllerManager.playbackPositionMs
     val equalizerState = equalizerManager.equalizerState
 
     // Sleep Timer
@@ -74,6 +75,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    private val _searchMode = MutableStateFlow(0) // 0: Local, 1: Online
+    val searchMode: StateFlow<Int> = _searchMode.asStateFlow()
+
     private val _searchCategory = MutableStateFlow(SearchCategory.ALL)
     val searchCategory: StateFlow<SearchCategory> = _searchCategory.asStateFlow()
 
@@ -82,6 +86,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     val searchHistory: StateFlow<List<String>> = repository.searchHistory
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private var onlineSearchJob: kotlinx.coroutines.Job? = null
+    private var historyCommitJob: kotlinx.coroutines.Job? = null
+    private var lastQueryEditAtMs: Long = 0L
+    private var lastSavedHistoryQuery: String? = null
 
     // Filtered songs for Library Screen
     val filteredSongs: StateFlow<List<Song>> = combine(sortedSongs, _searchQuery) { songs, query ->
@@ -182,10 +191,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _isOnlineSearchLoading = MutableStateFlow(false)
     val isOnlineSearchLoading: StateFlow<Boolean> = _isOnlineSearchLoading.asStateFlow()
 
-    // Lyrics
+    // Lyrics + per-song timing calibration offset
     val lyricsManager = app.lyricsManager
     private val _lyricsState = MutableStateFlow(LyricsState())
     val lyricsState: StateFlow<LyricsState> = _lyricsState.asStateFlow()
+
+    private val _lyricsOffsetMs = MutableStateFlow(0L)
+    val lyricsOffsetMs: StateFlow<Long> = _lyricsOffsetMs.asStateFlow()
 
     // Navigation drill down (detail screens inside Library/Playlists)
     private val _selectedAlbum = MutableStateFlow<Album?>(null)
@@ -207,17 +219,32 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val playlistSongs: StateFlow<List<Song>> = _playlistSongs.asStateFlow()
 
     init {
-        // Debounce search
+        // Instant local search filtering WITHOUT polluting search history on every keystroke
         viewModelScope.launch {
             combine(_searchQuery.debounce(250).distinctUntilChanged(), _searchCategory) { query, category ->
                 query to category
             }.collect { (query, category) ->
                 if (query.isNotBlank()) {
-                    val result = repository.search(query, category)
-                    _searchResult.value = result
-                    repository.addSearchHistory(query)
+                    _searchResult.value = repository.search(query, category)
                 } else {
                     _searchResult.value = SearchResult()
+                }
+            }
+        }
+
+        // Debounced online search when in Online mode (min 2 chars to avoid spamming mirrors)
+        viewModelScope.launch {
+            combine(_searchQuery.debounce(420).distinctUntilChanged(), _searchMode) { query, mode ->
+                query to mode
+            }.collect { (query, mode) ->
+                if (mode == 1) {
+                    if (query.trim().length >= 2) {
+                        searchOnline(query, immediate = true)
+                    } else if (query.isBlank()) {
+                        onlineSearchJob?.cancel()
+                        _onlineSearchResults.value = emptyList()
+                        _isOnlineSearchLoading.value = false
+                    }
                 }
             }
         }
@@ -237,12 +264,94 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun scheduleHistoryCommitCheck() {
+        historyCommitJob?.cancel()
+        val capturedQuery = _searchQuery.value.trim()
+        if (capturedQuery.length < 2) return
+
+        historyCommitJob = viewModelScope.launch {
+            val elapsed = System.currentTimeMillis() - lastQueryEditAtMs
+            val remaining = (2000L - elapsed).coerceAtLeast(0L)
+            if (remaining > 0L) {
+                kotlinx.coroutines.delay(remaining)
+            }
+            // Verify query didn't change while waiting 2 seconds and search is not mid-flight
+            if (_searchQuery.value.trim() != capturedQuery) return@launch
+            if (_searchMode.value == 1 && _isOnlineSearchLoading.value) {
+                // Wait briefly until loading settles (up to 4s) before checking results
+                var waited = 0L
+                while (_isOnlineSearchLoading.value && waited < 4000L) {
+                    kotlinx.coroutines.delay(150L)
+                    waited += 150L
+                    if (_searchQuery.value.trim() != capturedQuery) return@launch
+                }
+            }
+            commitSearchHistoryIfValid(capturedQuery)
+        }
+    }
+
+    private suspend fun commitSearchHistoryIfValid(trimmedQuery: String) {
+        if (trimmedQuery.length < 2) return
+        if (trimmedQuery == lastSavedHistoryQuery) return
+        val hasResults = if (_searchMode.value == 1) {
+            _onlineSearchResults.value.isNotEmpty()
+        } else {
+            !_searchResult.value.isEmpty
+        }
+        if (hasResults) {
+            lastSavedHistoryQuery = trimmedQuery
+            repository.addSearchHistory(trimmedQuery)
+        }
+    }
+
     fun onSearchQueryChanged(query: String) {
         _searchQuery.value = query
+        lastQueryEditAtMs = System.currentTimeMillis()
+        if (query.isBlank()) {
+            historyCommitJob?.cancel()
+            onlineSearchJob?.cancel()
+            _onlineSearchResults.value = emptyList()
+            _isOnlineSearchLoading.value = false
+        } else {
+            scheduleHistoryCommitCheck()
+        }
     }
 
     fun setSearchQuery(query: String) {
-        _searchQuery.value = query
+        onSearchQueryChanged(query)
+    }
+
+    fun setSearchMode(mode: Int) {
+        _searchMode.value = mode
+        val q = _searchQuery.value.trim()
+        if (mode == 1 && q.length >= 2) {
+            searchOnline(q, immediate = true)
+        }
+        if (q.length >= 2) {
+            scheduleHistoryCommitCheck()
+        }
+    }
+
+    fun submitSearchQuery() {
+        val q = _searchQuery.value.trim()
+        if (q.isBlank()) return
+        if (_searchMode.value == 1) {
+            searchOnline(q, immediate = true)
+        }
+        viewModelScope.launch {
+            commitSearchHistoryIfValid(q)
+        }
+    }
+
+    fun commitHistoryOnResultSelected() {
+        val q = _searchQuery.value.trim()
+        if (q.length < 2) return
+        viewModelScope.launch {
+            if (q != lastSavedHistoryQuery) {
+                lastSavedHistoryQuery = q
+                repository.addSearchHistory(q)
+            }
+        }
     }
 
     fun setSearchCategory(category: SearchCategory) {
@@ -388,6 +497,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun addSongToPlaylist(playlistId: Long, songId: Long) {
         viewModelScope.launch {
+            // If song came from YouTube Music Search / online queue, persist in online_songs first
+            val candidate = _songToAddToPlaylist.value?.takeIf { it.id == songId }
+                ?: playbackState.value.queue.find { it.id == songId }
+                ?: playbackState.value.currentSong?.takeIf { it.id == songId }
+            if (candidate != null && (candidate.id < 0 || candidate.contentUriString.startsWith("http") || candidate.contentUriString.startsWith("online://"))) {
+                repository.saveOnlineSong(candidate)
+            }
             repository.addSongToPlaylist(playlistId, songId)
         }
     }
@@ -489,24 +605,29 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun connectSpotifyWithWebToken(rawInput: String, onDone: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val ok = spotifyManager.connectWithWebTokenOrCookie(rawInput)
+            onDone(ok)
+        }
+    }
+
     fun fetchSpotifyPlaylists() {
         viewModelScope.launch {
             spotifyManager.fetchUserPlaylists()
         }
     }
 
-    fun importSpotifyPlaylist(playlist: SpotifyPlaylist, onDone: () -> Unit = {}) {
+    fun importSpotifyPlaylist(playlist: SpotifyPlaylist, onDone: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
-            spotifyManager.importPlaylist(playlist)
-            repository.scanLibrary()
-            onDone()
+            val res = spotifyManager.importPlaylist(playlist)
+            onDone(res != null)
         }
     }
 
     fun importSpotifyPlaylistByUrl(urlOrId: String, onDone: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
             val res = spotifyManager.importPublicPlaylistByUrl(urlOrId)
-            repository.scanLibrary()
             onDone(res != null)
         }
     }
@@ -516,33 +637,55 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ==========================================
-    // YOUTUBE MUSIC ONLINE STREAMING
+    // ONLINE STREAMING SEARCH & PLAYBACK
     // ==========================================
-    fun searchOnline(query: String) {
-        if (query.isBlank()) {
+    fun searchOnline(query: String, immediate: Boolean = false) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) {
+            onlineSearchJob?.cancel()
             _onlineSearchResults.value = emptyList()
+            _isOnlineSearchLoading.value = false
             return
         }
-        viewModelScope.launch {
+        onlineSearchJob?.cancel()
+        onlineSearchJob = viewModelScope.launch {
+            if (!immediate) {
+                kotlinx.coroutines.delay(420L)
+            }
             _isOnlineSearchLoading.value = true
-            val results = youTubeStreamManager.search(query)
-            _onlineSearchResults.value = results
-            _isOnlineSearchLoading.value = false
+            val results = youTubeStreamManager.search(trimmed)
+            if (_searchQuery.value.trim() == trimmed) {
+                _onlineSearchResults.value = results
+                _isOnlineSearchLoading.value = false
+                if (results.isNotEmpty()) {
+                    scheduleHistoryCommitCheck()
+                }
+            } else {
+                _isOnlineSearchLoading.value = false
+            }
         }
     }
 
     fun playOnlineTrack(track: OnlineTrack) {
-        viewModelScope.launch {
-            val streamUrl = youTubeStreamManager.resolveStreamUrl(track.id)
-            val song = track.toSong(streamUrl)
-            controllerManager.playSong(song)
-        }
+        commitHistoryOnResultSelected()
+        val queue = _onlineSearchResults.value.map { it.toSong() }
+        val target = queue.find { it.title == track.title && it.artist == track.artist } ?: track.toSong()
+        controllerManager.playSong(target, if (queue.isNotEmpty()) queue else listOf(target))
+    }
+
+    fun retryPlayback() {
+        controllerManager.retryCurrentTrack()
+    }
+
+    fun clearPlaybackError() {
+        controllerManager.clearError()
     }
 
     // ==========================================
-    // DYNAMIC MULTI-SOURCE & DUAL LYRICS
+    // DYNAMIC MULTI-SOURCE & BETTERLYRICS ENGINE
     // ==========================================
     fun loadLyrics(song: Song) {
+        _lyricsOffsetMs.value = preferencesManager.getLyricsOffset(song.id)
         viewModelScope.launch {
             _lyricsState.value = _lyricsState.value.copy(
                 title = song.title,
@@ -557,6 +700,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             )
             _lyricsState.value = state
         }
+    }
+
+    fun nudgeLyricsOffset(songId: Long, deltaMs: Long) {
+        val next = (_lyricsOffsetMs.value + deltaMs).coerceIn(-5000L, 5000L)
+        _lyricsOffsetMs.value = next
+        preferencesManager.setLyricsOffset(songId, next)
+    }
+
+    fun resetLyricsOffset(songId: Long) {
+        _lyricsOffsetMs.value = 0L
+        preferencesManager.setLyricsOffset(songId, 0L)
     }
 
     fun searchLyricsManually(query: String) {
