@@ -50,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -179,6 +180,8 @@ fun EqualizerSheet(
                 // Interactive Frequency Response Spectrum Chart Canvas
                 val primaryColor = MaterialTheme.colorScheme.primary
                 val outlineColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                val curvePath = remember { Path() }
+                val fillPath = remember { Path() }
 
                 Card(
                     shape = RoundedCornerShape(20.dp),
@@ -227,24 +230,22 @@ fun EqualizerSheet(
                                     Offset(x, y)
                                 }
 
-                                // Build smooth spline path
-                                val curvePath = Path().apply {
-                                    moveTo(bandPoints.first().x, bandPoints.first().y)
-                                    for (i in 0 until bandPoints.size - 1) {
-                                        val p0 = bandPoints[i]
-                                        val p1 = bandPoints[i + 1]
-                                        val cX = (p0.x + p1.x) / 2f
-                                        cubicTo(cX, p0.y, cX, p1.y, p1.x, p1.y)
-                                    }
+                                // Build smooth spline path (zero-alloc)
+                                curvePath.reset()
+                                curvePath.moveTo(bandPoints.first().x, bandPoints.first().y)
+                                for (i in 0 until bandPoints.size - 1) {
+                                    val p0 = bandPoints[i]
+                                    val p1 = bandPoints[i + 1]
+                                    val cX = (p0.x + p1.x) / 2f
+                                    curvePath.cubicTo(cX, p0.y, cX, p1.y, p1.x, p1.y)
                                 }
 
                                 // Gradient Fill beneath curve
-                                val fillPath = Path().apply {
-                                    addPath(curvePath)
-                                    lineTo(w, h)
-                                    lineTo(0f, h)
-                                    close()
-                                }
+                                fillPath.reset()
+                                fillPath.addPath(curvePath)
+                                fillPath.lineTo(w, h)
+                                fillPath.lineTo(0f, h)
+                                fillPath.close()
                                 drawPath(
                                     fillPath,
                                     brush = Brush.verticalGradient(

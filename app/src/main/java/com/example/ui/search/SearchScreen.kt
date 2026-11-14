@@ -34,6 +34,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SearchOff
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -52,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -59,23 +61,28 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.model.SearchCategory
 import com.example.model.Song
+import com.example.online.YouTubeStreamManager
 import com.example.ui.animation.HapticType
 import com.example.ui.animation.bouncyClickable
 import com.example.ui.animation.performHapticFeedback
 import com.example.ui.components.AlbumCard
 import com.example.ui.components.AnimatedSoundwaveBars
 import com.example.ui.components.ArtistListItem
+import com.example.ui.components.CircularWavyProgressIndicator
 import com.example.ui.components.ConnectedGroupItem
 import com.example.ui.components.EmptyStateView
 import com.example.ui.components.ExpressiveConnectedButtonGroup
-import com.example.ui.components.ExpressiveLoadingIndicator
+import com.example.ui.components.ExpressiveOvalChoiceChip
 import com.example.ui.components.ExpressiveSectionHeader
 import com.example.ui.components.SongListItem
 import com.example.ui.components.groupedItemShape
+import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.viewmodel.MusicViewModel
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -96,9 +103,12 @@ fun SearchScreen(
 
     val onlineResults by viewModel.onlineSearchResults.collectAsStateWithLifecycle()
     val isOnlineLoading by viewModel.isOnlineSearchLoading.collectAsStateWithLifecycle()
+    val onlineSourceFilter by viewModel.onlineSourceFilter.collectAsStateWithLifecycle()
 
     val view = LocalView.current
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+    val profile = LocalPerformanceProfile.current
     val onlineAccent = MaterialTheme.colorScheme.tertiary
     val onlineContainer = MaterialTheme.colorScheme.tertiaryContainer
 
@@ -113,7 +123,6 @@ fun SearchScreen(
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
         )
 
-        // M3 Expressive Connected Switcher: Local Library vs Online Streaming
         val modeItems = remember {
             listOf(
                 ConnectedGroupItem("Медиатека", Icons.Rounded.Folder, "search_mode_local"),
@@ -131,7 +140,6 @@ fun SearchScreen(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // Pill Search Input Bar
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { viewModel.onSearchQueryChanged(it) },
@@ -310,7 +318,26 @@ fun SearchScreen(
                 }
             }
         } else {
-            // ONLINE MULTI-ENGINE STREAMING SEARCH
+            // ONLINE MULTI-SOURCE STREAMING SEARCH
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(YouTubeStreamManager.SOURCE_FILTERS, key = { it.id }) { source ->
+                    ExpressiveOvalChoiceChip(
+                        label = source.label,
+                        selected = onlineSourceFilter == source.id,
+                        onClick = { viewModel.setOnlineSourceFilter(source.id) },
+                        selectedContainerColor = onlineContainer,
+                        selectedContentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                        minHeight = 36.dp,
+                        fontSizeSp = 12f,
+                        modifier = Modifier.testTag("online_source_filter_${source.id}")
+                    )
+                }
+            }
+
             if (isOnlineLoading) {
                 Box(
                     modifier = Modifier
@@ -319,14 +346,14 @@ fun SearchScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        ExpressiveLoadingIndicator(
+                        CircularWavyProgressIndicator(
                             size = 58.dp,
                             color = onlineAccent,
-                            containerColor = onlineContainer.copy(alpha = 0.55f)
+                            trackColor = onlineContainer.copy(alpha = 0.45f)
                         )
                         Spacer(modifier = Modifier.height(14.dp))
                         Text(
-                            text = "Онлайн-поиск...",
+                            text = "Онлайн-поиск по источникам...",
                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -347,7 +374,7 @@ fun SearchScreen(
                     EmptyStateView(
                         icon = Icons.Rounded.Cloud,
                         title = "Онлайн-стриминг музыки",
-                        subtitle = "Введите название песни или исполнителя, чтобы слушать музыку онлайн из нескольких источников",
+                        subtitle = "Ищите треки в YouTube, Audius, JioSaavn, Archive.org и Deezer. Выбирайте лучшие версии на лету.",
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -360,7 +387,7 @@ fun SearchScreen(
                     EmptyStateView(
                         icon = Icons.Rounded.SearchOff,
                         title = "Ничего не найдено онлайн",
-                        subtitle = "Попробуйте изменить запрос или повторить поиск",
+                        subtitle = "Попробуйте другой источник или повторите поиск",
                         modifier = Modifier.weight(1f, fill = false)
                     )
                     Spacer(modifier = Modifier.height(12.dp))
@@ -376,7 +403,7 @@ fun SearchScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 128.dp, top = 8.dp)
+                    contentPadding = PaddingValues(bottom = 128.dp, top = 6.dp)
                 ) {
                     item(key = "online_header", contentType = "header") {
                         Text(
@@ -421,7 +448,7 @@ fun SearchScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Box(
@@ -433,7 +460,12 @@ fun SearchScreen(
                                 ) {
                                     if (!track.thumbnailUrl.isNullOrEmpty()) {
                                         AsyncImage(
-                                            model = track.thumbnailUrl,
+                                            model = ImageRequest.Builder(context)
+                                                .data(track.thumbnailUrl)
+                                                .size(profile.thumbnailMaxPx)
+                                                .allowRgb565(profile.allowRgb565)
+                                                .crossfade(profile.crossfadeImages)
+                                                .build(),
                                             contentDescription = track.title,
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize()
@@ -471,12 +503,47 @@ fun SearchScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = "${track.artist} • ${Song.formatDuration(track.durationMs)}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = onlineContainer.copy(alpha = 0.72f)
+                                        ) {
+                                            Text(
+                                                text = track.sourceDisplayName,
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                ),
+                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = "${track.artist} • ${Song.formatDuration(track.durationMs)}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        performHapticFeedback(view, HapticType.LIGHT)
+                                        viewModel.openSourceSwitcherForOnlineTrack(track)
+                                    },
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .testTag("online_track_switcher_${track.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.SwapHoriz,
+                                        contentDescription = "Другие версии и источники",
+                                        tint = onlineAccent
                                     )
                                 }
 
@@ -485,7 +552,7 @@ fun SearchScreen(
                                         performHapticFeedback(view, HapticType.LIGHT)
                                         viewModel.setSongToAddToPlaylist(track.toSong())
                                     },
-                                    modifier = Modifier.size(48.dp)
+                                    modifier = Modifier.size(44.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.PlaylistAdd,
@@ -499,7 +566,7 @@ fun SearchScreen(
                                         performHapticFeedback(view, HapticType.LIGHT)
                                         viewModel.addToQueue(track.toSong())
                                     },
-                                    modifier = Modifier.size(48.dp)
+                                    modifier = Modifier.size(44.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
@@ -591,4 +658,3 @@ private fun SearchHistorySection(
         }
     }
 }
-

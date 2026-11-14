@@ -18,9 +18,10 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.R
+import com.example.ui.theme.LocalPerformanceProfile
 
 /**
- * Universal artwork component with standard VectorDrawable placeholder.
+ * Universal artwork component with adaptive Coil decode sizing & RGB_565 option for low-RAM devices.
  */
 @Composable
 fun TrackArtwork(
@@ -28,8 +29,12 @@ fun TrackArtwork(
     contentDescription: String?,
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 12.dp,
-    contentScale: ContentScale = ContentScale.Crop
+    contentScale: ContentScale = ContentScale.Crop,
+    decodeSizePx: Int? = null
 ) {
+    val profile = LocalPerformanceProfile.current
+    val targetPx = decodeSizePx ?: profile.thumbnailMaxPx
+
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(cornerRadius))
@@ -40,7 +45,9 @@ fun TrackArtwork(
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
                     .data(artUriString)
-                    .crossfade(true)
+                    .size(targetPx)
+                    .allowRgb565(profile.allowRgb565)
+                    .crossfade(profile.crossfadeImages)
                     .placeholder(R.drawable.ic_album_placeholder)
                     .error(R.drawable.ic_album_placeholder)
                     .build(),

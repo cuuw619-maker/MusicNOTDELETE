@@ -15,6 +15,13 @@ class PreferencesManager(context: Context) {
         SYSTEM, LIGHT, DARK
     }
 
+    enum class PerformanceMode(val label: String, val subtitle: String) {
+        AUTO("Авто", "Подбирается под устройство"),
+        POTATO("Картошка (Макс. FPS)", "Без размытий, лёгкие обложки и 60 Гц"),
+        BALANCED("Баланс", "Плавные анимации и экономные эффекты"),
+        FLAGSHIP("Флагман (Шейдеры)", "AGSL-шейдеры, блюр и максимум деталей")
+    }
+
     private val prefs: SharedPreferences =
         context.getSharedPreferences("imux_player_prefs", Context.MODE_PRIVATE)
 
@@ -139,6 +146,10 @@ class PreferencesManager(context: Context) {
     private val _selectedDestination = MutableStateFlow(loadSelectedDestination())
     val selectedDestination: StateFlow<NavDestination> = _selectedDestination.asStateFlow()
 
+    // Adaptive Graphics & Optimization Profile
+    private val _performanceMode = MutableStateFlow(loadPerformanceMode())
+    val performanceMode: StateFlow<PerformanceMode> = _performanceMode.asStateFlow()
+
     private fun loadThemeMode(): ThemeMode {
         val name = prefs.getString(KEY_THEME_MODE, ThemeMode.SYSTEM.name) ?: ThemeMode.SYSTEM.name
         return try {
@@ -173,6 +184,20 @@ class PreferencesManager(context: Context) {
         } catch (e: Exception) {
             NavDestination.HOME
         }
+    }
+
+    private fun loadPerformanceMode(): PerformanceMode {
+        val name = prefs.getString(KEY_PERFORMANCE_MODE, PerformanceMode.AUTO.name) ?: PerformanceMode.AUTO.name
+        return try {
+            PerformanceMode.valueOf(name)
+        } catch (_: Exception) {
+            PerformanceMode.AUTO
+        }
+    }
+
+    fun setPerformanceMode(mode: PerformanceMode) {
+        prefs.edit().putString(KEY_PERFORMANCE_MODE, mode.name).apply()
+        _performanceMode.value = mode
     }
 
     fun setThemeMode(mode: ThemeMode) {
@@ -477,5 +502,6 @@ class PreferencesManager(context: Context) {
         private const val KEY_PLAYER_VOLUME = "key_player_volume"
         private const val KEY_SORT_ORDER = "key_sort_order"
         private const val KEY_SELECTED_DESTINATION = "key_selected_destination"
+        private const val KEY_PERFORMANCE_MODE = "key_performance_mode"
     }
 }

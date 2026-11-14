@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -79,6 +80,7 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontStyle
@@ -90,18 +92,29 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.lyrics.DualLyricLine
 import com.example.lyrics.LyricSpeaker
 import com.example.lyrics.LyricWord
 import com.example.model.Song
+import com.example.ui.components.AgslAmbientGlowCanvas
+import com.example.ui.components.CircularWavyProgressIndicator
 import com.example.ui.components.ConnectedGroupItem
 import com.example.ui.components.ExpressiveConnectedButtonGroup
-import com.example.ui.components.ExpressiveLoadingIndicator
+import com.example.ui.components.ExpressiveHorizontalFloatingToolbar
+import com.example.ui.components.FloatingToolbarStyle
+import com.example.ui.components.LinearWavyProgressIndicator
+import com.example.ui.components.ToolbarActionItem
+import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.theme.MonoFontFamily
+import com.example.ui.theme.PerformanceProfile
+import com.example.ui.theme.SpringTokens
 import com.example.ui.util.HapticFeedbackType
 import com.example.ui.util.rememberHapticHelper
 import com.example.ui.viewmodel.MusicViewModel
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.sin
 
 enum class LyricsDisplayMode {
     SYNCED,
@@ -122,6 +135,8 @@ fun LyricsBottomSheet(
     val haptic = rememberHapticHelper()
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
+    val context = LocalContext.current
+    val profile = LocalPerformanceProfile.current
 
     val lyricsState by viewModel.lyricsState.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
@@ -188,7 +203,6 @@ fun LyricsBottomSheet(
         }
     }
 
-    // Simultaneous overlapping active intervals (supports duets singing at the same time!)
     val activeIndices by remember(effectiveLines) {
         derivedStateOf {
             if (effectiveLines.isEmpty()) emptySet()
@@ -227,17 +241,19 @@ fun LyricsBottomSheet(
         modifier = Modifier.testTag("lyrics_bottom_sheet")
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            FluidBlurredArtworkBackdrop(
+            AdaptiveLyricsBackdrop(
                 artworkUri = song.albumArtUriString,
                 isPlaying = playbackState.isPlaying,
-                accentColor = MaterialTheme.colorScheme.primary
+                accentColor = MaterialTheme.colorScheme.primary,
+                secondaryColor = MaterialTheme.colorScheme.tertiary,
+                profile = profile
             )
 
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 20.dp)
-                    .padding(top = 14.dp, bottom = 20.dp)
+                    .padding(top = 14.dp)
             ) {
                 // Sheet Handle
                 Box(
@@ -270,7 +286,12 @@ fun LyricsBottomSheet(
                         ) {
                             if (!song.albumArtUriString.isNullOrBlank()) {
                                 AsyncImage(
-                                    model = song.albumArtUriString,
+                                    model = ImageRequest.Builder(context)
+                                        .data(song.albumArtUriString)
+                                        .size(profile.thumbnailMaxPx)
+                                        .allowRgb565(profile.allowRgb565)
+                                        .crossfade(profile.crossfadeImages)
+                                        .build(),
                                     contentDescription = null,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()
@@ -331,62 +352,30 @@ fun LyricsBottomSheet(
                         }
                     }
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = { isOffsetExpanded = !isOffsetExpanded },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Tune,
-                                contentDescription = "Калибровка тайминга",
-                                tint = if (isOffsetExpanded || lyricsOffsetMs != 0L)
-                                    MaterialTheme.colorScheme.primary
-                                else Color.White.copy(alpha = 0.85f)
-                            )
-                        }
-                        IconButton(
-                            onClick = { isSearchExpanded = !isSearchExpanded },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Search,
-                                contentDescription = "Поиск текста",
-                                tint = if (isSearchExpanded) MaterialTheme.colorScheme.primary
-                                else Color.White.copy(alpha = 0.85f)
-                            )
-                        }
-                        IconButton(
-                            onClick = { viewModel.loadLyrics(song) },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Refresh,
-                                contentDescription = "Обновить текст",
-                                tint = Color.White.copy(alpha = 0.85f)
-                            )
-                        }
-                        IconButton(
-                            onClick = { isEditMode = !isEditMode },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.EditNote,
-                                contentDescription = "Редактировать текст",
-                                tint = if (isEditMode) MaterialTheme.colorScheme.primary
-                                else Color.White.copy(alpha = 0.85f)
-                            )
-                        }
-                        IconButton(
-                            onClick = onDismiss,
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "Закрыть",
-                                tint = Color.White.copy(alpha = 0.85f)
-                            )
-                        }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("lyrics_close_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Закрыть",
+                            tint = Color.White.copy(alpha = 0.9f)
+                        )
                     }
+                }
+
+                if (lyricsState.isLoading) {
+                    LinearWavyProgressIndicator(
+                        isPlaying = true,
+                        color = Color.White,
+                        trackColor = Color.White.copy(alpha = 0.16f),
+                        height = 8.dp,
+                        strokeWidth = 2.6.dp,
+                        amplitudeDp = 2.dp,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
                 }
 
                 // Timing Offset Calibration Capsule
@@ -538,10 +527,10 @@ fun LyricsBottomSheet(
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            ExpressiveLoadingIndicator(
+                            CircularWavyProgressIndicator(
                                 size = 56.dp,
                                 color = Color.White,
-                                containerColor = Color.White.copy(alpha = 0.14f)
+                                trackColor = Color.White.copy(alpha = 0.18f)
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
@@ -552,7 +541,11 @@ fun LyricsBottomSheet(
                         }
                     }
                 } else if (isEditMode) {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(bottom = 86.dp)
+                    ) {
                         Text(
                             text = "Поддерживается LRC (<00:12.30>Слово, v1:/v2:/both:/bg:), TTML и SRT:",
                             style = MaterialTheme.typography.labelMedium,
@@ -638,7 +631,7 @@ fun LyricsBottomSheet(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .verticalScroll(rememberScrollState())
-                                    .padding(vertical = 16.dp)
+                                    .padding(top = 16.dp, bottom = 110.dp)
                             ) {
                                 Text(
                                     text = plainContent,
@@ -658,12 +651,13 @@ fun LyricsBottomSheet(
                             LazyColumn(
                                 state = listState,
                                 modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(top = 48.dp, bottom = 140.dp),
+                                contentPadding = PaddingValues(top = 42.dp, bottom = 148.dp),
                                 verticalArrangement = Arrangement.spacedBy(18.dp)
                             ) {
                                 itemsIndexed(
                                     items = effectiveLines,
-                                    key = { idx, item -> "${idx}_${item.timestampMs}_${item.speaker.name}" }
+                                    key = { idx, item -> "${idx}_${item.timestampMs}_${item.speaker.name}" },
+                                    contentType = { _, item -> if (item.isInstrumental) "interlude" else "lyric" }
                                 ) { index, line ->
                                     val isActive = index in activeIndices
                                     val distance = if (isActive) {
@@ -672,13 +666,14 @@ fun LyricsBottomSheet(
                                         activeIndices.minOfOrNull { abs(index - it) } ?: abs(index - primaryActiveIndex)
                                     }
 
-                                    BetterLyricLineItem(
+                                    KineticLyricLineItem(
                                         line = line,
                                         isActive = isActive,
                                         distanceFromActive = distance,
                                         hasDuet = hasDuetLines,
                                         currentTimeProvider = currentTimeProvider,
                                         showSecondary = showSecondary,
+                                        profile = profile,
                                         onClick = {
                                             if (line.timestampMs >= 0) {
                                                 haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
@@ -692,101 +687,77 @@ fun LyricsBottomSheet(
                     }
                 }
             }
+
+            // Bottom M3 Expressive Floating Toolbar for quick live controls
+            ExpressiveHorizontalFloatingToolbar(
+                actions = listOf(
+                    ToolbarActionItem(
+                        icon = Icons.Rounded.Tune,
+                        contentDescription = "Калибровка тайминга",
+                        isActive = isOffsetExpanded || lyricsOffsetMs != 0L,
+                        testTag = "lyrics_toolbar_offset",
+                        onClick = { isOffsetExpanded = !isOffsetExpanded }
+                    ),
+                    ToolbarActionItem(
+                        icon = Icons.Rounded.Search,
+                        contentDescription = "Поиск текста",
+                        isActive = isSearchExpanded,
+                        testTag = "lyrics_toolbar_search",
+                        onClick = { isSearchExpanded = !isSearchExpanded }
+                    ),
+                    ToolbarActionItem(
+                        icon = Icons.Rounded.Refresh,
+                        contentDescription = "Обновить текст",
+                        testTag = "lyrics_toolbar_refresh",
+                        onClick = { viewModel.loadLyrics(song) }
+                    ),
+                    ToolbarActionItem(
+                        icon = Icons.Rounded.EditNote,
+                        contentDescription = "Редактировать текст",
+                        isActive = isEditMode,
+                        testTag = "lyrics_toolbar_edit",
+                        onClick = { isEditMode = !isEditMode }
+                    )
+                ),
+                style = FloatingToolbarStyle.STANDARD,
+                containerColor = Color(0xD91A1D26),
+                contentColor = Color.White,
+                activeContainerColor = MaterialTheme.colorScheme.primary,
+                activeContentColor = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 14.dp)
+            )
         }
     }
 }
 
+/**
+ * Hardware-adaptive Lyrics Backdrop:
+ * - Flagship (Android 13+): real-time AGSL RuntimeShader plasma mesh + subtle low-res blurred art layer
+ * - Balanced: single downsampled artwork + single RenderEffect blur
+ * - Potato: ultra-light 64px thumbnail with zero live blurs and zero overlapping full-res bitmaps
+ */
 @Composable
-private fun FluidBlurredArtworkBackdrop(
+private fun AdaptiveLyricsBackdrop(
     artworkUri: String?,
     isPlaying: Boolean,
-    accentColor: Color
+    accentColor: Color,
+    secondaryColor: Color,
+    profile: PerformanceProfile
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "artwork_warp")
-
-    val driftAngle1 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 36000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rot1"
-    )
-    val driftAngle2 by infiniteTransition.animateFloat(
-        initialValue = 180f,
-        targetValue = -180f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 48000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rot2"
-    )
-    val breatheScale by infiniteTransition.animateFloat(
-        initialValue = 1.25f,
-        targetValue = 1.62f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 9000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "breathe"
-    )
-    val warpOffset by infiniteTransition.animateFloat(
-        initialValue = -70f,
-        targetValue = 70f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 13000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "warp"
-    )
-
-    val blurMod = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        Modifier.blur(75.dp)
-    } else {
-        Modifier
-    }
-
-    val motionFactor by animateFloatAsState(
-        targetValue = if (isPlaying) 1f else 0.15f,
-        animationSpec = tween(700),
-        label = "bg_play_factor"
-    )
+    val context = LocalContext.current
 
     Box(modifier = Modifier.fillMaxSize()) {
-        if (!artworkUri.isNullOrBlank()) {
-            AsyncImage(
-                model = artworkUri,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        val s = 1.15f + (breatheScale - 1.15f) * motionFactor
-                        scaleX = s * 1.15f
-                        scaleY = s
-                        rotationZ = driftAngle1 * 0.25f * motionFactor
-                        translationX = warpOffset * 0.8f * motionFactor
-                        translationY = -warpOffset * 0.5f * motionFactor
-                        alpha = 0.85f
-                    }
-                    .then(blurMod)
-            )
-            AsyncImage(
-                model = artworkUri,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = 1.45f
-                        scaleY = 1.55f
-                        rotationZ = driftAngle2 * 0.35f * motionFactor
-                        translationX = -warpOffset * motionFactor
-                        translationY = warpOffset * 0.7f * motionFactor
-                        alpha = 0.55f
-                    }
-                    .then(blurMod)
+        if (profile.enableShaders && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            AgslAmbientGlowCanvas(
+                isPlaying = isPlaying,
+                primaryColor = accentColor,
+                secondaryColor = secondaryColor,
+                accentColor = Color(0xFF3E68FF),
+                baseIntensity = if (isPlaying) 0.72f else 0.35f,
+                modifier = Modifier.fillMaxSize()
             )
         } else {
             Box(
@@ -795,12 +766,54 @@ private fun FluidBlurredArtworkBackdrop(
                     .background(
                         Brush.radialGradient(
                             colors = listOf(
-                                accentColor.copy(alpha = 0.45f),
+                                accentColor.copy(alpha = 0.36f),
                                 Color(0xFF141824),
                                 Color(0xFF0A0B0E)
                             )
                         )
                     )
+            )
+        }
+
+        if (!artworkUri.isNullOrBlank()) {
+            val blurModifier = if (profile.enableLiveBlur && !profile.isPotato && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Modifier.blur(54.dp)
+            } else {
+                Modifier
+            }
+            val driftScale = if (profile.isPotato) {
+                1.18f
+            } else {
+                val infiniteTransition = rememberInfiniteTransition(label = "artwork_warp_opt")
+                val breathe by infiniteTransition.animateFloat(
+                    initialValue = 1.18f,
+                    targetValue = 1.42f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 11000, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "breathe_opt"
+                )
+                if (isPlaying) breathe else 1.20f
+            }
+
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(artworkUri)
+                    .size(profile.lyricBackdropResolutionPx)
+                    .allowRgb565(true)
+                    .crossfade(profile.crossfadeImages)
+                    .build(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = driftScale
+                        scaleY = driftScale
+                        alpha = if (profile.isPotato) 0.32f else if (profile.enableShaders) 0.36f else 0.56f
+                    }
+                    .then(blurModifier)
             )
         }
 
@@ -810,9 +823,9 @@ private fun FluidBlurredArtworkBackdrop(
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            Color(0xA608090D),
-                            Color(0x780A0C12),
-                            Color(0xC207080C)
+                            Color(0xB308090D),
+                            Color(0x800A0C12),
+                            Color(0xD907080C)
                         )
                     )
                 )
@@ -822,13 +835,14 @@ private fun FluidBlurredArtworkBackdrop(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun BetterLyricLineItem(
+private fun KineticLyricLineItem(
     line: DualLyricLine,
     isActive: Boolean,
     distanceFromActive: Int,
     hasDuet: Boolean,
     currentTimeProvider: () -> Long,
     showSecondary: Boolean,
+    profile: PerformanceProfile,
     onClick: () -> Unit
 ) {
     val isSecond = line.speaker == LyricSpeaker.SECOND
@@ -860,34 +874,46 @@ private fun BetterLyricLineItem(
 
     val targetScale = when {
         isActive && isBg -> 1.0f
-        isActive -> 1.03f
+        isActive -> 1.035f
         distanceFromActive == 1 -> 0.95f
         else -> 0.90f
     }
     val scale by animateFloatAsState(
         targetValue = targetScale,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = Spring.DampingRatioNoBouncy),
+        animationSpec = SpringTokens.spatialDefault(),
         label = "line_scale"
     )
 
     val targetAlpha = when {
         isActive && isBg -> 0.86f
         isActive -> 1f
-        distanceFromActive == 1 -> 0.54f
-        distanceFromActive == 2 -> 0.35f
+        distanceFromActive == 1 -> 0.56f
+        distanceFromActive == 2 -> 0.36f
         else -> 0.22f
     }
     val lineAlpha by animateFloatAsState(
         targetValue = targetAlpha,
-        animationSpec = tween(280),
+        animationSpec = tween(260),
         label = "line_alpha"
     )
 
-    val depthBlurModifier = if (!isActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+    val activeSlideOffsetDp by animateFloatAsState(
+        targetValue = when {
+            isActive -> 0f
+            isSecond -> 10f
+            isBoth -> 0f
+            else -> -8f
+        },
+        animationSpec = spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMediumLow),
+        label = "duet_slide_x"
+    )
+
+    // Depth blur is strictly disabled on Potato tier to preserve 60fps during scrolls
+    val depthBlurModifier = if (!isActive && profile.enableLiveBlur && !profile.isPotato && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         val radius = when (distanceFromActive) {
             1 -> 1.2.dp
-            2 -> 2.4.dp
-            else -> 3.6.dp
+            2 -> 2.2.dp
+            else -> 3.4.dp
         }
         Modifier.blur(radius)
     } else {
@@ -896,14 +922,14 @@ private fun BetterLyricLineItem(
 
     val targetContainerColor = when {
         !isActive || line.isInstrumental -> Color.Transparent
-        isSecond -> Color(0xFFA8E6FF).copy(alpha = 0.10f)
-        isBoth -> Color(0xFFFFE4A8).copy(alpha = 0.11f)
-        isBg -> Color.White.copy(alpha = 0.05f)
-        else -> Color.White.copy(alpha = 0.09f)
+        isSecond -> Color(0xFFA8E6FF).copy(alpha = 0.11f)
+        isBoth -> Color(0xFFFFE4A8).copy(alpha = 0.12f)
+        isBg -> Color.White.copy(alpha = 0.06f)
+        else -> Color.White.copy(alpha = 0.10f)
     }
     val containerBg by animateColorAsState(
         targetValue = targetContainerColor,
-        animationSpec = tween(250),
+        animationSpec = tween(240),
         label = "line_bg"
     )
 
@@ -914,12 +940,13 @@ private fun BetterLyricLineItem(
                 scaleX = scale
                 scaleY = scale
                 alpha = lineAlpha
+                translationX = activeSlideOffsetDp.dp.toPx()
             }
             .then(depthBlurModifier)
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(22.dp))
             .clickable(onClick = onClick),
         color = containerBg,
-        shape = RoundedCornerShape(20.dp)
+        shape = RoundedCornerShape(22.dp)
     ) {
         if (line.isInstrumental) {
             InstrumentalInterludeDots(
@@ -930,7 +957,7 @@ private fun BetterLyricLineItem(
             )
         } else {
             val fontSizeSp = if (isBg) 18.sp else 24.sp
-            val lineHeightSp = if (isBg) 25.sp else 32.sp
+            val lineHeightSp = if (isBg) 25.sp else 33.sp
 
             Column(
                 modifier = Modifier
@@ -938,15 +965,15 @@ private fun BetterLyricLineItem(
                     .padding(
                         start = if (isBg && !isSecond) 22.dp else 14.dp,
                         end = if (isBg && isSecond) 22.dp else 14.dp,
-                        top = if (isBg) 6.dp else 10.dp,
-                        bottom = if (isBg) 6.dp else 10.dp
+                        top = if (isBg) 7.dp else 11.dp,
+                        bottom = if (isBg) 7.dp else 11.dp
                     ),
                 horizontalAlignment = columnAlignment
             ) {
                 if (hasDuet && !line.speakerLabel.isNullOrBlank() && !isBg) {
                     Surface(
                         shape = CircleShape,
-                        color = voiceHighlightColor.copy(alpha = if (isActive) 0.22f else 0.10f),
+                        color = voiceHighlightColor.copy(alpha = if (isActive) 0.24f else 0.10f),
                         modifier = Modifier.padding(bottom = 5.dp)
                     ) {
                         Text(
@@ -955,7 +982,7 @@ private fun BetterLyricLineItem(
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Bold
                             ),
-                            color = voiceHighlightColor.copy(alpha = if (isActive) 0.95f else 0.72f),
+                            color = voiceHighlightColor.copy(alpha = if (isActive) 0.96f else 0.72f),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                         )
                     }
@@ -963,18 +990,30 @@ private fun BetterLyricLineItem(
 
                 if (isActive && line.words.isNotEmpty() && line.isSynced) {
                     FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(7.dp, flowAlignment),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, flowAlignment),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         line.words.forEach { word ->
-                            LetterSweepWord(
-                                word = word,
-                                highlightColor = voiceHighlightColor,
-                                fontSizeSp = if (isBg) 18 else 25,
-                                isItalic = isBg,
-                                currentTimeProvider = currentTimeProvider
-                            )
+                            if (profile.detailedPerCharWave && word.text.length in 1..20) {
+                                KineticSyllablePerCharWord(
+                                    word = word,
+                                    highlightColor = voiceHighlightColor,
+                                    fontSizeSp = if (isBg) 18 else 25,
+                                    isItalic = isBg,
+                                    enableGlow = profile.enableHeavyShadows,
+                                    currentTimeProvider = currentTimeProvider
+                                )
+                            } else {
+                                KineticWordWaveSweep(
+                                    word = word,
+                                    highlightColor = voiceHighlightColor,
+                                    fontSizeSp = if (isBg) 18 else 25,
+                                    isItalic = isBg,
+                                    enableGlow = profile.enableHeavyShadows,
+                                    currentTimeProvider = currentTimeProvider
+                                )
+                            }
                         }
                     }
                 } else {
@@ -1012,23 +1051,125 @@ private fun BetterLyricLineItem(
 }
 
 /**
- * Renders a single word with smooth left-to-right letter luminance sweep + soft glow & lift.
- * Reads [currentTimeProvider] strictly in Layer/Draw phases -> ZERO per-frame recompositions!
+ * Flagship Per-Character Kinetic Wave Renderer:
+ * Each character receives an elastic zoom crest (1.0x -> 1.16x), smooth vertical wave float,
+ * subtle horizontal breathing push, and glowing sweep without per-frame recomposition.
  */
 @Composable
-private fun LetterSweepWord(
+private fun KineticSyllablePerCharWord(
     word: LyricWord,
     highlightColor: Color,
     fontSizeSp: Int,
     isItalic: Boolean,
+    enableGlow: Boolean,
     currentTimeProvider: () -> Long
 ) {
     val wordStyle = MaterialTheme.typography.headlineSmall.copy(
         fontWeight = if (isItalic) FontWeight.Bold else FontWeight.ExtraBold,
         fontStyle = if (isItalic) FontStyle.Italic else FontStyle.Normal,
         fontSize = fontSizeSp.sp,
-        lineHeight = (fontSizeSp + 8).sp
+        lineHeight = (fontSizeSp + 9).sp
     )
+    val glowStyle = if (enableGlow) {
+        wordStyle.copy(
+            shadow = Shadow(
+                color = highlightColor.copy(alpha = 0.62f),
+                blurRadius = 14f
+            )
+        )
+    } else {
+        wordStyle
+    }
+
+    val totalDur = (word.endTimeMs - word.startTimeMs).coerceAtLeast(80L).toFloat()
+    val chars = word.text
+    val charCount = chars.length.coerceAtLeast(1)
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        for (i in 0 until charCount) {
+            val ch = chars[i].toString()
+            val cStart = i.toFloat() / charCount.toFloat()
+            val cEnd = (i + 1).toFloat() / charCount.toFloat()
+            val cMid = (cStart + cEnd) * 0.5f
+
+            Box(
+                modifier = Modifier.graphicsLayer {
+                    val nowMs = currentTimeProvider()
+                    val wordProgress = ((nowMs - word.startTimeMs).toFloat() / totalDur).coerceIn(0f, 1.35f)
+                    val isWordActive = wordProgress in 0f..1.25f
+
+                    val distFromWave = abs(wordProgress - cMid)
+                    val bell = if (isWordActive && distFromWave < 0.34f) {
+                        val norm = 1f - (distFromWave / 0.34f)
+                        sin(norm * (PI.toFloat() * 0.5f))
+                    } else 0f
+
+                    val zoom = 1.0f + 0.16f * bell
+                    scaleX = zoom
+                    scaleY = zoom
+                    translationY = ((-4.2f * bell) + if (wordProgress >= cEnd) -0.9f else 0f).dp.toPx()
+                    translationX = ((wordProgress - cMid).coerceIn(-0.4f, 0.4f) * -2.2f * bell).dp.toPx()
+                    if (enableGlow) {
+                        rotationZ = ((i % 2 * 2 - 1) * 1.6f * bell)
+                    }
+                }
+            ) {
+                Text(
+                    text = ch,
+                    style = wordStyle,
+                    color = highlightColor.copy(alpha = 0.32f)
+                )
+                Text(
+                    text = ch,
+                    style = glowStyle,
+                    color = highlightColor,
+                    modifier = Modifier.drawWithContent {
+                        val nowMs = currentTimeProvider()
+                        val wordProgress = ((nowMs - word.startTimeMs).toFloat() / totalDur).coerceIn(0f, 1f)
+                        val span = (cEnd - cStart).coerceAtLeast(0.01f)
+                        val charFill = ((wordProgress - cStart) / span).coerceIn(0f, 1f)
+                        if (charFill > 0f) {
+                            clipRect(right = size.width * charFill) {
+                                this@drawWithContent.drawContent()
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Low-End / Long-Word Optimized Kinetic Wave Renderer:
+ * Animates the entire word box with elastic zoom, wave lift, and smooth left-to-right gradient sweep
+ * using only 2 Text nodes total -> ideal for potato phones!
+ */
+@Composable
+private fun KineticWordWaveSweep(
+    word: LyricWord,
+    highlightColor: Color,
+    fontSizeSp: Int,
+    isItalic: Boolean,
+    enableGlow: Boolean,
+    currentTimeProvider: () -> Long
+) {
+    val wordStyle = MaterialTheme.typography.headlineSmall.copy(
+        fontWeight = if (isItalic) FontWeight.Bold else FontWeight.ExtraBold,
+        fontStyle = if (isItalic) FontStyle.Italic else FontStyle.Normal,
+        fontSize = fontSizeSp.sp,
+        lineHeight = (fontSizeSp + 9).sp
+    )
+    val glowStyle = if (enableGlow) {
+        wordStyle.copy(
+            shadow = Shadow(
+                color = highlightColor.copy(alpha = 0.55f),
+                blurRadius = 12f
+            )
+        )
+    } else {
+        wordStyle
+    }
     val duration = (word.endTimeMs - word.startTimeMs).coerceAtLeast(60L).toFloat()
 
     Box(
@@ -1036,11 +1177,15 @@ private fun LetterSweepWord(
             val nowMs = currentTimeProvider()
             val progress = ((nowMs - word.startTimeMs).toFloat() / duration).coerceIn(0f, 1f)
             val isCurrentWord = nowMs in word.startTimeMs..word.endTimeMs
+            val bell = if (isCurrentWord) sin(progress * PI.toFloat()).coerceIn(0f, 1f) else 0f
             val liftY = when {
-                isCurrentWord -> -2.2f * (1f - abs(progress - 0.5f) * 2f)
+                isCurrentWord -> -3.2f * bell
                 progress >= 1f -> -0.8f
                 else -> 0f
             }
+            val zoom = 1.0f + 0.09f * bell
+            scaleX = zoom
+            scaleY = zoom
             translationY = liftY.dp.toPx()
         }
     ) {
@@ -1052,12 +1197,7 @@ private fun LetterSweepWord(
 
         Text(
             text = word.text,
-            style = wordStyle.copy(
-                shadow = Shadow(
-                    color = highlightColor.copy(alpha = 0.52f),
-                    blurRadius = 12f
-                )
-            ),
+            style = glowStyle,
             color = highlightColor,
             modifier = Modifier.drawWithContent {
                 val nowMs = currentTimeProvider()

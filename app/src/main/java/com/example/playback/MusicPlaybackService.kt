@@ -9,18 +9,22 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import java.io.File
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
@@ -57,6 +61,8 @@ class MusicPlaybackService : MediaSessionService() {
 
     private var crossfadeJob: Job? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    @OptIn(UnstableApi::class)
+    private var simpleCache: SimpleCache? = null
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -138,7 +144,24 @@ class MusicPlaybackService : MediaSessionService() {
             }
         }
 
-        val mediaSourceFactory = DefaultMediaSourceFactory(headerAwareDataSourceFactory)
+        val cacheDataSourceFactory: DataSource.Factory = try {
+            val cacheDir = File(cacheDir, "exo_audio_cache")
+            val perfMode = app?.preferencesManager?.performanceMode?.value
+                ?: com.example.data.preferences.PreferencesManager.PerformanceMode.AUTO
+            val profile = com.example.ui.theme.resolvePerformanceProfile(this, perfMode)
+            val cacheBytes = profile.exoCacheMb.toLong() * 1024L * 1024L
+            val evictor = LeastRecentlyUsedCacheEvictor(cacheBytes)
+            val dbProvider = StandaloneDatabaseProvider(this)
+            val cache = SimpleCache(cacheDir, evictor, dbProvider).also { simpleCache = it }
+            CacheDataSource.Factory()
+                .setCache(cache)
+                .setUpstreamDataSourceFactory(headerAwareDataSourceFactory)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        } catch (_: Exception) {
+            headerAwareDataSourceFactory
+        }
+
+        val mediaSourceFactory = DefaultMediaSourceFactory(cacheDataSourceFactory)
 
         player = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
@@ -409,6 +432,11 @@ class MusicPlaybackService : MediaSessionService() {
             player.release()
             release()
             mediaSession = null
+        }
+        try {
+            simpleCache?.release()
+            simpleCache = null
+        } catch (_: Exception) {
         }
         super.onDestroy()
     }

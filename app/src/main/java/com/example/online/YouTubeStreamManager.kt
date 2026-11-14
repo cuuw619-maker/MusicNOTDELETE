@@ -20,6 +20,17 @@ import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
+data class OnlineSourceOption(
+    val id: String,
+    val label: String,
+    val badge: String
+)
+
+data class DeliveryEngineOption(
+    val id: String,
+    val label: String
+)
+
 data class OnlineTrack(
     val id: String,
     val title: String,
@@ -29,10 +40,14 @@ data class OnlineTrack(
     val thumbnailUrl: String? = null,
     val isOfficialAudio: Boolean = false,
     val sourceEngine: String = "youtube",
-    val directStreamUrl: String? = null
+    val directStreamUrl: String? = null,
+    val qualityBadge: String = defaultQualityBadgeForSource(sourceEngine)
 ) {
     val durationMs: Long
         get() = durationSeconds * 1000L
+
+    val sourceDisplayName: String
+        get() = displayNameForSource(sourceEngine)
 
     fun toSong(streamUrl: String? = null): Song {
         val uniqueId = -((("$sourceEngine:$id").hashCode().toLong() and 0x7FFFFFFFL) + 1000L)
@@ -46,14 +61,18 @@ data class OnlineTrack(
             durationMs = durationMs,
             contentUriString = uriStr,
             albumArtUriString = thumbnailUrl,
-            genre = "Онлайн",
+            genre = sourceDisplayName,
             mimeType = "audio/mp4",
             dateAdded = System.currentTimeMillis()
         )
     }
 
     fun buildOnlineUri(): String {
-        val safeHost = if (sourceEngine in setOf("audius", "saavn", "spotify")) sourceEngine else "youtube"
+        val safeHost = if (sourceEngine in setOf("audius", "saavn", "archive", "deezer", "spotify")) {
+            sourceEngine
+        } else {
+            "youtube"
+        }
         val builder = Uri.Builder()
             .scheme("online")
             .authority(safeHost)
@@ -68,6 +87,25 @@ data class OnlineTrack(
     }
 }
 
+fun displayNameForSource(sourceEngine: String): String = when (sourceEngine.lowercase()) {
+    "youtube" -> "YouTube"
+    "audius" -> "Audius"
+    "saavn" -> "JioSaavn"
+    "archive" -> "Archive"
+    "deezer" -> "Deezer"
+    "spotify" -> "Spotify"
+    else -> "Онлайн"
+}
+
+fun defaultQualityBadgeForSource(sourceEngine: String): String = when (sourceEngine.lowercase()) {
+    "youtube" -> "AAC/Opus"
+    "audius" -> "MP3 320k"
+    "saavn" -> "M4A 320k"
+    "archive" -> "MP3/OGG"
+    "deezer" -> "Cross/HiFi"
+    else -> "Stream"
+}
+
 data class ResolvedStream(
     val url: String,
     val userAgent: String,
@@ -78,28 +116,55 @@ data class ResolvedStream(
 
 class YouTubeStreamManager {
     private val probeClient = NetworkClient.fastProbeClient
-    private val streamCache = ConcurrentHashMap<String, ResolvedStream>() // trackKey -> ResolvedStream
-    private val urlHeadersCache = ConcurrentHashMap<String, ResolvedStream>() // exact url -> ResolvedStream
-    private val hostHeadersCache = ConcurrentHashMap<String, ResolvedStream>() // host -> ResolvedStream (for 302 CDN redirects)
-    private val matchCache = ConcurrentHashMap<String, OnlineTrack>() // "artist|title" -> best match
-    private val unhealthyMirrorsUntil = ConcurrentHashMap<String, Long>() // mirrorUrl -> epochMs
+    private val streamCache = ConcurrentHashMap<String, ResolvedStream>()
+    private val urlHeadersCache = ConcurrentHashMap<String, ResolvedStream>()
+    private val hostHeadersCache = ConcurrentHashMap<String, ResolvedStream>()
+    private val matchCache = ConcurrentHashMap<String, OnlineTrack>()
+    private val unhealthyMirrorsUntil = ConcurrentHashMap<String, Long>()
+    private val archiveFilesCache = ConcurrentHashMap<String, String>()
+
     @Volatile
     private var cachedVisitorData: String? = null
     @Volatile
     private var visitorDataFetchedAtMs: Long = 0L
+    @Volatile
+    private var cachedAudiusHost: String? = null
+    @Volatile
+    private var audiusHostFetchedAtMs: Long = 0L
 
     companion object {
         private const val TAG = "YouTubeStreamManager"
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         private const val MOBILE_UA =
-            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
         private const val DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+
+        val SOURCE_FILTERS = listOf(
+            OnlineSourceOption("all", "Все источники", "MULTI"),
+            OnlineSourceOption("youtube", "YouTube", "YT"),
+            OnlineSourceOption("audius", "Audius", "MP3"),
+            OnlineSourceOption("saavn", "JioSaavn", "320k"),
+            OnlineSourceOption("archive", "Archive.org", "OGG/MP3"),
+            OnlineSourceOption("deezer", "Deezer", "HiFi")
+        )
+
+        val DELIVERY_ENGINES = listOf(
+            DeliveryEngineOption("auto", "Авто"),
+            DeliveryEngineOption("innertube_android_vr", "YT VR"),
+            DeliveryEngineOption("innertube_ios", "YT iOS"),
+            DeliveryEngineOption("innertube_tv_embedded", "YT TV"),
+            DeliveryEngineOption("innertube_android_music", "YT Music"),
+            DeliveryEngineOption("piped", "Piped"),
+            DeliveryEngineOption("invidious", "Invidious"),
+            DeliveryEngineOption("cobalt", "Cobalt")
+        )
 
         private val COBALT_INSTANCES = listOf(
             "https://api.cobalt.tools",
             "https://cobalt-api.kwiatekmiki.com",
-            "https://cobalt.canine.tools"
+            "https://cobalt.canine.tools",
+            "https://co.eepy.today"
         )
 
         private val PIPED_INSTANCES = listOf(
@@ -109,7 +174,8 @@ class YouTubeStreamManager {
             "https://pipedapi.r4fo.com",
             "https://api.piped.privacydev.net",
             "https://pipedapi.ducks.party",
-            "https://pipedapi.darkness.services"
+            "https://pipedapi.darkness.services",
+            "https://pipedapi.nosebs.ru"
         )
 
         private val INVIDIOUS_INSTANCES = listOf(
@@ -117,18 +183,37 @@ class YouTubeStreamManager {
             "https://invidious.nerdvpn.de",
             "https://yewtu.be",
             "https://invidious.privacyredirect.com",
-            "https://iv.datura.network"
+            "https://iv.datura.network",
+            "https://invidious.jing.rocks"
         )
 
         private val SAAVN_MIRRORS = listOf(
             "https://saavn.dev",
-            "https://jiosaavn-api-privatecvc2.vercel.app"
+            "https://jiosaavn-api-privatecvc2.vercel.app",
+            "https://saavn.sumit.co"
         )
 
         private val UNWANTED_MODIFIERS = listOf(
             "slowed", "reverb", "nightcore", "8d", "karaoke",
             "cover", "sped up", "instrumental", "remix", "teaser", "reaction"
         )
+
+        fun formatEngineDisplay(engineId: String): String = when (engineId.lowercase()) {
+            "innertube_android_vr" -> "YouTube • VR"
+            "innertube_ios" -> "YouTube • iOS"
+            "innertube_tv_embedded" -> "YouTube • TV"
+            "innertube_android_music" -> "YouTube • Music"
+            "piped" -> "Piped Mirror"
+            "invidious" -> "Invidious Mirror"
+            "cobalt" -> "Cobalt Tunnel"
+            "yt_embed" -> "YouTube • Web"
+            "audius" -> "Audius • MP3"
+            "saavn" -> "JioSaavn • 320k"
+            "archive" -> "Archive.org"
+            "deezer" -> "Deezer Preview"
+            "local" -> "Локальный"
+            else -> engineId
+        }
     }
 
     private fun isMirrorHealthy(mirror: String): Boolean {
@@ -140,36 +225,74 @@ class YouTubeStreamManager {
         unhealthyMirrorsUntil[mirror] = System.currentTimeMillis() + cooldownMs
     }
 
+    fun clearStreamCacheForId(videoId: String) {
+        streamCache.remove(videoId)
+    }
+
+    fun getLastResolvedEngine(videoId: String?): String? {
+        if (videoId.isNullOrBlank()) return null
+        return streamCache[videoId]?.engine
+    }
+
     /**
-     * Multi-source online search:
-     * 1. InnerTube Music (WEB_REMIX)
-     * 2. Parallel race across Piped & Invidious mirrors + InnerTube Web fallback
-     * 3. Supplementary open audio engines (JioSaavn & Audius) if primary video results are empty/scarce
+     * Multi-source online search supporting both aggregated ("all") mode and single-source targeting:
+     * Sources: youtube (InnerTube + Web HTML + Piped + Invidious), audius, saavn, archive, deezer.
      */
-    suspend fun search(query: String): List<OnlineTrack> = withContext(Dispatchers.IO) {
+    suspend fun search(query: String, sourceFilter: String = "all"): List<OnlineTrack> = withContext(Dispatchers.IO) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) return@withContext emptyList()
 
-        withTimeoutOrNull(10_000L) {
-            val ytMusic = async { searchViaYtMusicInnerTube(trimmed) }.await()
-            if (ytMusic.isNotEmpty()) {
-                return@withTimeoutOrNull ytMusic
-            }
+        val normalizedFilter = sourceFilter.lowercase().trim()
+        withTimeoutOrNull(11_500L) {
+            when (normalizedFilter) {
+                "youtube" -> searchYouTubeAggregated(trimmed)
+                "audius" -> searchViaAudius(trimmed)
+                "saavn" -> searchViaSaavn(trimmed)
+                "archive" -> searchViaInternetArchive(trimmed)
+                "deezer" -> searchViaDeezer(trimmed)
+                else -> {
+                    coroutineScope {
+                        val ytDeferred = async { searchYouTubeAggregated(trimmed) }
+                        val audiusDeferred = async { searchViaAudius(trimmed) }
+                        val saavnDeferred = async { searchViaSaavn(trimmed) }
+                        val archiveDeferred = async { searchViaInternetArchive(trimmed) }
+                        val deezerDeferred = async { searchViaDeezer(trimmed) }
 
-            // Parallel search race across Piped, Invidious, JioSaavn & Audius
-            val raced = coroutineScope {
-                val pipedDeferred = async { searchViaPipedParallel(trimmed) }
-                val invDeferred = async { searchViaInvidiousParallel(trimmed) }
-                val saavnDeferred = async { searchViaSaavn(trimmed) }
-                val audiusDeferred = async { searchViaAudius(trimmed) }
-
-                val allLists = awaitAll(pipedDeferred, invDeferred, saavnDeferred, audiusDeferred)
-                val merged = mutableListOf<OnlineTrack>()
-                allLists.forEach { merged.addAll(it) }
-                merged.distinctBy { "${it.sourceEngine}:${it.id}" }
+                        val buckets = awaitAll(ytDeferred, audiusDeferred, saavnDeferred, archiveDeferred, deezerDeferred)
+                        interleaveTracks(buckets)
+                    }
+                }
             }
-            raced
         } ?: emptyList()
+    }
+
+    private suspend fun searchYouTubeAggregated(query: String): List<OnlineTrack> = coroutineScope {
+        val ytMusic = searchViaYtMusicInnerTube(query)
+        if (ytMusic.isNotEmpty()) return@coroutineScope ytMusic
+
+        val webResults = async { searchViaYouTubeWebHtml(query) }
+        val piped = async { searchViaPipedParallel(query) }
+        val invidious = async { searchViaInvidiousParallel(query) }
+        val merged = (webResults.await() + piped.await() + invidious.await())
+            .distinctBy { it.id }
+        merged
+    }
+
+    private fun interleaveTracks(buckets: List<List<OnlineTrack>>): List<OnlineTrack> {
+        val maxLen = buckets.maxOfOrNull { it.size } ?: 0
+        if (maxLen == 0) return emptyList()
+        val out = mutableListOf<OnlineTrack>()
+        val seen = HashSet<String>()
+        for (i in 0 until maxLen) {
+            for (bucket in buckets) {
+                val track = bucket.getOrNull(i) ?: continue
+                val key = "${track.sourceEngine}:${track.id}"
+                if (seen.add(key)) {
+                    out.add(track)
+                }
+            }
+        }
+        return out
     }
 
     /**
@@ -189,10 +312,11 @@ class YouTubeStreamManager {
 
         val candidates = coroutineScope {
             val ytDeferred = async { searchViaYtMusicInnerTube("$query audio") }
-            val ytPlainDeferred = async { searchViaYtMusicInnerTube(query) }
+            val ytPlainDeferred = async { searchYouTubeAggregated(query) }
             val saavnDeferred = async { searchViaSaavn(query) }
             val audiusDeferred = async { searchViaAudius(query) }
-            (ytDeferred.await() + ytPlainDeferred.await() + saavnDeferred.await() + audiusDeferred.await())
+            val archiveDeferred = async { searchViaInternetArchive(query) }
+            (ytDeferred.await() + ytPlainDeferred.await() + saavnDeferred.await() + audiusDeferred.await() + archiveDeferred.await())
                 .distinctBy { "${it.sourceEngine}:${it.id}" }
         }
 
@@ -208,67 +332,75 @@ class YouTubeStreamManager {
     }
 
     /**
-     * Resolves a direct playable audio stream URL AND matched duration for track metadata
-     * (used by Spotify imports and fallback recovery across all sources).
+     * Resolves a direct playable audio stream URL AND matched duration + active engine for track metadata.
      */
     suspend fun resolveTrackStreamForMetadata(
         targetTitle: String,
         targetArtist: String,
         expectedDurationMs: Long = 0L,
-        excludedEngines: Set<String> = emptySet()
-    ): Pair<String, Long>? = withContext(Dispatchers.IO) {
-        withTimeoutOrNull(13_500L) {
+        excludedEngines: Set<String> = emptySet(),
+        preferredEngine: String? = null
+    ): Triple<String, Long, String>? = withContext(Dispatchers.IO) {
+        withTimeoutOrNull(14_000L) {
             val cleanTitle = cleanQueryPart(targetTitle)
             val cleanArtist = cleanQueryPart(targetArtist)
             val query = "$cleanArtist $cleanTitle".trim().ifBlank { targetTitle }
 
-            // Gather candidates across YouTube Music + JioSaavn + Audius concurrently
             val candidates = coroutineScope {
-                val ytD = async { searchViaYtMusicInnerTube(query) }
+                val ytD = async { searchYouTubeAggregated(query) }
                 val saavnD = async { searchViaSaavn(query) }
                 val audiusD = async { searchViaAudius(query) }
-                (ytD.await() + saavnD.await() + audiusD.await())
+                val archiveD = async { searchViaInternetArchive(query) }
+                (ytD.await() + saavnD.await() + audiusD.await() + archiveD.await())
                     .distinctBy { "${it.sourceEngine}:${it.id}" }
             }.sortedByDescending { scoreCandidate(it, cleanTitle, cleanArtist, expectedDurationMs) }
 
-            for (cand in candidates.take(4)) {
+            for (cand in candidates.take(6)) {
+                if (cand.sourceEngine == "deezer" && cand.directStreamUrl == null) continue
+
                 if (cand.directStreamUrl != null && cand.sourceEngine !in excludedEngines) {
+                    val resolvedUrl = resolveDirectTrackPlayableUrl(cand) ?: continue
                     val resolved = ResolvedStream(
-                        url = cand.directStreamUrl,
+                        url = resolvedUrl,
                         userAgent = MOBILE_UA,
                         expiresAtMs = System.currentTimeMillis() + (2 * 3600 * 1000L),
                         engine = cand.sourceEngine
                     )
                     cacheStream(cand.id, resolved)
-                    return@withTimeoutOrNull Pair(
-                        cand.directStreamUrl,
-                        if (cand.durationMs > 0L) cand.durationMs else expectedDurationMs
+                    return@withTimeoutOrNull Triple(
+                        resolvedUrl,
+                        if (cand.durationMs > 0L) cand.durationMs else expectedDurationMs,
+                        cand.sourceEngine
                     )
                 }
 
-                val resolved = resolveStreamResult(cand.id, excludedEngines)
-                if (resolved != null) {
-                    return@withTimeoutOrNull Pair(
-                        resolved.url,
-                        if (cand.durationMs > 0L) cand.durationMs else expectedDurationMs
-                    )
+                if (cand.sourceEngine == "youtube") {
+                    val resolved = resolveStreamResult(cand.id, excludedEngines, preferredEngine)
+                    if (resolved != null) {
+                        return@withTimeoutOrNull Triple(
+                            resolved.url,
+                            if (cand.durationMs > 0L) cand.durationMs else expectedDurationMs,
+                            resolved.engine
+                        )
+                    }
                 }
             }
             null
         }
     }
 
-    /**
-     * Resolves playable audio stream URL with hard upper timeout so UI never spins forever.
-     */
-    suspend fun resolveStreamUrl(videoId: String): String? = withContext(Dispatchers.IO) {
-        resolveStreamResult(videoId, emptySet())?.url
+    suspend fun resolveDirectTrackPlayableUrl(track: OnlineTrack): String? = withContext(Dispatchers.IO) {
+        when (track.sourceEngine) {
+            "archive" -> resolveArchiveStreamUrl(track.id) ?: track.directStreamUrl
+            "audius" -> track.directStreamUrl ?: buildAudiusStreamUrl(track.id)
+            else -> track.directStreamUrl
+        }
     }
 
-    /**
-     * Returns HTTP User-Agent + extra headers recorded for [streamUrl] (matching both exact URL
-     * and redirected CDN host so ExoPlayer never drops headers after 302 redirects).
-     */
+    suspend fun resolveStreamUrl(videoId: String): String? = withContext(Dispatchers.IO) {
+        resolveStreamResult(videoId, emptySet(), null)?.url
+    }
+
     fun getHeadersForStreamUrl(streamUrl: String): Pair<String, Map<String, String>>? {
         urlHeadersCache[streamUrl]?.let { return it.userAgent to it.headers }
         val host = runCatching { Uri.parse(streamUrl).host }.getOrNull()
@@ -281,9 +413,6 @@ class YouTubeStreamManager {
         return null
     }
 
-    /**
-     * Invalidates a broken stream URL (e.g. after 403/timeout) and resolves via the next fallback engine.
-     */
     suspend fun resolveAlternateStream(
         failedUrl: String,
         videoId: String?,
@@ -295,40 +424,60 @@ class YouTubeStreamManager {
         val excluded = if (failedMeta != null) setOf(failedMeta.engine) else emptySet()
         if (!videoId.isNullOrBlank()) {
             streamCache.remove(videoId)
-            val direct = resolveStreamResult(videoId, excluded)
+            val direct = resolveStreamResult(videoId, excluded, null)
             if (direct != null) return@withContext direct
         }
         val matched = resolveTrackStreamForMetadata(title, artist, expectedDurationMs, excluded)
-        matched?.let { (url, _) ->
+        matched?.let { (url, _, engine) ->
             urlHeadersCache[url] ?: ResolvedStream(
                 url = url,
                 userAgent = MOBILE_UA,
                 expiresAtMs = System.currentTimeMillis() + (2 * 3600 * 1000L),
-                engine = "fallback"
+                engine = engine
             )
         }
     }
 
     suspend fun resolveStreamResult(
         videoId: String,
-        excludedEngines: Set<String> = emptySet()
+        excludedEngines: Set<String> = emptySet(),
+        preferredEngine: String? = null
     ): ResolvedStream? = withContext(Dispatchers.IO) {
         if (videoId.isBlank()) return@withContext null
 
-        val cached = streamCache[videoId]
-        if (cached != null && System.currentTimeMillis() < cached.expiresAtMs && cached.engine !in excludedEngines) {
-            return@withContext cached
+        if (preferredEngine.isNullOrBlank() || preferredEngine == "auto") {
+            val cached = streamCache[videoId]
+            if (cached != null && System.currentTimeMillis() < cached.expiresAtMs && cached.engine !in excludedEngines) {
+                return@withContext cached
+            }
         }
 
-        withTimeoutOrNull(13_000L) {
-            // Tier 1: InnerTube multi-client (TVHTML5_SIMPLY_EMBEDDED + ANDROID_VR + IOS + ANDROID_MUSIC)
+        // Handle explicit user-selected delivery engine first
+        if (!preferredEngine.isNullOrBlank() && preferredEngine != "auto") {
+            val forced = when {
+                preferredEngine.startsWith("innertube_") -> {
+                    val vd = fetchOrGetVisitorData()
+                    val profile = buildInnerTubeProfiles().firstOrNull { it.engineId == preferredEngine }
+                    profile?.let { resolveSingleInnerTubeProfile(videoId, it, vd) }
+                }
+                preferredEngine == "piped" -> resolveViaPipedParallel(videoId)
+                preferredEngine == "invidious" -> resolveViaInvidiousParallel(videoId)
+                preferredEngine == "cobalt" -> resolveViaCobaltParallel(videoId)
+                else -> null
+            }
+            if (forced != null) {
+                cacheStream(videoId, forced)
+                return@withContext forced
+            }
+        }
+
+        withTimeoutOrNull(13_500L) {
             val innerTubeResult = resolveViaInnerTubeParallel(videoId, excludedEngines)
             if (innerTubeResult != null) {
                 cacheStream(videoId, innerTubeResult)
                 return@withTimeoutOrNull innerTubeResult
             }
 
-            // Tier 2: Race Piped, Invidious, Cobalt & Direct Watch Embed Page concurrently
             val racedFallback = coroutineScope {
                 val racers = buildList {
                     if ("piped" !in excludedEngines) add(async { resolveViaPipedParallel(videoId) })
@@ -337,23 +486,7 @@ class YouTubeStreamManager {
                     if ("yt_embed" !in excludedEngines) add(async { resolveViaWatchPageExtract(videoId) })
                 }
                 if (racers.isEmpty()) return@coroutineScope null
-
-                // Wait for first non-null or until all complete
-                var winner: ResolvedStream? = null
-                val pending = racers.toMutableList()
-                while (pending.isNotEmpty() && winner == null) {
-                    val finished = select {
-                        pending.forEach { deferred ->
-                            deferred.onAwait { res -> deferred to res }
-                        }
-                    }
-                    pending.remove(finished.first)
-                    if (finished.second != null) {
-                        winner = finished.second
-                    }
-                }
-                pending.forEach { it.cancel() }
-                winner
+                raceFirstNonNull(racers)
             }
 
             if (racedFallback != null) {
@@ -375,9 +508,6 @@ class YouTubeStreamManager {
         }
     }
 
-    /**
-     * Non-destructive stream check: verifies 200/206/302 without breaking single-use tunnels.
-     */
     private fun verifyStreamReachable(
         url: String,
         userAgent: String,
@@ -415,7 +545,7 @@ class YouTubeStreamManager {
                 put("context", JSONObject().apply {
                     put("client", JSONObject().apply {
                         put("clientName", "WEB_REMIX")
-                        put("clientVersion", "1.20250122.01.00")
+                        put("clientVersion", "1.20250212.01.00")
                         put("hl", "en")
                         put("gl", "US")
                     })
@@ -456,56 +586,57 @@ class YouTubeStreamManager {
         val deviceModel: String? = null
     )
 
+    private fun buildInnerTubeProfiles(): List<InnerTubeProfile> = listOf(
+        InnerTubeProfile(
+            engineId = "innertube_android_vr",
+            clientName = "ANDROID_VR",
+            clientVersion = "1.61.48",
+            clientIdHeader = "28",
+            userAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+            isEmbeddedWeb = false,
+            osName = "Android",
+            osVersion = "12L",
+            deviceMake = "Oculus",
+            deviceModel = "Quest 3"
+        ),
+        InnerTubeProfile(
+            engineId = "innertube_tv_embedded",
+            clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+            clientVersion = "2.0",
+            clientIdHeader = "85",
+            userAgent = DESKTOP_UA,
+            isEmbeddedWeb = true
+        ),
+        InnerTubeProfile(
+            engineId = "innertube_ios",
+            clientName = "IOS",
+            clientVersion = "20.03.2",
+            clientIdHeader = "5",
+            userAgent = "com.google.ios.youtube/20.03.2 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X)",
+            isEmbeddedWeb = false,
+            osName = "iOS",
+            osVersion = "18.2",
+            deviceMake = "Apple",
+            deviceModel = "iPhone16,2"
+        ),
+        InnerTubeProfile(
+            engineId = "innertube_android_music",
+            clientName = "ANDROID_MUSIC",
+            clientVersion = "7.29.52",
+            clientIdHeader = "21",
+            userAgent = "com.google.android.apps.youtube.music/7.29.52 (Linux; U; Android 14; Pixel 8) gzip",
+            isEmbeddedWeb = false,
+            osName = "Android",
+            osVersion = "14"
+        )
+    )
+
     private suspend fun resolveViaInnerTubeParallel(
         videoId: String,
         excludedEngines: Set<String>
     ): ResolvedStream? = coroutineScope {
         val visitorData = fetchOrGetVisitorData()
-        val profiles = listOf(
-            InnerTubeProfile(
-                engineId = "innertube_android_vr",
-                clientName = "ANDROID_VR",
-                clientVersion = "1.61.48",
-                clientIdHeader = "28",
-                userAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
-                isEmbeddedWeb = false,
-                osName = "Android",
-                osVersion = "12L",
-                deviceMake = "Oculus",
-                deviceModel = "Quest 3"
-            ),
-            InnerTubeProfile(
-                engineId = "innertube_tv_embedded",
-                clientName = "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-                clientVersion = "2.0",
-                clientIdHeader = "85",
-                userAgent = DESKTOP_UA,
-                isEmbeddedWeb = true
-            ),
-            InnerTubeProfile(
-                engineId = "innertube_ios",
-                clientName = "IOS",
-                clientVersion = "19.45.4",
-                clientIdHeader = "5",
-                userAgent = "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_1 like Mac OS X)",
-                isEmbeddedWeb = false,
-                osName = "iOS",
-                osVersion = "18.1.1",
-                deviceMake = "Apple",
-                deviceModel = "iPhone16,2"
-            ),
-            InnerTubeProfile(
-                engineId = "innertube_android_music",
-                clientName = "ANDROID_MUSIC",
-                clientVersion = "7.16.53",
-                clientIdHeader = "21",
-                userAgent = "com.google.android.apps.youtube.music/7.16.53 (Linux; U; Android 14; Pixel 8) gzip",
-                isEmbeddedWeb = false,
-                osName = "Android",
-                osVersion = "14"
-            )
-        ).filter { it.engineId !in excludedEngines }
-
+        val profiles = buildInnerTubeProfiles().filter { it.engineId !in excludedEngines }
         if (profiles.isEmpty()) return@coroutineScope null
 
         val deferreds = profiles.map { profile ->
@@ -513,18 +644,7 @@ class YouTubeStreamManager {
                 resolveSingleInnerTubeProfile(videoId, profile, visitorData)
             }
         }
-
-        var winner: ResolvedStream? = null
-        val pending = deferreds.toMutableList()
-        while (pending.isNotEmpty() && winner == null) {
-            val finished = select {
-                pending.forEach { d -> d.onAwait { res -> d to res } }
-            }
-            pending.remove(finished.first)
-            if (finished.second != null) winner = finished.second
-        }
-        pending.forEach { it.cancel() }
-        winner
+        raceFirstNonNull(deferreds)
     }
 
     private fun resolveSingleInnerTubeProfile(
@@ -625,7 +745,6 @@ class YouTubeStreamManager {
                     candidates.add(hlsManifest to 100_000)
                 }
 
-                // IMPORTANT: Native mobile/VR clients must NOT pass web Origin/Referer to googlevideo.com
                 val cdnHeaders = if (profile.isEmbeddedWeb) {
                     mapOf("Origin" to "https://www.youtube.com", "Referer" to "https://www.youtube.com/")
                 } else {
@@ -651,9 +770,6 @@ class YouTubeStreamManager {
         }
     }
 
-    /**
-     * Direct YouTube embed/watch HTML fallback parsing ytInitialPlayerResponse for unciphered streams.
-     */
     private fun resolveViaWatchPageExtract(videoId: String): ResolvedStream? {
         return try {
             val req = Request.Builder()
@@ -664,43 +780,8 @@ class YouTubeStreamManager {
             probeClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return null
                 val html = resp.body?.string() ?: return null
-                val marker = "ytInitialPlayerResponse = "
-                val startIdx = html.indexOf(marker)
-                if (startIdx < 0) return null
-                val jsonStart = html.indexOf('{', startIdx + marker.length)
-                if (jsonStart < 0) return null
-
-                var depth = 0
-                var inStr = false
-                var escape = false
-                var jsonEnd = -1
-                for (i in jsonStart until html.length) {
-                    val c = html[i]
-                    if (escape) {
-                        escape = false
-                        continue
-                    }
-                    if (c == '\\') {
-                        escape = true
-                        continue
-                    }
-                    if (c == '"') {
-                        inStr = !inStr
-                        continue
-                    }
-                    if (!inStr) {
-                        if (c == '{') depth++
-                        else if (c == '}') {
-                            depth--
-                            if (depth == 0) {
-                                jsonEnd = i + 1
-                                break
-                            }
-                        }
-                    }
-                }
-                if (jsonEnd <= jsonStart) return null
-                val json = JSONObject(html.substring(jsonStart, jsonEnd))
+                val jsonText = extractBalancedJson(html, "ytInitialPlayerResponse = ") ?: return null
+                val json = JSONObject(jsonText)
                 val streamingData = json.optJSONObject("streamingData") ?: return null
                 val adaptive = streamingData.optJSONArray("adaptiveFormats")
                 val hls = streamingData.optString("hlsManifestUrl", "")
@@ -769,7 +850,6 @@ class YouTubeStreamManager {
                         if (status == "tunnel" || status == "redirect" || status == "stream") {
                             val streamUrl = json.optString("url", "")
                             if (streamUrl.isNotBlank()) {
-                                // Do NOT send Range byte-0 probe on single-use tunnel URLs
                                 return@use ResolvedStream(
                                     url = streamUrl,
                                     userAgent = MOBILE_UA,
@@ -920,7 +1000,7 @@ class YouTubeStreamManager {
     }
 
     // ========================================================
-    // SEARCH SOURCES: InnerTube, Piped, Invidious, JioSaavn, Audius
+    // SEARCH SOURCES: InnerTube, YT HTML, Piped, Invidious, JioSaavn, Audius, Archive.org, Deezer
     // ========================================================
 
     private fun searchViaYtMusicInnerTube(query: String): List<OnlineTrack> {
@@ -929,7 +1009,7 @@ class YouTubeStreamManager {
                 put("context", JSONObject().apply {
                     put("client", JSONObject().apply {
                         put("clientName", "WEB_REMIX")
-                        put("clientVersion", "1.20250122.01.00")
+                        put("clientVersion", "1.20250212.01.00")
                         put("hl", "en")
                         put("gl", "US")
                     })
@@ -955,6 +1035,73 @@ class YouTubeStreamManager {
             Log.w(TAG, "InnerTube search failed: ${e.message}")
         }
         return emptyList()
+    }
+
+    private fun searchViaYouTubeWebHtml(query: String): List<OnlineTrack> {
+        return try {
+            val encoded = URLEncoder.encode(query.trim(), "UTF-8")
+            val req = Request.Builder()
+                .url("https://www.youtube.com/results?search_query=$encoded")
+                .header("User-Agent", DESKTOP_UA)
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .build()
+            probeClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return emptyList()
+                val html = resp.body?.string() ?: return emptyList()
+                val jsonText = extractBalancedJson(html, "var ytInitialData = ")
+                    ?: extractBalancedJson(html, "ytInitialData = ")
+                    ?: return emptyList()
+                parseYouTubeWebSearchJson(JSONObject(jsonText))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "YT Web HTML search failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    private fun parseYouTubeWebSearchJson(root: JSONObject): List<OnlineTrack> {
+        val out = mutableListOf<OnlineTrack>()
+        try {
+            val sections = root.optJSONObject("contents")
+                ?.optJSONObject("twoColumnSearchResultsRenderer")
+                ?.optJSONObject("primaryContents")
+                ?.optJSONObject("sectionListRenderer")
+                ?.optJSONArray("contents") ?: return emptyList()
+
+            for (s in 0 until sections.length()) {
+                val items = sections.optJSONObject(s)
+                    ?.optJSONObject("itemSectionRenderer")
+                    ?.optJSONArray("contents") ?: continue
+                for (i in 0 until items.length()) {
+                    val v = items.optJSONObject(i)?.optJSONObject("videoRenderer") ?: continue
+                    val videoId = v.optString("videoId", "")
+                    if (videoId.isBlank()) continue
+                    val title = v.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "")
+                        ?: continue
+                    val artist = v.optJSONObject("ownerText")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "YouTube")
+                        ?: "YouTube"
+                    val durText = v.optJSONObject("lengthText")?.optString("simpleText", "") ?: ""
+                    val durSec = parseDurationStringToSeconds(durText)
+                    val thumbs = v.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+                    val thumb = if (thumbs != null && thumbs.length() > 0) thumbs.getJSONObject(thumbs.length() - 1).optString("url") else null
+
+                    out.add(
+                        OnlineTrack(
+                            id = videoId,
+                            title = title,
+                            artist = artist,
+                            durationSeconds = durSec,
+                            thumbnailUrl = thumb,
+                            isOfficialAudio = false,
+                            sourceEngine = "youtube"
+                        )
+                    )
+                    if (out.size >= 12) return out
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return out
     }
 
     private fun parseYtMusicSearchJson(root: JSONObject): List<OnlineTrack> {
@@ -1130,9 +1277,6 @@ class YouTubeStreamManager {
         raceFirstNonNull(deferreds) ?: emptyList()
     }
 
-    /**
-     * Independent open streaming source #1: JioSaavn public API (direct 320kbps MP4/AAC CDN streams).
-     */
     private fun searchViaSaavn(query: String): List<OnlineTrack> {
         val encoded = URLEncoder.encode(query.trim(), "UTF-8")
         for (mirror in SAAVN_MIRRORS) {
@@ -1181,7 +1325,7 @@ class YouTubeStreamManager {
                                     id = id,
                                     title = title,
                                     artist = artistNames,
-                                    album = item.optJSONObject("album")?.optString("name", "Онлайн") ?: "Онлайн",
+                                    album = item.optJSONObject("album")?.optString("name", "JioSaavn") ?: "JioSaavn",
                                     durationSeconds = durationSec,
                                     thumbnailUrl = thumb,
                                     isOfficialAudio = true,
@@ -1200,14 +1344,44 @@ class YouTubeStreamManager {
         return emptyList()
     }
 
-    /**
-     * Independent open streaming source #2: Audius decentralized audio streaming network (direct MP3).
-     */
+    private fun resolveHealthyAudiusHost(): String {
+        val now = System.currentTimeMillis()
+        val cached = cachedAudiusHost
+        if (!cached.isNullOrBlank() && now - audiusHostFetchedAtMs < 30 * 60_000L) {
+            return cached
+        }
+        return try {
+            val req = Request.Builder()
+                .url("https://api.audius.co")
+                .header("Accept", "application/json")
+                .build()
+            probeClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return "https://discoveryprovider.audius.co"
+                val data = JSONObject(resp.body?.string() ?: "{}").optJSONArray("data")
+                val picked = if (data != null && data.length() > 0) {
+                    data.optString(0, "").trimEnd('/')
+                } else ""
+                val host = picked.ifBlank { "https://discoveryprovider.audius.co" }
+                cachedAudiusHost = host
+                audiusHostFetchedAtMs = now
+                host
+            }
+        } catch (_: Exception) {
+            cached ?: "https://discoveryprovider.audius.co"
+        }
+    }
+
+    private fun buildAudiusStreamUrl(id: String): String {
+        val host = resolveHealthyAudiusHost()
+        return "$host/v1/tracks/$id/stream?app_name=imux"
+    }
+
     private fun searchViaAudius(query: String): List<OnlineTrack> {
         return try {
+            val host = resolveHealthyAudiusHost()
             val encoded = URLEncoder.encode(query.trim(), "UTF-8")
             val req = Request.Builder()
-                .url("https://api.audius.co/v1/tracks/search?query=$encoded&app_name=imux")
+                .url("$host/v1/tracks/search?query=$encoded&app_name=imux")
                 .header("Accept", "application/json")
                 .build()
             probeClient.newCall(req).execute().use { resp ->
@@ -1224,13 +1398,13 @@ class YouTubeStreamManager {
                     val thumb = item.optJSONObject("artwork")?.optString("480x480")
                         ?: item.optJSONObject("artwork")?.optString("150x150")
                     val dur = item.optLong("duration", 0L)
-                    val streamUrl = "https://api.audius.co/v1/tracks/$id/stream?app_name=imux"
+                    val streamUrl = "$host/v1/tracks/$id/stream?app_name=imux"
                     tracks.add(
                         OnlineTrack(
                             id = id,
                             title = title,
                             artist = artist,
-                            album = "Онлайн",
+                            album = "Audius",
                             durationSeconds = dur,
                             thumbnailUrl = thumb,
                             isOfficialAudio = true,
@@ -1245,6 +1419,174 @@ class YouTubeStreamManager {
             Log.w(TAG, "Audius search failed: ${e.message}")
             emptyList()
         }
+    }
+
+    /**
+     * Independent open streaming source #3: Internet Archive Audio catalog (key-free, open MP3/OGG streams).
+     */
+    private fun searchViaInternetArchive(query: String): List<OnlineTrack> {
+        return try {
+            val sanitized = query.trim().replace("\"", "")
+            val rawQuery = "mediatype:audio AND ($sanitized)"
+            val encoded = URLEncoder.encode(rawQuery, "UTF-8")
+            val req = Request.Builder()
+                .url("https://archive.org/advancedsearch.php?q=$encoded&fl[]=identifier,title,creator&rows=8&output=json")
+                .header("Accept", "application/json")
+                .build()
+            probeClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return emptyList()
+                val root = JSONObject(resp.body?.string() ?: "{}")
+                val docs = root.optJSONObject("response")?.optJSONArray("docs") ?: return emptyList()
+                val tracks = mutableListOf<OnlineTrack>()
+                for (i in 0 until docs.length()) {
+                    val doc = docs.optJSONObject(i) ?: continue
+                    val id = doc.optString("identifier", "")
+                    val title = doc.optString("title", "")
+                    if (id.isBlank() || title.isBlank()) continue
+                    val creatorVal = doc.opt("creator")
+                    val artist = when (creatorVal) {
+                        is JSONArray -> creatorVal.optString(0, "Internet Archive")
+                        is String -> creatorVal
+                        else -> "Internet Archive"
+                    }.ifBlank { "Internet Archive" }
+
+                    tracks.add(
+                        OnlineTrack(
+                            id = id,
+                            title = title,
+                            artist = artist,
+                            album = "Archive.org",
+                            durationSeconds = 0L,
+                            thumbnailUrl = "https://archive.org/services/img/$id",
+                            isOfficialAudio = false,
+                            sourceEngine = "archive",
+                            directStreamUrl = null
+                        )
+                    )
+                }
+                tracks
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Archive.org search failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    private fun resolveArchiveStreamUrl(identifier: String): String? {
+        archiveFilesCache[identifier]?.let { return it }
+        return try {
+            val req = Request.Builder()
+                .url("https://archive.org/metadata/$identifier/files")
+                .header("Accept", "application/json")
+                .build()
+            probeClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val result = JSONObject(resp.body?.string() ?: "{}").optJSONArray("result") ?: return null
+                var mp3Candidate: String? = null
+                var oggCandidate: String? = null
+                for (i in 0 until result.length()) {
+                    val fileObj = result.optJSONObject(i) ?: continue
+                    val name = fileObj.optString("name", "")
+                    val lower = name.lowercase()
+                    if (lower.endsWith(".mp3") && mp3Candidate == null) {
+                        mp3Candidate = name
+                    } else if ((lower.endsWith(".ogg") || lower.endsWith(".m4a")) && oggCandidate == null) {
+                        oggCandidate = name
+                    }
+                }
+                val chosen = mp3Candidate ?: oggCandidate ?: return null
+                val encodedFile = Uri.encode(chosen, "/")
+                val url = "https://archive.org/download/$identifier/$encodedFile"
+                archiveFilesCache[identifier] = url
+                url
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Archive file lookup failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Independent open catalog source #4: Deezer public API (cross-resolved to full-length audio upon playback,
+     * with HQ 30s preview fallback if cross-resolution fails).
+     */
+    private fun searchViaDeezer(query: String): List<OnlineTrack> {
+        return try {
+            val encoded = URLEncoder.encode(query.trim(), "UTF-8")
+            val req = Request.Builder()
+                .url("https://api.deezer.com/search?q=$encoded&limit=8")
+                .header("Accept", "application/json")
+                .build()
+            probeClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return emptyList()
+                val data = JSONObject(resp.body?.string() ?: "{}").optJSONArray("data") ?: return emptyList()
+                val tracks = mutableListOf<OnlineTrack>()
+                for (i in 0 until data.length()) {
+                    val item = data.optJSONObject(i) ?: continue
+                    val id = item.optLong("id", 0L).takeIf { it > 0L }?.toString() ?: continue
+                    val title = item.optString("title", "")
+                    if (title.isBlank()) continue
+                    val artist = item.optJSONObject("artist")?.optString("name", "Исполнитель") ?: "Исполнитель"
+                    val albumObj = item.optJSONObject("album")
+                    val album = albumObj?.optString("title", "Deezer") ?: "Deezer"
+                    val thumb = albumObj?.optString("cover_big") ?: albumObj?.optString("cover_medium")
+                    val dur = item.optLong("duration", 0L)
+                    tracks.add(
+                        OnlineTrack(
+                            id = id,
+                            title = title,
+                            artist = artist,
+                            album = album,
+                            durationSeconds = dur,
+                            thumbnailUrl = thumb,
+                            isOfficialAudio = true,
+                            sourceEngine = "deezer",
+                            directStreamUrl = null
+                        )
+                    )
+                }
+                tracks
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Deezer search failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    private fun extractBalancedJson(html: String, marker: String): String? {
+        val startIdx = html.indexOf(marker)
+        if (startIdx < 0) return null
+        val jsonStart = html.indexOf('{', startIdx + marker.length)
+        if (jsonStart < 0) return null
+
+        var depth = 0
+        var inStr = false
+        var escape = false
+        for (i in jsonStart until html.length) {
+            val c = html[i]
+            if (escape) {
+                escape = false
+                continue
+            }
+            if (c == '\\') {
+                escape = true
+                continue
+            }
+            if (c == '"') {
+                inStr = !inStr
+                continue
+            }
+            if (!inStr) {
+                if (c == '{') depth++
+                else if (c == '}') {
+                    depth--
+                    if (depth == 0) {
+                        return html.substring(jsonStart, i + 1)
+                    }
+                }
+            }
+        }
+        return null
     }
 
     private fun extractFlexColumnText(columnObj: JSONObject?): String? {

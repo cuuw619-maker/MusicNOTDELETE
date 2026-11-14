@@ -61,6 +61,7 @@ import com.example.model.Song
 import com.example.ui.animation.HapticType
 import com.example.ui.animation.fluidPress
 import com.example.ui.animation.performHapticFeedback
+import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.theme.MonoFontFamily
 import com.example.ui.theme.SpringTokens
 import kotlin.math.PI
@@ -118,10 +119,18 @@ fun MorphingPlayPauseButton(
         ).value
     } else 0f
 
+    val profile = LocalPerformanceProfile.current
+    val playTrianglePath = remember { Path() }
+    val morphLeftPath = remember { Path() }
+    val morphRightPath = remember { Path() }
+
     Surface(
         modifier = modifier
             .size(width = finalWidth, height = finalHeight)
-            .shadow(elevation = 8.dp, shape = shape, spotColor = containerColor.copy(alpha = 0.45f))
+            .let {
+                if (profile.isPotato) it
+                else it.shadow(elevation = 8.dp, shape = shape, spotColor = containerColor.copy(alpha = 0.45f))
+            }
             .fluidPress(
                 scaleDown = 0.93f,
                 hapticType = HapticType.MEDIUM,
@@ -153,13 +162,12 @@ fun MorphingPlayPauseButton(
                 val t = progress
 
                 if (t <= 0.04f) {
-                    val trianglePath = Path().apply {
-                        moveTo(0.24f * w, 0.16f * h)
-                        lineTo(0.84f * w, 0.50f * h)
-                        lineTo(0.24f * w, 0.84f * h)
-                        close()
-                    }
-                    drawPath(trianglePath, color = contentColor, style = Fill)
+                    playTrianglePath.reset()
+                    playTrianglePath.moveTo(0.24f * w, 0.16f * h)
+                    playTrianglePath.lineTo(0.84f * w, 0.50f * h)
+                    playTrianglePath.lineTo(0.24f * w, 0.84f * h)
+                    playTrianglePath.close()
+                    drawPath(playTrianglePath, color = contentColor, style = Fill)
                 } else if (t >= 0.96f) {
                     val barCorner = CornerRadius(2.5.dp.toPx(), 2.5.dp.toPx())
                     drawRoundRect(
@@ -186,13 +194,12 @@ fun MorphingPlayPauseButton(
                     val leftP4x = lerp(0.24f, 0.20f, t) * w
                     val leftP4y = lerp(0.84f, 0.85f, t) * h
 
-                    val leftPath = Path().apply {
-                        moveTo(leftP1x, leftP1y)
-                        lineTo(leftP2x, leftP2y)
-                        lineTo(leftP3x, leftP3y)
-                        lineTo(leftP4x, leftP4y)
-                        close()
-                    }
+                    morphLeftPath.reset()
+                    morphLeftPath.moveTo(leftP1x, leftP1y)
+                    morphLeftPath.lineTo(leftP2x, leftP2y)
+                    morphLeftPath.lineTo(leftP3x, leftP3y)
+                    morphLeftPath.lineTo(leftP4x, leftP4y)
+                    morphLeftPath.close()
 
                     val rightP1x = lerp(0.54f, 0.60f, t) * w - overlap
                     val rightP1y = lerp(0.33f, 0.15f, t) * h
@@ -203,16 +210,15 @@ fun MorphingPlayPauseButton(
                     val rightP4x = lerp(0.54f, 0.60f, t) * w - overlap
                     val rightP4y = lerp(0.67f, 0.85f, t) * h
 
-                    val rightPath = Path().apply {
-                        moveTo(rightP1x, rightP1y)
-                        lineTo(rightP2x, rightP2y)
-                        lineTo(rightP3x, rightP3y)
-                        lineTo(rightP4x, rightP4y)
-                        close()
-                    }
+                    morphRightPath.reset()
+                    morphRightPath.moveTo(rightP1x, rightP1y)
+                    morphRightPath.lineTo(rightP2x, rightP2y)
+                    morphRightPath.lineTo(rightP3x, rightP3y)
+                    morphRightPath.lineTo(rightP4x, rightP4y)
+                    morphRightPath.close()
 
-                    drawPath(leftPath, color = contentColor, style = Fill)
-                    drawPath(rightPath, color = contentColor, style = Fill)
+                    drawPath(morphLeftPath, color = contentColor, style = Fill)
+                    drawPath(morphRightPath, color = contentColor, style = Fill)
                 }
             }
         }
@@ -237,6 +243,8 @@ fun InteractiveProgressBar(
     activeColor: Color = MaterialTheme.colorScheme.primary,
     inactiveColor: Color = MaterialTheme.colorScheme.surfaceVariant
 ) {
+    val profile = LocalPerformanceProfile.current
+    val wavePath = remember { Path() }
     var isDragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
     val view = LocalView.current
@@ -352,18 +360,16 @@ fun InteractiveProgressBar(
                             cap = StrokeCap.Round
                         )
                     } else {
-                        val wavePath = Path().apply {
-                            val step = 4f
-                            var x = 0f
-                            val startY = centerY + sin(wavePhase) * amp
-                            moveTo(0f, startY)
-                            while (x < activeWidthPx) {
-                                x = (x + step).coerceAtMost(activeWidthPx)
-                                // Smooth envelope near the thumb so the wave flows cleanly into the thumb
-                                val edgeTaper = ((activeWidthPx - x) / (wavelengthPx * 0.4f)).coerceIn(0f, 1f)
-                                val y = centerY + sin((x / wavelengthPx) * (2f * PI.toFloat()) - wavePhase) * amp * edgeTaper
-                                lineTo(x, y)
-                            }
+                        val step = if (profile.isPotato) 8f else 4f
+                        wavePath.reset()
+                        var x = 0f
+                        val startY = centerY + sin(wavePhase) * amp
+                        wavePath.moveTo(0f, startY)
+                        while (x < activeWidthPx) {
+                            x = (x + step).coerceAtMost(activeWidthPx)
+                            val edgeTaper = ((activeWidthPx - x) / (wavelengthPx * 0.4f)).coerceIn(0f, 1f)
+                            val y = centerY + sin((x / wavelengthPx) * (2f * PI.toFloat()) - wavePhase) * amp * edgeTaper
+                            wavePath.lineTo(x, y)
                         }
                         drawPath(
                             path = wavePath,

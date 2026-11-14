@@ -126,6 +126,8 @@ fun SettingsScreen(
     val doubleTapSeekSeconds by viewModel.doubleTapSeekSeconds.collectAsStateWithLifecycle()
     val volumeGestureEnabled by viewModel.volumeGestureEnabled.collectAsStateWithLifecycle()
     val filterShortAudio by viewModel.filterShortAudio.collectAsStateWithLifecycle()
+    val performanceMode by viewModel.performanceMode.collectAsStateWithLifecycle()
+    val perfProfile = com.example.ui.theme.LocalPerformanceProfile.current
 
     var selectedCategoryIndex by remember { mutableIntStateOf(0) }
     var showThemeDialog by remember { mutableStateOf(false) }
@@ -524,8 +526,74 @@ fun SettingsScreen(
                         }
 
                         item {
-                            SectionTitle(title = "Анимации интерфейса")
+                            SectionTitle(title = "Производительность и шейдеры")
                             ExpressiveSettingsCard {
+                                val resolvedName = when (perfProfile.tier) {
+                                    com.example.ui.theme.PerformanceTier.POTATO -> "Бюджетный (Макс. FPS)"
+                                    com.example.ui.theme.PerformanceTier.BALANCED -> "Сбалансированный"
+                                    com.example.ui.theme.PerformanceTier.FLAGSHIP -> "Флагман (AGSL Шейдеры)"
+                                }
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Text(
+                                        text = "Режим графики и эффектов",
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                    Text(
+                                        text = "Активно сейчас: $resolvedName",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        val firstRow = listOf(
+                                            PreferencesManager.PerformanceMode.AUTO to ("Авто" to "Устройство"),
+                                            PreferencesManager.PerformanceMode.POTATO to ("Картошка" to "Макс. FPS")
+                                        )
+                                        firstRow.forEach { (mode, labels) ->
+                                            ExpressiveOvalChoiceChip(
+                                                label = labels.first,
+                                                subtitle = labels.second,
+                                                selected = performanceMode == mode,
+                                                onClick = { viewModel.setPerformanceMode(mode) },
+                                                minHeight = 50.dp,
+                                                fontSizeSp = 12.5f,
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .testTag("perf_mode_${mode.name.lowercase()}")
+                                            )
+                                        }
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        val secondRow = listOf(
+                                            PreferencesManager.PerformanceMode.BALANCED to ("Баланс" to "Оптимально"),
+                                            PreferencesManager.PerformanceMode.FLAGSHIP to ("Флагман" to "Шейдеры")
+                                        )
+                                        secondRow.forEach { (mode, labels) ->
+                                            ExpressiveOvalChoiceChip(
+                                                label = labels.first,
+                                                subtitle = labels.second,
+                                                selected = performanceMode == mode,
+                                                onClick = { viewModel.setPerformanceMode(mode) },
+                                                minHeight = 50.dp,
+                                                fontSizeSp = 12.5f,
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .testTag("perf_mode_${mode.name.lowercase()}")
+                                            )
+                                        }
+                                    }
+                                }
+
                                 SettingsSwitchRow(
                                     icon = Icons.Rounded.MotionPhotosOn,
                                     title = "Уменьшение движения (Reduced Motion)",

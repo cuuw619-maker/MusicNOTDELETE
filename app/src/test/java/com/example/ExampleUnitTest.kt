@@ -176,9 +176,36 @@ class ExampleUnitTest {
 
         assertTrue(officialScore > karaokeScore + 100)
         assertEquals("Онлайн", official.album)
+        assertEquals("JioSaavn", official.sourceDisplayName)
         val song = official.toSong()
         assertEquals("Онлайн", song.album)
-        assertEquals("Онлайн", song.genre)
+        assertEquals("JioSaavn", song.genre)
         assertEquals("https://cdn.example/blinding.mp4", song.contentUriString)
+    }
+
+    @Test
+    fun streamManager_exposesAllSourcesAndDeliveryEngines() {
+        val sourceIds = YouTubeStreamManager.SOURCE_FILTERS.map { it.id }.toSet()
+        assertTrue(sourceIds.containsAll(setOf("all", "youtube", "audius", "saavn", "archive", "deezer")))
+
+        val engineIds = YouTubeStreamManager.DELIVERY_ENGINES.map { it.id }.toSet()
+        assertTrue(engineIds.containsAll(setOf("auto", "innertube_android_vr", "piped", "invidious", "cobalt")))
+        assertEquals("Cobalt Tunnel", YouTubeStreamManager.formatEngineDisplay("cobalt"))
+        assertEquals("Archive.org", YouTubeStreamManager.formatEngineDisplay("archive"))
+    }
+
+    @Test
+    fun morphShapeLut_hasTenValidShapesWithSmoothStep() {
+        assertEquals(10, com.example.ui.components.MorphShapeLut.SHAPE_COUNT)
+        for (s in 0 until com.example.ui.components.MorphShapeLut.SHAPE_COUNT) {
+            val table = com.example.ui.components.MorphShapeLut.radii[s]
+            assertEquals(com.example.ui.components.MorphShapeLut.STEPS, table.size)
+            for (r in table) {
+                assertTrue("Radius out of bounds: $r", r in 0.35f..1.05f)
+            }
+        }
+        assertEquals(0f, com.example.ui.components.MorphShapeLut.smoothStep(-1f), 0.0001f)
+        assertEquals(0.5f, com.example.ui.components.MorphShapeLut.smoothStep(0.5f), 0.0001f)
+        assertEquals(1f, com.example.ui.components.MorphShapeLut.smoothStep(2f), 0.0001f)
     }
 }

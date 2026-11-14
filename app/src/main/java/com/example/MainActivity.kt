@@ -96,14 +96,22 @@ class MainActivity : ComponentActivity() {
             val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
             val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
             val amoledDark by viewModel.amoledDark.collectAsStateWithLifecycle()
+            val performanceMode by viewModel.performanceMode.collectAsStateWithLifecycle()
+            val performanceProfile = remember(performanceMode, this) {
+                com.example.ui.theme.resolvePerformanceProfile(this, performanceMode)
+            }
 
             MusicAppTheme(
                 themeMode = themeMode,
                 dynamicColor = dynamicColor,
                 amoledDark = amoledDark
             ) {
-                com.example.ui.theme.ProvideResponsiveLayout {
-                    MainApp(viewModel = viewModel, checkPermission = ::hasAudioPermission)
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.example.ui.theme.LocalPerformanceProfile provides performanceProfile
+                ) {
+                    com.example.ui.theme.ProvideResponsiveLayout {
+                        MainApp(viewModel = viewModel, checkPermission = ::hasAudioPermission)
+                    }
                 }
             }
         }
@@ -163,6 +171,8 @@ fun MainApp(
     val spatialReverbPreset by viewModel.spatialReverbPreset.collectAsStateWithLifecycle()
     val stereoWidener by viewModel.stereoWidener.collectAsStateWithLifecycle()
     val audioBalance by viewModel.audioBalance.collectAsStateWithLifecycle()
+    val activeStreamEngine by viewModel.activeStreamEngine.collectAsStateWithLifecycle()
+    val isSourceSwitcherVisible by viewModel.isSourceSwitcherVisible.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -258,6 +268,7 @@ fun MainApp(
                                     onOpenSleepTimer = { viewModel.setSleepTimerSheetVisible(true) },
                                     onToggleFavorite = { playbackState.currentSong?.let { viewModel.toggleFavorite(it.id) } },
                                     onRetryPlayback = { viewModel.retryPlayback() },
+                                    onOpenSourceSwitcher = { viewModel.openSourceSwitcherForCurrent() },
                                     playbackPositionFlow = viewModel.playbackPositionMs,
                                     modifier = Modifier.testTag("mini_player")
                                 )
@@ -314,6 +325,7 @@ fun MainApp(
                                 onOpenSleepTimer = { viewModel.setSleepTimerSheetVisible(true) },
                                 onToggleFavorite = { playbackState.currentSong?.let { viewModel.toggleFavorite(it.id) } },
                                 onRetryPlayback = { viewModel.retryPlayback() },
+                                onOpenSourceSwitcher = { viewModel.openSourceSwitcherForCurrent() },
                                 playbackPositionFlow = viewModel.playbackPositionMs,
                                 modifier = Modifier.testTag("mini_player")
                             )
@@ -383,6 +395,8 @@ fun MainApp(
                 currentVolume = currentVolume,
                 onVolumeChanged = { viewModel.preferencesManager.setPlayerVolume(it) },
                 onRetryPlayback = { viewModel.retryPlayback() },
+                activeStreamEngine = activeStreamEngine,
+                onOpenSourceSwitcher = { viewModel.openSourceSwitcherForCurrent() },
                 bookmarks = currentSongBookmarks,
                 onOpenBookmarks = { viewModel.setBookmarksSheetVisible(true) },
                 playbackPositionFlow = viewModel.playbackPositionMs,
@@ -501,6 +515,13 @@ fun MainApp(
             onRemoveBookmark = { viewModel.removeBookmark(playbackState.currentSong!!.id, it) },
             onSeekTo = { viewModel.seekTo(it) },
             onDismiss = { viewModel.setBookmarksSheetVisible(false) }
+        )
+    }
+
+    if (isSourceSwitcherVisible) {
+        com.example.ui.player.TrackSourceSwitcherSheet(
+            viewModel = viewModel,
+            onDismiss = { viewModel.closeSourceSwitcher() }
         )
     }
 }

@@ -2,6 +2,9 @@ package com.example.ui.player
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -9,9 +12,6 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,14 +39,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.CloudQueue
 import androidx.compose.material.icons.rounded.DirectionsCar
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lyrics
-import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.VolumeDown
 import androidx.compose.material.icons.rounded.VolumeMute
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -75,9 +80,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.PlaybackState
 import com.example.model.RepeatMode
 import com.example.model.Song
+import com.example.online.YouTubeStreamManager
 import com.example.ui.animation.FluidMotionConstants
 import com.example.ui.animation.HapticType
 import com.example.ui.animation.calculateRubberBandOffset
@@ -86,17 +93,19 @@ import com.example.ui.animation.performHapticFeedback
 import com.example.ui.components.AmbientGlowCanvas
 import com.example.ui.components.AppIcons
 import com.example.ui.components.AudioVisualizer
+import com.example.ui.components.ExpressiveHorizontalFloatingToolbar
 import com.example.ui.components.ExpressiveLoadingIndicator
+import com.example.ui.components.ExpressiveSplitButton
+import com.example.ui.components.FloatingToolbarStyle
 import com.example.ui.components.InteractiveProgressBar
 import com.example.ui.components.MorphingPlayPauseButton
+import com.example.ui.components.ToolbarActionItem
 import com.example.ui.components.TrackArtwork
 import com.example.ui.components.VinylRecordArtwork
-import com.example.ui.theme.MonoFontFamily
+import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.theme.SpringTokens
-import androidx.compose.material.icons.rounded.BookmarkBorder
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -139,18 +148,20 @@ fun NowPlayingScreen(
     currentVolume: Float = 1.0f,
     onVolumeChanged: (Float) -> Unit = {},
     onRetryPlayback: () -> Unit = {},
+    activeStreamEngine: String = "local",
+    onOpenSourceSwitcher: () -> Unit = {},
     playbackPositionFlow: StateFlow<Long>? = null,
     modifier: Modifier = Modifier
 ) {
     val currentSong = playbackState.currentSong ?: return
     val view = LocalView.current
     val scope = rememberCoroutineScope()
+    val profile = LocalPerformanceProfile.current
 
     var showSpeedPitchSheet by remember { mutableStateOf(false) }
     val artOffsetX = remember { Animatable(0f) }
     var isForwardTransition by remember { mutableStateOf(true) }
 
-    // Volume HUD state on right edge swipe
     var showVolumeHud by remember { mutableStateOf(false) }
     var volumeHudLevel by remember { mutableFloatStateOf(currentVolume) }
 
@@ -170,7 +181,6 @@ fun NowPlayingScreen(
                         )
                     )
                 )
-                // Right-edge Vertical Volume Swipe Handler
                 .pointerInput(Unit) {
                     detectVerticalDragGestures(
                         onDragEnd = {
@@ -184,7 +194,6 @@ fun NowPlayingScreen(
                         },
                         onVerticalDrag = { change, dragAmount ->
                             val screenWidth = size.width
-                            // Only trigger when finger drags in the right 30% of the screen
                             if (change.position.x > screenWidth * 0.70f) {
                                 change.consume()
                                 showVolumeHud = true
@@ -197,7 +206,6 @@ fun NowPlayingScreen(
                     )
                 }
         ) {
-            // Ambient Aura Glow Canvas
             AmbientGlowCanvas(
                 isPlaying = playbackState.isPlaying,
                 modifier = Modifier.fillMaxSize()
@@ -211,7 +219,6 @@ fun NowPlayingScreen(
                     .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Top App Bar
                 TopAppBar(
                     title = {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -250,7 +257,6 @@ fun NowPlayingScreen(
                         }
                     },
                     actions = {
-                        // Car Mode Button
                         IconButton(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
@@ -264,7 +270,6 @@ fun NowPlayingScreen(
                             )
                         }
 
-                        // Sleep Timer Button
                         IconButton(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
@@ -278,7 +283,6 @@ fun NowPlayingScreen(
                             )
                         }
 
-                        // Speed & Pitch Button
                         IconButton(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
@@ -292,7 +296,6 @@ fun NowPlayingScreen(
                             )
                         }
 
-                        // Audio Inspector Button
                         IconButton(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
@@ -306,7 +309,6 @@ fun NowPlayingScreen(
                             )
                         }
 
-                        // Audio Bookmarks Button
                         IconButton(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
@@ -333,7 +335,6 @@ fun NowPlayingScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Artwork or Vinyl Record Mode
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -345,12 +346,10 @@ fun NowPlayingScreen(
                                 onDragEnd = {
                                     val threshold = 70f
                                     if (artOffsetX.value < -threshold) {
-                                        // Swipe Left -> Previous Track (user preference)
                                         isForwardTransition = false
                                         performHapticFeedback(view, HapticType.LIGHT)
                                         onSkipPrevious()
                                     } else if (artOffsetX.value > threshold) {
-                                        // Swipe Right -> Next Track
                                         isForwardTransition = true
                                         performHapticFeedback(view, HapticType.LIGHT)
                                         onSkipNext()
@@ -405,14 +404,23 @@ fun NowPlayingScreen(
                             animationSpec = SpringTokens.spatialDefault(),
                             label = "now_playing_art_corner"
                         )
+                        val shadowElevation = when {
+                            profile.isPotato -> 0.dp
+                            playbackState.isPlaying -> 18.dp
+                            else -> 8.dp
+                        }
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .shadow(
-                                    elevation = if (playbackState.isPlaying) 20.dp else 10.dp,
-                                    shape = RoundedCornerShape(artworkCorner),
-                                    spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.40f)
-                                )
+                                .let {
+                                    if (shadowElevation > 0.dp) {
+                                        it.shadow(
+                                            elevation = shadowElevation,
+                                            shape = RoundedCornerShape(artworkCorner),
+                                            spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.40f)
+                                        )
+                                    } else it
+                                }
                                 .clip(RoundedCornerShape(artworkCorner))
                         ) {
                             AnimatedContent(
@@ -441,7 +449,6 @@ fun NowPlayingScreen(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // Live Audio Waveform Visualizer with real song acoustic dynamics
                 Box(modifier = Modifier.padding(horizontal = 32.dp)) {
                     LiveAudioVisualizerWrapper(
                         playbackPositionFlow = playbackPositionFlow,
@@ -454,7 +461,6 @@ fun NowPlayingScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Title, Artist and Favorite
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -496,15 +502,14 @@ fun NowPlayingScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Hi-Res Audio Specs & A-B Repeat Badge Row
+                // Stream Engine SplitButton / Buffering / Error & A-B Repeat Row
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 32.dp),
+                        .padding(horizontal = 28.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Audio Inspector pill / Online Stream Buffering or Error-Retry indicator
                     val hasStreamError = !playbackState.isBuffering && !playbackState.errorMessage.isNullOrBlank()
                     if (playbackState.isBuffering) {
                         Surface(
@@ -512,7 +517,7 @@ fun NowPlayingScreen(
                             color = MaterialTheme.colorScheme.primaryContainer
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 ExpressiveLoadingIndicator(
@@ -529,42 +534,39 @@ fun NowPlayingScreen(
                             }
                         }
                     } else if (hasStreamError) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.errorContainer,
-                            modifier = Modifier.clickable {
-                                performHapticFeedback(view, HapticType.LIGHT)
-                                onRetryPlayback()
-                            }
-                        ) {
-                            Text(
-                                text = "Ошибка • Повторить",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                            )
-                        }
+                        ExpressiveSplitButton(
+                            label = "Повторить",
+                            leadingIcon = Icons.Rounded.SwapHoriz,
+                            onPrimaryClick = onRetryPlayback,
+                            onMenuClick = onOpenSourceSwitcher,
+                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            primaryTestTag = "now_playing_retry_btn",
+                            menuTestTag = "now_playing_source_switcher_btn"
+                        )
                     } else {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                            modifier = Modifier.clickable { onOpenAudioInspector() }
-                        ) {
-                            Text(
-                                text = "320 kbps • Studio DSP • 44.1 kHz",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontFamily = MonoFontFamily,
-                                    fontWeight = FontWeight.Bold
-                                ),
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
+                        val isOnline = activeStreamEngine != "local" ||
+                            currentSong.contentUriString.startsWith("online://") ||
+                            currentSong.contentUriString.startsWith("http")
+                        val engineLabel = if (isOnline) {
+                            YouTubeStreamManager.formatEngineDisplay(activeStreamEngine)
+                        } else {
+                            "Studio DSP"
                         }
+                        ExpressiveSplitButton(
+                            label = engineLabel,
+                            leadingIcon = if (isOnline) Icons.Rounded.CloudQueue else Icons.Rounded.GraphicEq,
+                            onPrimaryClick = onOpenAudioInspector,
+                            onMenuClick = onOpenSourceSwitcher,
+                            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            contentColor = MaterialTheme.colorScheme.primary,
+                            primaryTestTag = "now_playing_inspector_btn",
+                            menuTestTag = "now_playing_source_switcher_btn"
+                        )
                     }
 
-                    // A-B Repeat Controller
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
+                        shape = CircleShape,
                         color = if (abPointA != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
                         modifier = Modifier.clickable {
                             performHapticFeedback(view, HapticType.LIGHT)
@@ -578,20 +580,19 @@ fun NowPlayingScreen(
                         val abText = when {
                             abPointA == null -> "A-B Цикл"
                             abPointB == null -> "A: %02d:%02d → B?".format(abPointA / 60000, (abPointA % 60000) / 1000)
-                            else -> "A ⇄ B Активен ✕"
+                            else -> "A ⇄ B ✕"
                         }
                         Text(
                             text = abText,
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             color = if (abPointA != null) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Progress Bar (smooth 40ms position collector isolated from screen root)
                 Box(modifier = Modifier.padding(horizontal = 24.dp)) {
                     LiveInteractiveProgressBarWrapper(
                         playbackPositionFlow = playbackPositionFlow,
@@ -605,7 +606,6 @@ fun NowPlayingScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Primary Controls
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -703,104 +703,71 @@ fun NowPlayingScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(22.dp))
 
-                // Material 3 Expressive Floating Pill Action Toolbar
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),
-                    tonalElevation = 4.dp,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = {
-                                performHapticFeedback(view, HapticType.LIGHT)
-                                onOpenQueue()
-                            },
-                            modifier = Modifier.testTag("now_playing_queue")
-                        ) {
-                            Icon(
-                                imageVector = AppIcons.Queue,
-                                contentDescription = "Очередь воспроизведения",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        IconButton(
-                            onClick = {
-                                performHapticFeedback(view, HapticType.LIGHT)
-                                onOpenEqualizer()
-                            },
-                            modifier = Modifier.testTag("now_playing_equalizer")
-                        ) {
-                            Icon(
-                                imageVector = AppIcons.Equalizer,
-                                contentDescription = "Эквалайзер",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        Surface(
+                // M3 Expressive Floating Action Toolbar with detached Vibrant Lyrics FAB
+                ExpressiveHorizontalFloatingToolbar(
+                    actions = listOf(
+                        ToolbarActionItem(
+                            icon = AppIcons.Queue,
+                            contentDescription = "Очередь воспроизведения",
+                            testTag = "now_playing_queue",
+                            onClick = onOpenQueue
+                        ),
+                        ToolbarActionItem(
+                            icon = AppIcons.Equalizer,
+                            contentDescription = "Эквалайзер",
+                            testTag = "now_playing_equalizer",
+                            onClick = onOpenEqualizer
+                        ),
+                        ToolbarActionItem(
+                            icon = Icons.Rounded.Album,
+                            contentDescription = "Режим винила",
+                            isActive = vinylModeEnabled,
+                            onClick = onToggleVinylMode
+                        ),
+                        ToolbarActionItem(
+                            icon = Icons.Rounded.SwapHoriz,
+                            contentDescription = "Источник и версии",
+                            testTag = "now_playing_toolbar_source",
+                            onClick = onOpenSourceSwitcher
+                        ),
+                        ToolbarActionItem(
+                            icon = AppIcons.PlaylistAdd,
+                            contentDescription = "Добавить в плейлист",
+                            testTag = "now_playing_add_to_playlist",
+                            onClick = { onAddToPlaylist(currentSong) }
+                        )
+                    ),
+                    style = FloatingToolbarStyle.STANDARD,
+                    trailingFab = {
+                        FloatingActionButton(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
                                 onOpenLyrics()
                             },
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Lyrics,
-                                    contentDescription = "Текст песни",
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                            }
-                        }
-
-                        IconButton(
-                            onClick = {
-                                performHapticFeedback(view, HapticType.LIGHT)
-                                onToggleVinylMode()
-                            }
+                            shape = RoundedCornerShape(18.dp),
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            elevation = FloatingActionButtonDefaults.elevation(
+                                defaultElevation = if (profile.isPotato) 1.dp else 6.dp
+                            ),
+                            modifier = Modifier
+                                .size(52.dp)
+                                .testTag("now_playing_lyrics_fab")
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.Album,
-                                contentDescription = "Режим винила",
-                                tint = if (vinylModeEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                imageVector = Icons.Rounded.Lyrics,
+                                contentDescription = "Текст песни"
                             )
                         }
-
-                        IconButton(
-                            onClick = {
-                                performHapticFeedback(view, HapticType.LIGHT)
-                                onAddToPlaylist(currentSong)
-                            },
-                            modifier = Modifier.testTag("now_playing_add_to_playlist")
-                        ) {
-                            Icon(
-                                imageVector = AppIcons.PlaylistAdd,
-                                contentDescription = "Добавить в плейлист",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
 
                 Spacer(modifier = Modifier.height(24.dp))
             }
 
-            // Floating Animated Volume HUD (Appears when dragging on the right edge of screen)
             AnimatedVisibility(
                 visible = showVolumeHud,
                 enter = fadeIn(tween(140)) + scaleIn(initialScale = 0.85f),
@@ -812,8 +779,8 @@ fun NowPlayingScreen(
                 Surface(
                     shape = RoundedCornerShape(24.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.95f),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-                    shadowElevation = 10.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                    shadowElevation = if (profile.isPotato) 2.dp else 10.dp,
                     modifier = Modifier.width(46.dp).height(180.dp)
                 ) {
                     Column(
@@ -834,7 +801,6 @@ fun NowPlayingScreen(
                             modifier = Modifier.size(20.dp)
                         )
 
-                        // Vertical bar indicator
                         Box(
                             modifier = Modifier
                                 .width(8.dp)
@@ -885,19 +851,16 @@ private fun LiveAudioVisualizerWrapper(
     durationMs: Long,
     songId: Long
 ) {
-    val livePos by (playbackPositionFlow?.collectAsStateWithLifecycle()
-        ?: remember(fallbackPositionMs) { mutableStateOf(fallbackPositionMs) })
-
     AudioVisualizer(
         isPlaying = isPlaying,
-        currentPositionMs = livePos,
+        currentPositionMs = fallbackPositionMs,
         durationMs = durationMs,
         songId = songId,
         barCount = 28,
         barHeight = 32.dp,
         primaryColor = MaterialTheme.colorScheme.primary,
         secondaryColor = MaterialTheme.colorScheme.tertiary,
-        currentPositionProvider = { livePos }
+        currentPositionProvider = { playbackPositionFlow?.value ?: fallbackPositionMs }
     )
 }
 

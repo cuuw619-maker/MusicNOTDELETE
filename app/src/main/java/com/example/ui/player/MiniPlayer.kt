@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,6 +31,7 @@ import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.OpenInFull
 import androidx.compose.material.icons.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -39,7 +39,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -58,7 +57,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.model.PlaybackState
@@ -67,7 +65,9 @@ import com.example.ui.animation.fluidPress
 import com.example.ui.animation.performHapticFeedback
 import com.example.ui.components.AppIcons
 import com.example.ui.components.ExpressiveLoadingIndicator
+import com.example.ui.components.LinearWavyProgressIndicator
 import com.example.ui.components.MorphingPlayPauseButton
+import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.theme.SpringTokens
 import kotlinx.coroutines.flow.StateFlow
 
@@ -83,11 +83,14 @@ fun MiniPlayer(
     onOpenSleepTimer: () -> Unit = {},
     onToggleFavorite: () -> Unit = {},
     onRetryPlayback: () -> Unit = {},
+    onOpenSourceSwitcher: () -> Unit = {},
     playbackPositionFlow: StateFlow<Long>? = null,
     modifier: Modifier = Modifier
 ) {
     val song = playbackState.currentSong ?: return
     val view = LocalView.current
+    val context = LocalContext.current
+    val profile = LocalPerformanceProfile.current
     var showMenu by remember { mutableStateOf(false) }
 
     val artCorner by animateDpAsState(
@@ -136,13 +139,15 @@ fun MiniPlayer(
                 width = 1.dp,
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
             ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            elevation = CardDefaults.cardElevation(
+                defaultElevation = if (profile.isPotato) 1.dp else 8.dp
+            )
         ) {
             Column {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                        .padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
@@ -154,9 +159,11 @@ fun MiniPlayer(
                     ) {
                         if (!song.albumArtUriString.isNullOrEmpty()) {
                             AsyncImage(
-                                model = ImageRequest.Builder(LocalContext.current)
+                                model = ImageRequest.Builder(context)
                                     .data(song.albumArtUriString)
-                                    .crossfade(true)
+                                    .size(profile.thumbnailMaxPx)
+                                    .allowRgb565(profile.allowRgb565)
+                                    .crossfade(profile.crossfadeImages)
                                     .placeholder(com.example.R.drawable.ic_album_placeholder)
                                     .error(com.example.R.drawable.ic_album_placeholder)
                                     .build(),
@@ -274,6 +281,16 @@ fun MiniPlayer(
                                 }
                             )
                             DropdownMenuItem(
+                                text = { Text("Сменить источник / версию") },
+                                onClick = {
+                                    showMenu = false
+                                    onOpenSourceSwitcher()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Rounded.SwapHoriz, contentDescription = null, modifier = Modifier.size(20.dp))
+                                }
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Очередь") },
                                 onClick = {
                                     showMenu = false
@@ -335,7 +352,9 @@ fun MiniPlayer(
                 MiniPlayerProgressLine(
                     playbackPositionFlow = playbackPositionFlow,
                     fallbackPositionMs = playbackState.currentPositionMs,
-                    durationMs = playbackState.durationMs
+                    durationMs = playbackState.durationMs,
+                    isPlaying = playbackState.isPlaying,
+                    isBuffering = playbackState.isBuffering
                 )
             }
         }
@@ -346,21 +365,24 @@ fun MiniPlayer(
 private fun MiniPlayerProgressLine(
     playbackPositionFlow: StateFlow<Long>?,
     fallbackPositionMs: Long,
-    durationMs: Long
+    durationMs: Long,
+    isPlaying: Boolean,
+    isBuffering: Boolean
 ) {
-    val livePosMs by (playbackPositionFlow?.collectAsStateWithLifecycle()
-        ?: remember(fallbackPositionMs) { mutableStateOf(fallbackPositionMs) })
-
-    val progress = if (durationMs > 0) {
-        (livePosMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-    } else 0f
-
-    LinearProgressIndicator(
-        progress = { progress },
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(3.dp),
+    LinearWavyProgressIndicator(
+        progress = if (isBuffering) null else {
+            {
+                val pos = playbackPositionFlow?.value ?: fallbackPositionMs
+                if (durationMs > 0) (pos.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+            }
+        },
+        isPlaying = isPlaying || isBuffering,
         color = MaterialTheme.colorScheme.primary,
-        trackColor = MaterialTheme.colorScheme.surfaceVariant
+        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+        height = 7.dp,
+        strokeWidth = 2.6.dp,
+        amplitudeDp = 1.6.dp,
+        wavelengthDp = 18.dp,
+        modifier = Modifier.fillMaxWidth()
     )
 }

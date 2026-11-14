@@ -67,6 +67,7 @@ import com.example.model.Album
 import com.example.model.Artist
 import com.example.model.Folder
 import com.example.model.Song
+import com.example.ui.theme.LocalPerformanceProfile
 
 @Composable
 fun SongListItem(
@@ -82,6 +83,7 @@ fun SongListItem(
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val profile = LocalPerformanceProfile.current
 
     Surface(
         modifier = modifier
@@ -113,7 +115,9 @@ fun SongListItem(
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(song.albumArtUriString)
-                            .crossfade(true)
+                            .size(profile.thumbnailMaxPx)
+                            .allowRgb565(profile.allowRgb565)
+                            .crossfade(profile.crossfadeImages)
                             .placeholder(com.example.R.drawable.ic_album_placeholder)
                             .error(com.example.R.drawable.ic_album_placeholder)
                             .build(),
@@ -323,11 +327,14 @@ fun AlbumCard(
                     ),
                 contentAlignment = Alignment.Center
             ) {
+                val cardProfile = LocalPerformanceProfile.current
                 if (!album.albumArtUriString.isNullOrEmpty()) {
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(album.albumArtUriString)
-                            .crossfade(true)
+                            .size((cardProfile.thumbnailMaxPx * 1.6f).toInt())
+                            .allowRgb565(cardProfile.allowRgb565)
+                            .crossfade(cardProfile.crossfadeImages)
                             .placeholder(com.example.R.drawable.ic_album_placeholder)
                             .error(com.example.R.drawable.ic_album_placeholder)
                             .build(),
@@ -386,10 +393,11 @@ fun ArtistListItem(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val avatarShape = remember(artist.name) { morphPolygonShape(kotlin.math.abs(artist.name.hashCode())) }
             Box(
                 modifier = Modifier
                     .size(48.dp)
-                    .clip(CircleShape)
+                    .clip(avatarShape)
                     .background(MaterialTheme.colorScheme.secondaryContainer),
                 contentAlignment = Alignment.Center
             ) {
@@ -492,11 +500,12 @@ fun EmptyStateView(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        val emptyShape = remember { morphPolygonShape(3) }
         Box(
             modifier = Modifier
-                .size(80.dp)
-                .clip(RoundedCornerShape(26.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)),
+                .size(84.dp)
+                .clip(emptyShape)
+                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)),
             contentAlignment = Alignment.Center
         ) {
             Icon(

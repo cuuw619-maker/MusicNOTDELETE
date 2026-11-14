@@ -44,6 +44,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     val playbackState: StateFlow<PlaybackState> = controllerManager.playbackState
     val playbackPositionMs: StateFlow<Long> = controllerManager.playbackPositionMs
+    val activeStreamEngine: StateFlow<String> = controllerManager.activeStreamEngine
     val equalizerState = equalizerManager.equalizerState
 
     // Sleep Timer
@@ -135,6 +136,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val reducedMotion = preferencesManager.reducedMotion
     val hapticEnabled = preferencesManager.hapticEnabled
     val animationScale = preferencesManager.animationScale
+    val performanceMode = preferencesManager.performanceMode
 
     // In-memory song bookmarks (timestamp pins): songId -> list of timestamps
     private val _bookmarksState = MutableStateFlow<Map<Long, List<Long>>>(emptyMap())
@@ -183,13 +185,40 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val spotifyManager = app.spotifyManager
     val spotifyAuthState = spotifyManager.authState
 
-    // YouTube Music Online
+    // Multi-Source Online Streaming & Track/Source Switcher
     val youTubeStreamManager = app.youTubeStreamManager
+    private val _onlineSourceFilter = MutableStateFlow("all")
+    val onlineSourceFilter: StateFlow<String> = _onlineSourceFilter.asStateFlow()
+
     private val _onlineSearchResults = MutableStateFlow<List<OnlineTrack>>(emptyList())
     val onlineSearchResults: StateFlow<List<OnlineTrack>> = _onlineSearchResults.asStateFlow()
 
     private val _isOnlineSearchLoading = MutableStateFlow(false)
     val isOnlineSearchLoading: StateFlow<Boolean> = _isOnlineSearchLoading.asStateFlow()
+
+    private val _isSourceSwitcherVisible = MutableStateFlow(false)
+    val isSourceSwitcherVisible: StateFlow<Boolean> = _isSourceSwitcherVisible.asStateFlow()
+
+    private val _sourceSwitcherTitle = MutableStateFlow("")
+    val sourceSwitcherTitle: StateFlow<String> = _sourceSwitcherTitle.asStateFlow()
+
+    private val _sourceSwitcherQuery = MutableStateFlow("")
+    val sourceSwitcherQuery: StateFlow<String> = _sourceSwitcherQuery.asStateFlow()
+
+    private val _alternativeSourceFilter = MutableStateFlow("all")
+    val alternativeSourceFilter: StateFlow<String> = _alternativeSourceFilter.asStateFlow()
+
+    private val _alternativeTracks = MutableStateFlow<List<OnlineTrack>>(emptyList())
+    val alternativeTracks: StateFlow<List<OnlineTrack>> = _alternativeTracks.asStateFlow()
+
+    private val _isAlternativeLoading = MutableStateFlow(false)
+    val isAlternativeLoading: StateFlow<Boolean> = _isAlternativeLoading.asStateFlow()
+
+    private val _selectedDeliveryEngine = MutableStateFlow("auto")
+    val selectedDeliveryEngine: StateFlow<String> = _selectedDeliveryEngine.asStateFlow()
+
+    private var sourceSwitcherReplaceCurrent = true
+    private var alternativeSearchJob: kotlinx.coroutines.Job? = null
 
     // Lyrics + per-song timing calibration offset
     val lyricsManager = app.lyricsManager
@@ -522,6 +551,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun setReducedMotion(enabled: Boolean) = preferencesManager.setReducedMotion(enabled)
     fun setHapticEnabled(enabled: Boolean) = preferencesManager.setHapticEnabled(enabled)
     fun setAnimationScale(scale: Float) = preferencesManager.setAnimationScale(scale)
+    fun setPerformanceMode(mode: PreferencesManager.PerformanceMode) = preferencesManager.setPerformanceMode(mode)
 
     fun setPlaybackSpeed(speed: Float) = controllerManager.setPlaybackSpeed(speed)
     fun setPitchSemitones(semitones: Int) = controllerManager.setPitchSemitones(semitones)
@@ -637,8 +667,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ==========================================
-    // ONLINE STREAMING SEARCH & PLAYBACK
+    // ONLINE STREAMING SEARCH, MULTI-SOURCE & VERSION SWITCHER
     // ==========================================
+    fun setOnlineSourceFilter(sourceId: String) {
+        if (_onlineSourceFilter.value == sourceId) return
+        _onlineSourceFilter.value = sourceId
+        val q = _searchQuery.value.trim()
+        if (_searchMode.value == 1 && q.length >= 2) {
+            searchOnline(q, immediate = true)
+        }
+    }
+
     fun searchOnline(query: String, immediate: Boolean = false) {
         val trimmed = query.trim()
         if (trimmed.isBlank()) {
@@ -647,14 +686,15 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _isOnlineSearchLoading.value = false
             return
         }
+        val activeFilter = _onlineSourceFilter.value
         onlineSearchJob?.cancel()
         onlineSearchJob = viewModelScope.launch {
             if (!immediate) {
                 kotlinx.coroutines.delay(420L)
             }
             _isOnlineSearchLoading.value = true
-            val results = youTubeStreamManager.search(trimmed)
-            if (_searchQuery.value.trim() == trimmed) {
+            val results = youTubeStreamManager.search(trimmed, activeFilter)
+            if (_searchQuery.value.trim() == trimmed && _onlineSourceFilter.value == activeFilter) {
                 _onlineSearchResults.value = results
                 _isOnlineSearchLoading.value = false
                 if (results.isNotEmpty()) {
@@ -671,6 +711,78 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         val queue = _onlineSearchResults.value.map { it.toSong() }
         val target = queue.find { it.title == track.title && it.artist == track.artist } ?: track.toSong()
         controllerManager.playSong(target, if (queue.isNotEmpty()) queue else listOf(target))
+    }
+
+    fun openSourceSwitcherForCurrent() {
+        val song = playbackState.value.currentSong ?: return
+        sourceSwitcherReplaceCurrent = true
+        val initialQ = buildString {
+            if (song.artist.isNotBlank() && !song.artist.equals("Unknown", true)) {
+                append(song.artist).append(' ')
+            }
+            append(song.title)
+        }.trim()
+        _sourceSwitcherTitle.value = song.title
+        _sourceSwitcherQuery.value = initialQ
+        _alternativeSourceFilter.value = "all"
+        _selectedDeliveryEngine.value = "auto"
+        _isSourceSwitcherVisible.value = true
+        loadAlternativeCandidates()
+    }
+
+    fun openSourceSwitcherForOnlineTrack(track: OnlineTrack) {
+        sourceSwitcherReplaceCurrent = false
+        val initialQ = "${track.artist} ${track.title}".trim()
+        _sourceSwitcherTitle.value = track.title
+        _sourceSwitcherQuery.value = initialQ
+        _alternativeSourceFilter.value = "all"
+        _selectedDeliveryEngine.value = "auto"
+        _isSourceSwitcherVisible.value = true
+        loadAlternativeCandidates()
+    }
+
+    fun closeSourceSwitcher() {
+        _isSourceSwitcherVisible.value = false
+    }
+
+    fun setAlternativeQuery(query: String) {
+        _sourceSwitcherQuery.value = query
+    }
+
+    fun setAlternativeSourceFilter(sourceId: String) {
+        _alternativeSourceFilter.value = sourceId
+        loadAlternativeCandidates()
+    }
+
+    fun loadAlternativeCandidates() {
+        val q = _sourceSwitcherQuery.value.trim()
+        val filter = _alternativeSourceFilter.value
+        if (q.isBlank()) {
+            _alternativeTracks.value = emptyList()
+            _isAlternativeLoading.value = false
+            return
+        }
+        alternativeSearchJob?.cancel()
+        alternativeSearchJob = viewModelScope.launch {
+            _isAlternativeLoading.value = true
+            val tracks = youTubeStreamManager.search(q, filter)
+            _alternativeTracks.value = tracks
+            _isAlternativeLoading.value = false
+        }
+    }
+
+    fun selectAlternativeTrack(track: OnlineTrack) {
+        _isSourceSwitcherVisible.value = false
+        if (sourceSwitcherReplaceCurrent && playbackState.value.currentSong != null) {
+            controllerManager.replaceCurrentTrackWithOnlineCandidate(track)
+        } else {
+            playOnlineTrack(track)
+        }
+    }
+
+    fun switchDeliveryEngine(engineId: String) {
+        _selectedDeliveryEngine.value = engineId
+        controllerManager.switchDeliveryEngineForCurrent(engineId)
     }
 
     fun retryPlayback() {

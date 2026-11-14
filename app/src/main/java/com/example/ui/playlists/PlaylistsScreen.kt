@@ -75,6 +75,7 @@ import com.example.ui.components.SongListItem
 import com.example.ui.components.groupedItemShape
 import com.example.ui.dialogs.ConfirmDeleteDialog
 import com.example.ui.dialogs.RenamePlaylistDialog
+import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.viewmodel.MusicViewModel
 
 @Composable
@@ -289,10 +290,13 @@ private fun PlaylistItem(
                 contentAlignment = Alignment.Center
             ) {
                 if (!playlist.firstSongAlbumArt.isNullOrEmpty()) {
+                    val profile = LocalPerformanceProfile.current
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(playlist.firstSongAlbumArt)
-                            .crossfade(true)
+                            .size(profile.thumbnailMaxPx)
+                            .allowRgb565(profile.allowRgb565)
+                            .crossfade(profile.crossfadeImages)
                             .build(),
                         contentDescription = playlist.name,
                         contentScale = ContentScale.Crop,

@@ -61,6 +61,9 @@ class MusicControllerManager(
     private val _abPointB = MutableStateFlow<Long?>(null)
     val abPointB: StateFlow<Long?> = _abPointB.asStateFlow()
 
+    private val _activeStreamEngine = MutableStateFlow("local")
+    val activeStreamEngine: StateFlow<String> = _activeStreamEngine.asStateFlow()
+
     private var originalQueue = mutableListOf<Song>()
     private var currentQueueSongs = mutableListOf<Song>()
     private var positionUpdateJob: Job? = null
@@ -147,6 +150,9 @@ class MusicControllerManager(
                     if (currentSong.contentUriString.startsWith("online://")) {
                         resolveAndPlayIndex(idx, currentSong)
                     } else {
+                        if (!onlineSourceBySongId.containsKey(currentSong.id) && !currentSong.contentUriString.startsWith("http")) {
+                            _activeStreamEngine.value = "local"
+                        }
                         preresolveUpcomingQueue(idx)
                     }
                 }
@@ -290,6 +296,130 @@ class MusicControllerManager(
         val retrySong = if (sourceUri.startsWith("online://")) current.copy(contentUriString = sourceUri) else current
         val queue = currentQueueSongs.toList().ifEmpty { listOf(retrySong) }
         playSong(retrySong, queue)
+    }
+
+    fun getOriginalOnlineUriForSong(songId: Long): String? = onlineSourceBySongId[songId]
+
+    fun switchDeliveryEngineForCurrent(preferredEngine: String) {
+        val controller = mediaController ?: return
+        val current = _playbackState.value.currentSong ?: return
+        val sourceUri = onlineSourceBySongId[current.id] ?: current.contentUriString
+        val idx = controller.currentMediaItemIndex.takeIf { it in currentQueueSongs.indices } ?: return
+        val resumePos = controller.currentPosition.coerceAtLeast(0L)
+
+        val uri = runCatching { Uri.parse(sourceUri) }.getOrNull()
+        val host = uri?.host
+        val path = uri?.path?.removePrefix("/") ?: ""
+
+        resolveJob?.cancel()
+        isResolvingOnline = true
+        _playbackState.value = _playbackState.value.copy(isBuffering = true, errorMessage = null)
+
+        resolveJob = scope.launch {
+            try {
+                val app = context.applicationContext as? com.example.MusicApplication
+                val streamManager = app?.youTubeStreamManager
+                if (streamManager == null) {
+                    isResolvingOnline = false
+                    updatePlaybackState()
+                    return@launch
+                }
+
+                val resolvedResult = if (host == "youtube" && path.isNotBlank()) {
+                    streamManager.clearStreamCacheForId(path)
+                    streamManager.resolveStreamResult(
+                        videoId = path,
+                        excludedEngines = emptySet(),
+                        preferredEngine = preferredEngine
+                    )
+                } else {
+                    val matched = streamManager.resolveTrackStreamForMetadata(
+                        targetTitle = current.title,
+                        targetArtist = current.artist,
+                        expectedDurationMs = current.durationMs,
+                        preferredEngine = preferredEngine
+                    )
+                    matched?.let { (u, _, eng) ->
+                        com.example.online.ResolvedStream(
+                            url = u,
+                            userAgent = "Mozilla/5.0",
+                            expiresAtMs = System.currentTimeMillis() + 3600_000L,
+                            engine = eng
+                        )
+                    }
+                }
+
+                isResolvingOnline = false
+                if (resolvedResult != null && idx in currentQueueSongs.indices) {
+                    _activeStreamEngine.value = resolvedResult.engine
+                    val updated = current.copy(contentUriString = resolvedResult.url)
+                    currentQueueSongs[idx] = updated
+                    val oIdx = originalQueue.indexOfFirst { it.id == current.id }
+                    if (oIdx in originalQueue.indices) originalQueue[oIdx] = updated
+                    controller.replaceMediaItem(idx, songToMediaItem(updated))
+                    controller.seekTo(idx, resumePos)
+                    controller.prepare()
+                    controller.play()
+                    updatePlaybackState()
+                } else {
+                    _playbackState.value = _playbackState.value.copy(
+                        isBuffering = false,
+                        errorMessage = "Движок ${com.example.online.YouTubeStreamManager.formatEngineDisplay(preferredEngine)} не ответил для этого трека"
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                isResolvingOnline = false
+                throw e
+            } catch (_: Exception) {
+                isResolvingOnline = false
+                _playbackState.value = _playbackState.value.copy(
+                    isBuffering = false,
+                    errorMessage = "Не удалось переключить движок потока"
+                )
+            }
+        }
+    }
+
+    fun replaceCurrentTrackWithOnlineCandidate(track: com.example.online.OnlineTrack) {
+        val newSong = track.toSong()
+        onlineSourceBySongId[newSong.id] = track.buildOnlineUri()
+        val controller = mediaController
+        val activeIdx = controller?.currentMediaItemIndex?.takeIf { it in currentQueueSongs.indices } ?: -1
+
+        if (controller != null && activeIdx >= 0) {
+            getService()?.cancelCrossfade()
+            resolveJob?.cancel()
+            preResolveJob?.cancel()
+            isCrossfading = false
+            onlineRetryCounts[newSong.id] = 0
+
+            val oldSong = currentQueueSongs[activeIdx]
+            currentQueueSongs[activeIdx] = newSong
+            val origIdx = originalQueue.indexOfFirst { it.id == oldSong.id }
+            if (origIdx in originalQueue.indices) originalQueue[origIdx] = newSong
+
+            if (newSong.contentUriString.startsWith("http")) {
+                _activeStreamEngine.value = track.sourceEngine
+                controller.replaceMediaItem(activeIdx, songToMediaItem(newSong))
+                controller.seekTo(activeIdx, 0L)
+                controller.prepare()
+                controller.play()
+                updatePlaybackState()
+            } else {
+                _playbackState.value = _playbackState.value.copy(
+                    currentSong = newSong,
+                    isBuffering = true,
+                    currentPositionMs = 0L,
+                    durationMs = newSong.durationMs,
+                    queue = currentQueueSongs.toList(),
+                    currentQueueIndex = activeIdx,
+                    errorMessage = null
+                )
+                resolveAndPlayIndex(activeIdx, newSong)
+            }
+        } else {
+            playSong(newSong, listOf(newSong))
+        }
     }
 
     private fun startPositionUpdates() {
@@ -444,35 +574,85 @@ class MusicControllerManager(
     private var preResolveJob: Job? = null
     private val onlineRetryCounts = mutableMapOf<Long, Int>()
 
-    suspend fun resolveOnlineUriIfNeeded(song: Song): Song = withContext(Dispatchers.IO) {
-        if (!song.contentUriString.startsWith("online://")) return@withContext song
+    suspend fun resolveOnlineUriIfNeeded(
+        song: Song,
+        preferredEngine: String? = null
+    ): Song = withContext(Dispatchers.IO) {
+        if (!song.contentUriString.startsWith("online://")) {
+            if (!song.contentUriString.startsWith("http")) {
+                _activeStreamEngine.value = "local"
+            }
+            return@withContext song
+        }
         onlineSourceBySongId[song.id] = song.contentUriString
 
         val resolved = kotlinx.coroutines.withTimeoutOrNull(14_500L) {
             val uri = Uri.parse(song.contentUriString)
-            val host = uri.host // "youtube", "spotify", "saavn", "audius"
+            val host = uri.host // "youtube", "audius", "saavn", "archive", "deezer", "spotify"
             val path = uri.path?.removePrefix("/") ?: ""
             val metaTitle = uri.getQueryParameter("title")?.takeIf { it.isNotBlank() } ?: song.title
             val metaArtist = uri.getQueryParameter("artist")?.takeIf { it.isNotBlank() } ?: song.artist
             val metaDur = uri.getQueryParameter("dur")?.toLongOrNull() ?: song.durationMs
             val embeddedStream = uri.getQueryParameter("stream")?.takeIf { it.startsWith("http") }
 
-            if (embeddedStream != null) {
+            if (embeddedStream != null && preferredEngine.isNullOrBlank()) {
+                _activeStreamEngine.value = host ?: "online"
                 return@withTimeoutOrNull song.copy(contentUriString = embeddedStream)
             }
 
             val app = context.applicationContext as? com.example.MusicApplication
             val streamManager = app?.youTubeStreamManager ?: return@withTimeoutOrNull song
 
-            if (host == "youtube" && path.isNotBlank()) {
-                val resolvedUrl = streamManager.resolveStreamUrl(path)
-                if (resolvedUrl != null) {
-                    return@withTimeoutOrNull song.copy(contentUriString = resolvedUrl)
+            if (host == "archive" && path.isNotBlank()) {
+                val archiveCandidate = com.example.online.OnlineTrack(
+                    id = path,
+                    title = metaTitle,
+                    artist = metaArtist,
+                    durationSeconds = metaDur / 1000L,
+                    sourceEngine = "archive"
+                )
+                val direct = streamManager.resolveDirectTrackPlayableUrl(archiveCandidate)
+                if (direct != null) {
+                    _activeStreamEngine.value = "archive"
+                    return@withTimeoutOrNull song.copy(contentUriString = direct)
                 }
             }
 
-            val matched = streamManager.resolveTrackStreamForMetadata(metaTitle, metaArtist, metaDur)
+            if (host == "audius" && path.isNotBlank()) {
+                val audiusCandidate = com.example.online.OnlineTrack(
+                    id = path,
+                    title = metaTitle,
+                    artist = metaArtist,
+                    durationSeconds = metaDur / 1000L,
+                    sourceEngine = "audius"
+                )
+                val direct = streamManager.resolveDirectTrackPlayableUrl(audiusCandidate)
+                if (direct != null) {
+                    _activeStreamEngine.value = "audius"
+                    return@withTimeoutOrNull song.copy(contentUriString = direct)
+                }
+            }
+
+            if (host == "youtube" && path.isNotBlank()) {
+                val resolvedResult = streamManager.resolveStreamResult(
+                    videoId = path,
+                    excludedEngines = emptySet(),
+                    preferredEngine = preferredEngine
+                )
+                if (resolvedResult != null) {
+                    _activeStreamEngine.value = resolvedResult.engine
+                    return@withTimeoutOrNull song.copy(contentUriString = resolvedResult.url)
+                }
+            }
+
+            val matched = streamManager.resolveTrackStreamForMetadata(
+                targetTitle = metaTitle,
+                targetArtist = metaArtist,
+                expectedDurationMs = metaDur,
+                preferredEngine = preferredEngine
+            )
             if (matched != null) {
+                _activeStreamEngine.value = matched.third
                 return@withTimeoutOrNull song.copy(
                     contentUriString = matched.first,
                     durationMs = if (song.durationMs <= 0L) matched.second else song.durationMs
@@ -569,6 +749,7 @@ class MusicControllerManager(
                 )
                 isResolvingOnline = false
                 if (alternate != null && index in currentQueueSongs.indices && currentQueueSongs[index].id == song.id) {
+                    _activeStreamEngine.value = alternate.engine
                     val updated = song.copy(contentUriString = alternate.url)
                     currentQueueSongs[index] = updated
                     val oIdx = originalQueue.indexOfFirst { it.id == song.id }

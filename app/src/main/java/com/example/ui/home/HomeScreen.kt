@@ -60,9 +60,12 @@ import com.example.ui.animation.bouncyClickable
 import com.example.ui.components.EmptyStateView
 import com.example.ui.components.ExpressiveHeroCard
 import com.example.ui.components.ExpressiveLoadingIndicator
+import com.example.ui.components.ExpressiveMorphShapeSurface
 import com.example.ui.components.ExpressiveSectionHeader
+import com.example.ui.components.LinearWavyProgressIndicator
 import com.example.ui.components.SongListItem
 import com.example.ui.components.groupedItemShape
+import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.viewmodel.MusicViewModel
 
 @Composable
@@ -81,6 +84,8 @@ fun HomeScreen(
     val mostPlayed by viewModel.mostPlayed.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
+    val profile = LocalPerformanceProfile.current
+    val context = LocalContext.current
 
     LazyColumn(
         modifier = modifier
@@ -133,6 +138,16 @@ fun HomeScreen(
                     }
                 }
             }
+            if (isScanning) {
+                LinearWavyProgressIndicator(
+                    isPlaying = true,
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    height = 8.dp,
+                    strokeWidth = 2.6.dp,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                )
+            }
         }
 
         // Expressive Hero Card: Quick Mix / Resume Last Track
@@ -162,18 +177,29 @@ fun HomeScreen(
                         ) {
                             if (!heroSong.albumArtUriString.isNullOrEmpty()) {
                                 AsyncImage(
-                                    model = heroSong.albumArtUriString,
+                                    model = ImageRequest.Builder(context)
+                                        .data(heroSong.albumArtUriString)
+                                        .size(profile.thumbnailMaxPx)
+                                        .allowRgb565(profile.allowRgb565)
+                                        .crossfade(profile.crossfadeImages)
+                                        .build(),
                                     contentDescription = heroSong.title,
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()
                                 )
                             } else {
-                                Icon(
-                                    imageVector = Icons.Rounded.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(30.dp)
-                                )
+                                ExpressiveMorphShapeSurface(
+                                    shapeIndex = 4,
+                                    containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(48.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.AutoAwesome,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
                             }
                         }
                         Spacer(modifier = Modifier.width(14.dp))
@@ -530,10 +556,13 @@ private fun RecentSongCard(
                 contentAlignment = Alignment.Center
             ) {
                 if (!song.albumArtUriString.isNullOrEmpty()) {
+                    val itemProfile = LocalPerformanceProfile.current
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
                             .data(song.albumArtUriString)
-                            .crossfade(true)
+                            .size(itemProfile.thumbnailMaxPx)
+                            .allowRgb565(itemProfile.allowRgb565)
+                            .crossfade(itemProfile.crossfadeImages)
                             .placeholder(com.example.R.drawable.ic_album_placeholder)
                             .error(com.example.R.drawable.ic_album_placeholder)
                             .build(),

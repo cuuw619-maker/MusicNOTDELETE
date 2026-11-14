@@ -1,10 +1,17 @@
 package com.example
 
+import android.app.ActivityManager
 import android.app.Application
+import android.content.Context
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import com.example.data.database.MusicDatabase
 import com.example.data.preferences.PreferencesManager
 import com.example.model.Playlist
 import com.example.model.Song
+import com.example.network.NetworkClient
 import com.example.playback.EqualizerManager
 import com.example.playback.MusicControllerManager
 import com.example.plugin.LibraryApi
@@ -19,7 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-class MusicApplication : Application() {
+class MusicApplication : Application(), ImageLoaderFactory {
 
     lateinit var database: MusicDatabase
         private set
@@ -155,6 +162,27 @@ class MusicApplication : Application() {
         )
 
         musicControllerManager.pluginManager = pluginManager
+    }
+
+    override fun newImageLoader(): ImageLoader {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val isLowRam = am?.isLowRamDevice == true
+        return ImageLoader.Builder(this)
+            .okHttpClient { NetworkClient.okHttpClient }
+            .memoryCache {
+                MemoryCache.Builder(this)
+                    .maxSizePercent(if (isLowRam) 0.12 else 0.24)
+                    .build()
+            }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(cacheDir.resolve("coil_art_cache"))
+                    .maxSizeBytes(if (isLowRam) 32L * 1024L * 1024L else 64L * 1024L * 1024L)
+                    .build()
+            }
+            .allowRgb565(isLowRam)
+            .crossfade(!isLowRam)
+            .build()
     }
 
     companion object {
