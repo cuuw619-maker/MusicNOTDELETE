@@ -297,17 +297,20 @@ class YouTubeStreamManager {
     }
 
     private suspend fun searchYouTubeAggregated(query: String): List<OnlineTrack> = coroutineScope {
-        val ytMusic = searchViaYtMusicInnerTube(query)
-        val webResults = async { searchViaYouTubeWebHtml(query) }
-        val ytWebList = if (ytMusic.isNotEmpty()) ytMusic else webResults.await()
-        if (ytWebList.isNotEmpty()) {
-            webResults.cancel()
-            return@coroutineScope ytWebList
-        }
+        // Do not discard web results just because YouTube Music returned something:
+        // the exact recording is often ranked below the first YTM shelf.
+        val ytMusic = async(Dispatchers.IO) { searchViaYtMusicInnerTube(query) }
+        val webResults = async(Dispatchers.IO) { searchViaYouTubeWebHtml(query) }
+        val primary = (ytMusic.await() + webResults.await())
+            .distinctBy { "${it.sourceEngine}:${it.id}" }
 
-        val piped = async { searchViaPipedParallel(query) }
-        val invidious = async { searchViaInvidiousParallel(query) }
-        (piped.await() + invidious.await()).distinctBy { it.id }
+        if (primary.size >= 8) return@coroutineScope primary
+
+        // Mirrors are a secondary catalog, not a replacement for the native results.
+        val piped = async(Dispatchers.IO) { searchViaPipedParallel(query) }
+        val invidious = async(Dispatchers.IO) { searchViaInvidiousParallel(query) }
+        (primary + piped.await() + invidious.await())
+            .distinctBy { "${it.sourceEngine}:${it.id}" }
     }
 
     private fun interleaveTracks(buckets: List<List<OnlineTrack>>): List<OnlineTrack> {
@@ -390,9 +393,16 @@ class YouTubeStreamManager {
             val query = "$cleanArtist $cleanTitle".trim().ifBlank { targetTitle }
 
             val candidates = coroutineScope {
-                val ytD = async { searchYouTubeAggregated(query) }
-                val ytAudioD = async {
-                    if (excludedVideoIds.isNotEmpty()) searchViaYtMusicInnerTube("$query audio") else emptyList()
+                // Meld-style multi-query matching: search artist/title in both orders and
+                // quote the title so short Russian titles are not buried by broad results.
+                val youtubeQueries = linkedSetOf(
+                    query,
+                    "$cleanTitle $cleanArtist".trim(),
+                    "\"$cleanTitle\" $cleanArtist".trim(),
+                    "$query audio"
+                ).filter { it.isNotBlank() }.distinct()
+                val youtubeSearches = youtubeQueries.map { q ->
+                    async(Dispatchers.IO) { searchYouTubeAggregated(q) }
                 }
                 val scD = async { FreeCatalogProviders.searchSoundCloud(query) }
                 val jamendoD = async { FreeCatalogProviders.searchJamendo(query) }
@@ -407,7 +417,7 @@ class YouTubeStreamManager {
                 val itunesD = async {
                     if (allowPreviewFallback) FreeCatalogProviders.searchItunes(query) else emptyList()
                 }
-                (ytD.await() + ytAudioD.await() + scD.await() + jamendoD.await() + bilibiliD.await() +
+                (youtubeSearches.awaitAll().flatten() + scD.await() + jamendoD.await() + bilibiliD.await() +
                     saavnD.await() + audiusD.await() + bandcampD.await() + archiveD.await() +
                     deezerD.await() + itunesD.await())
                     .distinctBy { "${it.sourceEngine}:${it.id}" }
@@ -588,6 +598,18 @@ class YouTubeStreamManager {
 
         if (!videoId.isNullOrBlank() && videoId !in excludedVideoIds) {
             streamCache.remove(videoId)
+
+            // On a playback-time 403, prefer a fresh URL intercepted from YouTube's
+            // own embed player. This supplies a current CDN signature and PoToken,
+            // rather than immediately retrying another possibly stale extracted URL.
+            if ("webview_decipher" !in excludedEnginesForSameVideo) {
+                val intercepted = WebViewYouTubeHelper.resolveViaWebViewEmbedIntercept(videoId)
+                if (intercepted != null && intercepted.url != failedUrl) {
+                    cacheStream(videoId, intercepted)
+                    return@withContext intercepted
+                }
+            }
+
             val direct = resolveStreamResult(videoId, excludedEnginesForSameVideo, null)
             if (direct != null && direct.url != failedUrl) return@withContext direct
         }

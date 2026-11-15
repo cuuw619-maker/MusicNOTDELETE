@@ -128,6 +128,11 @@ object RelevanceScorer {
             .replace(Regex("\\s+"), " ")
             .trim()
 
+    /**
+     * Meld-inspired fuzzy score: title (45%), artist (35%), duration (20%).
+     * Bigram similarity tolerates punctuation and small spelling differences
+     * without allowing an artist-only match to pass.
+     */
     fun assess(
         candidate: OnlineTrack,
         targetTitle: String,
@@ -136,110 +141,103 @@ object RelevanceScorer {
     ): RelevanceAssessment {
         val normTargetTitle = normalizePlain(targetTitle)
         val normTargetArtist = normalizePlain(targetArtist)
-        val normCandTitle = normalizePlain(candidate.title)
-        val normCandArtist = normalizePlain(candidate.artist)
-        val combinedCand = "$normCandArtist $normCandTitle"
+        val normCandidateTitle = normalizePlain(candidate.title)
+        val normCandidateArtist = normalizePlain(candidate.artist)
+        val combinedCandidate = normalizePlain("${candidate.artist} ${candidate.title}")
 
         val titleTokens = tokenize(targetTitle).ifEmpty {
-            normalizePlain(targetTitle).split(Regex("\\s+")).filter { it.isNotBlank() }
+            normTargetTitle.split(Regex("\\s+")).filter { it.isNotBlank() }
         }
-        val artistTokens = tokenize(targetArtist).ifEmpty {
-            normalizePlain(targetArtist).split(Regex("\\s+")).filter { it.isNotBlank() }
+        val candidateTitleTokens = tokenize(candidate.title).toSet()
+        val matchedTitleCount = titleTokens.count { token ->
+            token in candidateTitleTokens || normCandidateTitle.contains(token)
         }
+        val titleRatio = if (titleTokens.isEmpty()) 1f
+            else matchedTitleCount.toFloat() / titleTokens.size.toFloat()
 
-        val candTitleTokens = tokenize(candidate.title).toSet()
-        val matchedTitleCount = if (titleTokens.isEmpty()) 0 else {
-            titleTokens.count { token ->
-                token in candTitleTokens || normCandTitle.contains(token)
-            }
-        }
-        val titleRatio = if (titleTokens.isEmpty()) 1f else matchedTitleCount.toFloat() / titleTokens.size.toFloat()
-
-        val exactTitleMatch = normTargetTitle.isNotBlank() &&
-            (normCandTitle == normTargetTitle || normCandTitle.contains(normTargetTitle))
-
-        val artistMatch = when {
-            artistTokens.isEmpty() -> true
-            normTargetArtist.isNotBlank() && combinedCand.contains(normTargetArtist) -> true
-            else -> artistTokens.any { token ->
-                combinedCand.contains(token)
-            }
-        }
-
-        var score = 0
-        if (normCandTitle == normTargetTitle && normTargetTitle.isNotBlank()) {
-            score += 70
-        } else if (exactTitleMatch) {
-            score += 52
-        } else {
-            score += (titleRatio * 48f).toInt()
-        }
-
-        if (artistTokens.isNotEmpty()) {
-            if (normCandArtist.contains(normTargetArtist) && normTargetArtist.isNotBlank()) {
-                score += 48
-            } else if (artistMatch) {
-                score += 28
-            } else {
-                score -= 35
-            }
-        }
-
-        if (candidate.isOfficialAudio) score += 18
-        if (normCandArtist.endsWith("topic")) score += 16
-        if (candidate.title.contains("official audio", ignoreCase = true)) score += 10
-        if (candidate.directStreamUrl != null && !candidate.isPreviewOnly) score += 8
-        if (candidate.isPreviewOnly) score -= 24 // Prefer full tracks unless only preview exists
+        val titleScore = textSimilarity(normTargetTitle, normCandidateTitle)
+        val artistScore = if (normTargetArtist.isBlank()) 0.5f else maxOf(
+            textSimilarity(normTargetArtist, normCandidateArtist),
+            textSimilarity(normTargetArtist, combinedCandidate)
+        )
+        val artistMatched = normTargetArtist.isBlank() ||
+            artistScore >= 0.30f || combinedCandidate.contains(normTargetArtist)
 
         var durationTooFar = false
-        if (expectedDurationMs > 15_000L && candidate.durationMs > 15_000L && !candidate.isPreviewOnly) {
+        val durationScore = if (
+            expectedDurationMs > 15_000L &&
+            candidate.durationMs > 15_000L &&
+            !candidate.isPreviewOnly
+        ) {
             val diffSec = abs(candidate.durationMs - expectedDurationMs) / 1000L
-            score += when {
-                diffSec <= 4L -> 50
-                diffSec <= 10L -> 30
-                diffSec <= 20L -> 10
-                diffSec <= 35L -> -15
-                else -> {
-                    durationTooFar = true
-                    -75
-                }
+            durationTooFar = diffSec > 45L
+            when {
+                diffSec <= 2L -> 1.0f
+                diffSec <= 5L -> 0.8f
+                diffSec <= 10L -> 0.5f
+                diffSec <= 30L -> 0.2f
+                else -> 0.0f
             }
+        } else {
+            0.5f
         }
+
+        var score = (
+            titleScore * 45f +
+                artistScore * 35f +
+                durationScore * 20f
+            ).toInt()
+
+        if (candidate.isOfficialAudio) score += 3
+        if (normCandidateArtist.endsWith("topic")) score += 3
+        if (candidate.title.contains("official audio", ignoreCase = true)) score += 2
+        if (candidate.directStreamUrl != null && !candidate.isPreviewOnly) score += 2
+        if (candidate.isPreviewOnly) score -= 18
 
         val targetLower = targetTitle.lowercase()
-        val candLower = candidate.title.lowercase()
-        for (mod in UNWANTED_MODIFIERS) {
-            if (candLower.contains(mod) && !targetLower.contains(mod)) {
-                score -= 48
-            }
+        val candidateLower = candidate.title.lowercase()
+        for (modifier in UNWANTED_MODIFIERS) {
+            if (candidateLower.contains(modifier) && !targetLower.contains(modifier)) score -= 24
         }
-        if (candLower.contains("remix") && !targetLower.contains("remix")) {
-            score -= 32
-        }
-        if (candLower.contains("live") && !targetLower.contains("live")) {
-            score -= 28
-        }
+        if (candidateLower.contains("remix") && !targetLower.contains("remix")) score -= 16
+        if (candidateLower.contains("live") && !targetLower.contains("live")) score -= 14
+        score = score.coerceIn(0, 100)
 
-        // Hard acceptance gate
-        val titleOk = exactTitleMatch || titleRatio >= 0.5f || (titleTokens.size == 1 && matchedTitleCount == 1)
-        val artistOk = artistTokens.isEmpty() || artistMatch || (exactTitleMatch && score >= 62)
-        val accepted = score >= 45 && titleOk && artistOk && !durationTooFar
+        val exactTitleMatch = normTargetTitle.isNotBlank() &&
+            (normCandidateTitle == normTargetTitle || normCandidateTitle.contains(normTargetTitle))
+        val titleOk = exactTitleMatch || titleScore >= 0.48f || titleRatio >= 0.60f
+        val artistOk = normTargetArtist.isBlank() || artistMatched
+        val accepted = score >= 50 && titleOk && artistOk && !durationTooFar
 
         val reason = when {
-            !titleOk -> "Название не совпадает (${candidate.title})"
-            !artistOk -> "Другой исполнитель (${candidate.artist})"
+            !titleOk -> "Название не совпадает (сходство ${(titleScore * 100).toInt()}%)"
+            !artistOk -> "Другой исполнитель (сходство ${(artistScore * 100).toInt()}%)"
             durationTooFar -> "Сильное отличие длительности (${candidate.durationSeconds}с)"
-            score < 45 -> "Низкий балл релевантности ($score)"
-            else -> "Совпадение подтверждено ($score)"
+            score < 50 -> "Низкий балл релевантности ($score)"
+            else -> "Совпадение подтверждено ($score/100)"
         }
 
         return RelevanceAssessment(
             score = score,
             isAcceptable = accepted,
             titleMatchRatio = titleRatio,
-            artistMatched = artistMatch,
+            artistMatched = artistMatched,
             reason = reason
         )
+    }
+
+    private fun textSimilarity(first: String, second: String): Float {
+        if (first.isBlank() || second.isBlank()) return 0f
+        if (first == second) return 1f
+
+        fun bigrams(value: String): Set<String> =
+            if (value.length < 2) setOf(value) else value.windowed(2).toSet()
+
+        val a = bigrams(first)
+        val b = bigrams(second)
+        if (a.isEmpty() || b.isEmpty()) return 0f
+        val intersection = a.count { it in b }
+        return (2f * intersection) / (a.size + b.size).toFloat()
     }
 
     /**
