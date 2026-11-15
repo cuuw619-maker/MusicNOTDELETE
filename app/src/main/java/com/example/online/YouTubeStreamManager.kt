@@ -69,7 +69,8 @@ data class OnlineTrack(
 
     fun buildOnlineUri(): String {
         val safeHost = if (sourceEngine in setOf(
-                "soundcloud", "audius", "saavn", "bandcamp", "archive", "deezer", "itunes", "spotify"
+                "soundcloud", "audius", "saavn", "bandcamp", "archive",
+                "jamendo", "bilibili", "deezer", "itunes", "spotify"
             )
         ) {
             sourceEngine
@@ -95,6 +96,8 @@ fun displayNameForSource(sourceEngine: String): String = when (sourceEngine.lowe
     "soundcloud" -> "SoundCloud"
     "audius" -> "Audius"
     "saavn" -> "JioSaavn"
+    "jamendo" -> "Jamendo"
+    "bilibili" -> "Bilibili"
     "bandcamp" -> "Bandcamp"
     "archive" -> "Archive"
     "deezer" -> "Deezer"
@@ -108,6 +111,8 @@ fun defaultQualityBadgeForSource(sourceEngine: String): String = when (sourceEng
     "soundcloud" -> "MP3/HLS"
     "audius" -> "MP3 320k"
     "saavn" -> "M4A 320k"
+    "jamendo" -> "CC MP3"
+    "bilibili" -> "DASH M4A"
     "bandcamp" -> "MP3 128k"
     "archive" -> "MP3/OGG"
     "deezer" -> "30с / Cross"
@@ -136,17 +141,23 @@ class YouTubeStreamManager {
     @Volatile
     private var visitorDataFetchedAtMs: Long = 0L
 
+    fun init(context: android.content.Context) {
+        WebViewYouTubeHelper.init(context)
+    }
+
     companion object {
         private const val TAG = "YouTubeStreamManager"
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         private const val MOBILE_UA = NetworkClient.BROWSER_UA
         private const val DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
 
         val SOURCE_FILTERS = listOf(
             OnlineSourceOption("all", "Все (полные)", "MELD"),
             OnlineSourceOption("youtube", "YouTube Music", "YTM"),
             OnlineSourceOption("soundcloud", "SoundCloud", "HLS/MP3"),
+            OnlineSourceOption("jamendo", "Jamendo", "CC MP3"),
+            OnlineSourceOption("bilibili", "Bilibili", "M4A"),
             OnlineSourceOption("audius", "Audius", "320k"),
             OnlineSourceOption("saavn", "JioSaavn", "320k"),
             OnlineSourceOption("bandcamp", "Bandcamp", "128k"),
@@ -157,9 +168,10 @@ class YouTubeStreamManager {
 
         val DELIVERY_ENGINES = listOf(
             DeliveryEngineOption("auto", "Авто (Meld X)"),
+            DeliveryEngineOption("innertube_android_vr", "YT VR"),
             DeliveryEngineOption("innertube_ios", "YT iOS"),
             DeliveryEngineOption("innertube_android_music", "YT Music"),
-            DeliveryEngineOption("innertube_android_vr", "YT VR"),
+            DeliveryEngineOption("webview_decipher", "YT WebView JS"),
             DeliveryEngineOption("newpipe", "YT NewPipe"),
             DeliveryEngineOption("innertube_web_embedded", "YT Embed"),
             DeliveryEngineOption("innertube_tv_embedded", "YT TV"),
@@ -171,41 +183,41 @@ class YouTubeStreamManager {
 
         private val COBALT_INSTANCES = listOf(
             "https://cobalt-api.kwiatekmiki.com",
-            "https://cobalt.canine.tools",
             "https://co.eepy.today",
-            "https://api.cobalt.tools"
+            "https://cobalt-api.meowing.de"
         )
 
         private val PIPED_INSTANCES = listOf(
-            "https://api.piped.private.coffee",
-            "https://pipedapi.kavin.rocks",
             "https://pipedapi.adminforge.de",
             "https://pipedapi.r4fo.com",
-            "https://pipedapi.ducks.party",
-            "https://pipedapi.darkness.services"
+            "https://pipedapi.darkness.services",
+            "https://pipedapi.nosebs.ru"
         )
 
         private val INVIDIOUS_INSTANCES = listOf(
-            "https://inv.nadeko.net",
-            "https://invidious.nerdvpn.de",
-            "https://yewtu.be",
             "https://invidious.privacyredirect.com",
-            "https://invidious.jing.rocks"
+            "https://invidious.jing.rocks",
+            "https://inv.nadeko.net",
+            "https://iv.datura.network"
         )
 
         fun formatEngineDisplay(engineId: String): String = when (engineId.lowercase()) {
             "newpipe" -> "YouTube • NewPipe"
+            "webview_decipher" -> "YouTube • WebView JS"
             "innertube_web_embedded" -> "YouTube • Embed"
             "innertube_mweb" -> "YouTube • MWeb"
             "innertube_android_vr" -> "YouTube • VR"
             "innertube_ios" -> "YouTube • iOS"
             "innertube_tv_embedded" -> "YouTube • TV"
             "innertube_android_music" -> "YouTube • Music"
+            "innertube_android_testsuite" -> "YouTube • Suite"
             "piped" -> "Piped Mirror"
             "invidious" -> "Invidious Mirror"
             "cobalt" -> "Cobalt Tunnel"
             "yt_embed" -> "YouTube • Web"
             "soundcloud" -> "SoundCloud • MP3/HLS"
+            "jamendo" -> "Jamendo • CC MP3"
+            "bilibili" -> "Bilibili • DASH M4A"
             "audius" -> "Audius • MP3"
             "saavn" -> "JioSaavn • 320k"
             "bandcamp" -> "Bandcamp • 128k"
@@ -244,10 +256,12 @@ class YouTubeStreamManager {
         if (trimmed.isBlank()) return@withContext emptyList()
 
         val normalizedFilter = sourceFilter.lowercase().trim()
-        withTimeoutOrNull(13_500L) {
+        withTimeoutOrNull(14_500L) {
             when (normalizedFilter) {
                 "youtube" -> searchYouTubeAggregated(trimmed)
                 "soundcloud" -> FreeCatalogProviders.searchSoundCloud(trimmed)
+                "jamendo" -> FreeCatalogProviders.searchJamendo(trimmed)
+                "bilibili" -> FreeCatalogProviders.searchBilibili(trimmed)
                 "audius" -> FreeCatalogProviders.searchAudiusPool(trimmed)
                 "saavn" -> FreeCatalogProviders.searchJioSaavnDirect(trimmed)
                 "bandcamp" -> FreeCatalogProviders.searchBandcamp(trimmed)
@@ -258,6 +272,8 @@ class YouTubeStreamManager {
                     coroutineScope {
                         val ytDeferred = async { searchYouTubeAggregated(trimmed) }
                         val scDeferred = async { FreeCatalogProviders.searchSoundCloud(trimmed) }
+                        val jamendoDeferred = async { FreeCatalogProviders.searchJamendo(trimmed) }
+                        val bilibiliDeferred = async { FreeCatalogProviders.searchBilibili(trimmed) }
                         val audiusDeferred = async { FreeCatalogProviders.searchAudiusPool(trimmed) }
                         val saavnDeferred = async { FreeCatalogProviders.searchJioSaavnDirect(trimmed) }
                         val bandcampDeferred = async { FreeCatalogProviders.searchBandcamp(trimmed) }
@@ -266,6 +282,8 @@ class YouTubeStreamManager {
                         val buckets = awaitAll(
                             ytDeferred,
                             scDeferred,
+                            jamendoDeferred,
+                            bilibiliDeferred,
                             audiusDeferred,
                             saavnDeferred,
                             bandcampDeferred,
@@ -328,11 +346,14 @@ class YouTubeStreamManager {
             val ytDeferred = async { searchViaYtMusicInnerTube("$query audio") }
             val ytPlainDeferred = async { searchYouTubeAggregated(query) }
             val scDeferred = async { FreeCatalogProviders.searchSoundCloud(query) }
+            val jamendoDeferred = async { FreeCatalogProviders.searchJamendo(query) }
+            val bilibiliDeferred = async { FreeCatalogProviders.searchBilibili(query) }
             val saavnDeferred = async { FreeCatalogProviders.searchJioSaavnDirect(query) }
             val audiusDeferred = async { FreeCatalogProviders.searchAudiusPool(query) }
             val bandcampDeferred = async { FreeCatalogProviders.searchBandcamp(query) }
             val archiveDeferred = async { FreeCatalogProviders.searchArchiveMusic(query) }
             (ytDeferred.await() + ytPlainDeferred.await() + scDeferred.await() +
+                jamendoDeferred.await() + bilibiliDeferred.await() +
                 saavnDeferred.await() + audiusDeferred.await() +
                 bandcampDeferred.await() + archiveDeferred.await())
                 .distinctBy { "${it.sourceEngine}:${it.id}" }
@@ -352,7 +373,7 @@ class YouTubeStreamManager {
 
     /**
      * Resolves a direct playable audio stream URL AND matched duration + active engine for track metadata,
-     * rejecting unrelated tracks cleanly so wrong songs are never played.
+     * automatically iterating through 2-3 similar YouTube videos if the top match fails HTTP 403.
      */
     suspend fun resolveTrackStreamForMetadata(
         targetTitle: String,
@@ -360,16 +381,22 @@ class YouTubeStreamManager {
         expectedDurationMs: Long = 0L,
         excludedEngines: Set<String> = emptySet(),
         preferredEngine: String? = null,
-        allowPreviewFallback: Boolean = false
+        allowPreviewFallback: Boolean = false,
+        excludedVideoIds: Set<String> = emptySet()
     ): Triple<String, Long, String>? = withContext(Dispatchers.IO) {
-        withTimeoutOrNull(16_000L) {
+        withTimeoutOrNull(20_000L) {
             val cleanTitle = cleanQueryPart(targetTitle)
             val cleanArtist = cleanQueryPart(targetArtist)
             val query = "$cleanArtist $cleanTitle".trim().ifBlank { targetTitle }
 
             val candidates = coroutineScope {
                 val ytD = async { searchYouTubeAggregated(query) }
+                val ytAudioD = async {
+                    if (excludedVideoIds.isNotEmpty()) searchViaYtMusicInnerTube("$query audio") else emptyList()
+                }
                 val scD = async { FreeCatalogProviders.searchSoundCloud(query) }
+                val jamendoD = async { FreeCatalogProviders.searchJamendo(query) }
+                val bilibiliD = async { FreeCatalogProviders.searchBilibili(query) }
                 val saavnD = async { FreeCatalogProviders.searchJioSaavnDirect(query) }
                 val audiusD = async { FreeCatalogProviders.searchAudiusPool(query) }
                 val bandcampD = async { FreeCatalogProviders.searchBandcamp(query) }
@@ -380,12 +407,16 @@ class YouTubeStreamManager {
                 val itunesD = async {
                     if (allowPreviewFallback) FreeCatalogProviders.searchItunes(query) else emptyList()
                 }
-                (ytD.await() + scD.await() + saavnD.await() + audiusD.await() +
-                    bandcampD.await() + archiveD.await() + deezerD.await() + itunesD.await())
+                (ytD.await() + ytAudioD.await() + scD.await() + jamendoD.await() + bilibiliD.await() +
+                    saavnD.await() + audiusD.await() + bandcampD.await() + archiveD.await() +
+                    deezerD.await() + itunesD.await())
                     .distinctBy { "${it.sourceEngine}:${it.id}" }
             }
 
             val scored = candidates.mapNotNull { cand ->
+                if (cand.sourceEngine == "youtube" && cand.id in excludedVideoIds) {
+                    return@mapNotNull null
+                }
                 val assessment = RelevanceScorer.assess(cand, cleanTitle, cleanArtist, expectedDurationMs)
                 if (!assessment.isAcceptable) {
                     SourceDiagnosticsLog.record(
@@ -403,12 +434,15 @@ class YouTubeStreamManager {
                 }
             }.sortedByDescending { it.second }.map { it.first }
 
-            for (cand in scored.take(8)) {
+            var ytVideosTried = 0
+            for (cand in scored) {
                 if (cand.sourceEngine in excludedEngines) continue
                 if (cand.isPreviewOnly && !allowPreviewFallback) continue
 
                 when (cand.sourceEngine) {
                     "youtube" -> {
+                        if (ytVideosTried >= 3) continue
+                        ytVideosTried++
                         val resolved = resolveStreamResult(cand.id, excludedEngines, preferredEngine)
                         if (resolved != null) {
                             return@withTimeoutOrNull Triple(
@@ -426,6 +460,17 @@ class YouTubeStreamManager {
                                 scResolved.url,
                                 if (cand.durationMs > 0L) cand.durationMs else expectedDurationMs,
                                 "soundcloud"
+                            )
+                        }
+                    }
+                    "bilibili" -> {
+                        val biliResolved = FreeCatalogProviders.resolveBilibiliStream(cand.id)
+                        if (biliResolved != null) {
+                            cacheStream("bilibili:${cand.id}", biliResolved)
+                            return@withTimeoutOrNull Triple(
+                                biliResolved.url,
+                                if (cand.durationMs > 0L) cand.durationMs else expectedDurationMs,
+                                "bilibili"
                             )
                         }
                     }
@@ -481,6 +526,13 @@ class YouTubeStreamManager {
                     resolved.url
                 } else null
             }
+            "bilibili" -> {
+                val resolved = FreeCatalogProviders.resolveBilibiliStream(track.id)
+                if (resolved != null) {
+                    cacheStream("bilibili:${track.id}", resolved)
+                    resolved.url
+                } else null
+            }
             "archive" -> FreeCatalogProviders.resolveArchiveStreamUrl(track.id) ?: track.directStreamUrl
             "audius" -> {
                 val resolved = FreeCatalogProviders.resolveAudiusStreamWithFailover(track.id)
@@ -490,7 +542,7 @@ class YouTubeStreamManager {
                 } else track.directStreamUrl
             }
             "deezer" -> {
-                // First try cross-resolving full track via YouTube/SoundCloud/Audius/Saavn; fallback cleanly to 30s preview
+                // First try cross-resolving full track via YouTube/SoundCloud/Jamendo/Bilibili/Audius/Saavn; fallback cleanly to 30s preview
                 val fullMatch = resolveTrackStreamForMetadata(
                     targetTitle = track.title,
                     targetArtist = track.artist,
@@ -516,6 +568,9 @@ class YouTubeStreamManager {
             if (host.contains("googlevideo.com", ignoreCase = true)) {
                 hostHeadersCache["googlevideo.com"]?.let { return it.userAgent to it.headers }
             }
+            if (host.contains("bilivideo.", ignoreCase = true)) {
+                hostHeadersCache["bilivideo.com"]?.let { return it.userAgent to it.headers }
+            }
         }
         return null
     }
@@ -525,21 +580,30 @@ class YouTubeStreamManager {
         videoId: String?,
         title: String,
         artist: String,
-        expectedDurationMs: Long
+        expectedDurationMs: Long,
+        excludedVideoIds: Set<String> = emptySet()
     ): ResolvedStream? = withContext(Dispatchers.IO) {
         val failedMeta = urlHeadersCache.remove(failedUrl)
-        val excluded = if (failedMeta != null) setOf(failedMeta.engine) else emptySet()
-        if (!videoId.isNullOrBlank()) {
+        val excludedEnginesForSameVideo = if (failedMeta != null) setOf(failedMeta.engine) else emptySet()
+
+        if (!videoId.isNullOrBlank() && videoId !in excludedVideoIds) {
             streamCache.remove(videoId)
-            val direct = resolveStreamResult(videoId, excluded, null)
-            if (direct != null) return@withContext direct
+            val direct = resolveStreamResult(videoId, excludedEnginesForSameVideo, null)
+            if (direct != null && direct.url != failedUrl) return@withContext direct
+        }
+
+        // Video ID was blocked/403 or exhausted: try up to 3 other similar YouTube videos + free sources
+        val nextExcludedIds = buildSet {
+            addAll(excludedVideoIds)
+            if (!videoId.isNullOrBlank()) add(videoId)
         }
         val matched = resolveTrackStreamForMetadata(
             targetTitle = title,
             targetArtist = artist,
             expectedDurationMs = expectedDurationMs,
-            excludedEngines = excluded,
-            allowPreviewFallback = false
+            excludedEngines = emptySet(),
+            allowPreviewFallback = false,
+            excludedVideoIds = nextExcludedIds
         )
         matched?.let { (url, _, engine) ->
             urlHeadersCache[url] ?: ResolvedStream(
@@ -568,6 +632,7 @@ class YouTubeStreamManager {
         // Explicit engine override
         if (!preferredEngine.isNullOrBlank() && preferredEngine != "auto") {
             val forced = when {
+                preferredEngine == "webview_decipher" -> WebViewYouTubeHelper.resolveViaWebViewEmbedIntercept(videoId)
                 preferredEngine == "newpipe" -> NewPipeYouTubeResolver.resolveAudioStream(videoId)
                 preferredEngine.startsWith("innertube_") -> {
                     val vd = fetchOrGetVisitorData()
@@ -585,8 +650,8 @@ class YouTubeStreamManager {
             }
         }
 
-        withTimeoutOrNull(15_000L) {
-            // 1. Race NewPipeExtractor + modern InnerTube embedded/mobile profiles in parallel!
+        withTimeoutOrNull(18_000L) {
+            // 1. Race verified NewPipeExtractor + modern InnerTubeX clients (with signatureCipher & n-param JS decipher)
             val primaryResult = coroutineScope {
                 val racers = buildList {
                     if ("newpipe" !in excludedEngines) {
@@ -601,13 +666,21 @@ class YouTubeStreamManager {
                 return@withTimeoutOrNull primaryResult
             }
 
-            // 2. Fallback race: Piped, Invidious, Cobalt, Direct Watch HTML
+            // 2. Fallback race: Headless WebView embed intercept (PoToken + ciphered googlevideo) + Watch HTML + Mirrors
+            val webViewFallback = if ("webview_decipher" !in excludedEngines) {
+                WebViewYouTubeHelper.resolveViaWebViewEmbedIntercept(videoId)
+            } else null
+            if (webViewFallback != null) {
+                cacheStream(videoId, webViewFallback)
+                return@withTimeoutOrNull webViewFallback
+            }
+
             val racedFallback = coroutineScope {
                 val racers = buildList {
+                    if ("yt_embed" !in excludedEngines) add(async { resolveViaWatchPageExtract(videoId) })
                     if ("piped" !in excludedEngines) add(async { resolveViaPipedParallel(videoId) })
                     if ("invidious" !in excludedEngines) add(async { resolveViaInvidiousParallel(videoId) })
                     if ("cobalt" !in excludedEngines) add(async { resolveViaCobaltParallel(videoId) })
-                    if ("yt_embed" !in excludedEngines) add(async { resolveViaWatchPageExtract(videoId) })
                 }
                 if (racers.isEmpty()) return@coroutineScope null
                 raceFirstNonNull(racers)
@@ -630,7 +703,7 @@ class YouTubeStreamManager {
                     pingEndpoint(
                         sourceId = "youtube",
                         displayName = "YouTube",
-                        badge = "YT / NewPipe",
+                        badge = "InnerTubeX / WV",
                         url = "https://www.youtube.com/generate_204",
                         headers = mapOf("User-Agent" to MOBILE_UA)
                     )
@@ -646,7 +719,23 @@ class YouTubeStreamManager {
                     }
                 },
                 async {
-                    val t0 = System.currentTimeMillis()
+                    pingEndpoint(
+                        sourceId = "jamendo",
+                        displayName = "Jamendo",
+                        badge = "CC MP3",
+                        url = "https://api.jamendo.com/v3.0/tracks/?client_id=709fa152&format=json&limit=1"
+                    )
+                },
+                async {
+                    pingEndpoint(
+                        sourceId = "bilibili",
+                        displayName = "Bilibili",
+                        badge = "DASH M4A",
+                        url = "https://api.bilibili.com/x/web-interface/nav",
+                        headers = mapOf("Referer" to "https://www.bilibili.com/", "User-Agent" to MOBILE_UA)
+                    )
+                },
+                async {
                     val pool = FreeCatalogProviders.getAudiusDiscoveryPool()
                     val node = pool.firstOrNull() ?: "https://discoveryprovider.audius.co"
                     pingEndpoint("audius", "Audius", "${pool.size} нод", "$node/health_check")
@@ -722,6 +811,9 @@ class YouTubeStreamManager {
             hostHeadersCache[host] = stream
             if (host.contains("googlevideo.com", ignoreCase = true)) {
                 hostHeadersCache["googlevideo.com"] = stream
+            }
+            if (host.contains("bilivideo.", ignoreCase = true)) {
+                hostHeadersCache["bilivideo.com"] = stream
             }
         }
     }
@@ -822,28 +914,6 @@ class YouTubeStreamManager {
 
     private fun buildInnerTubeProfiles(): List<InnerTubeProfile> = listOf(
         InnerTubeProfile(
-            engineId = "innertube_ios",
-            clientName = "IOS",
-            clientVersion = "20.03.02",
-            clientIdHeader = "5",
-            userAgent = "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X;)",
-            isEmbeddedWeb = false,
-            osName = "iOS",
-            osVersion = "18.2.22C152",
-            deviceMake = "Apple",
-            deviceModel = "iPhone16,2"
-        ),
-        InnerTubeProfile(
-            engineId = "innertube_android_music",
-            clientName = "ANDROID_MUSIC",
-            clientVersion = "7.29.52",
-            clientIdHeader = "21",
-            userAgent = "com.google.android.apps.youtube.music/7.29.52 (Linux; U; Android 14; en_US) gzip",
-            isEmbeddedWeb = false,
-            osName = "Android",
-            osVersion = "14"
-        ),
-        InnerTubeProfile(
             engineId = "innertube_android_vr",
             clientName = "ANDROID_VR",
             clientVersion = "1.62.27",
@@ -856,9 +926,41 @@ class YouTubeStreamManager {
             deviceModel = "Quest 3"
         ),
         InnerTubeProfile(
+            engineId = "innertube_ios",
+            clientName = "IOS",
+            clientVersion = "20.10.4",
+            clientIdHeader = "5",
+            userAgent = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+            isEmbeddedWeb = false,
+            osName = "iOS",
+            osVersion = "18.3.2.22D82",
+            deviceMake = "Apple",
+            deviceModel = "iPhone16,2"
+        ),
+        InnerTubeProfile(
+            engineId = "innertube_android_testsuite",
+            clientName = "ANDROID_TESTSUITE",
+            clientVersion = "1.9",
+            clientIdHeader = "30",
+            userAgent = "com.google.android.youtube/1.9 (Linux; U; Android 11) gzip",
+            isEmbeddedWeb = false,
+            osName = "Android",
+            osVersion = "11"
+        ),
+        InnerTubeProfile(
+            engineId = "innertube_android_music",
+            clientName = "ANDROID_MUSIC",
+            clientVersion = "8.12.53",
+            clientIdHeader = "21",
+            userAgent = "com.google.android.apps.youtube.music/8.12.53 (Linux; U; Android 14; en_US) gzip",
+            isEmbeddedWeb = false,
+            osName = "Android",
+            osVersion = "14"
+        ),
+        InnerTubeProfile(
             engineId = "innertube_web_embedded",
             clientName = "WEB_EMBEDDED_PLAYER",
-            clientVersion = "1.20250212.01.00",
+            clientVersion = "1.20250501.01.00",
             clientIdHeader = "56",
             userAgent = DESKTOP_UA,
             isEmbeddedWeb = true
@@ -874,12 +976,19 @@ class YouTubeStreamManager {
         InnerTubeProfile(
             engineId = "innertube_mweb",
             clientName = "MWEB",
-            clientVersion = "2.20250212.01.00",
+            clientVersion = "2.20250501.01.00",
             clientIdHeader = "2",
             userAgent = MOBILE_UA,
             isEmbeddedWeb = false
         )
     )
+
+    private fun generateCpn(): String {
+        val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        return buildString(16) {
+            repeat(16) { append(chars[java.util.concurrent.ThreadLocalRandom.current().nextInt(chars.length)]) }
+        }
+    }
 
     private suspend fun resolveViaInnerTubeParallel(
         videoId: String,
@@ -897,13 +1006,18 @@ class YouTubeStreamManager {
         raceFirstNonNull(deferreds)
     }
 
-    private fun resolveSingleInnerTubeProfile(
+    private suspend fun resolveSingleInnerTubeProfile(
         videoId: String,
         profile: InnerTubeProfile,
         visitorData: String?
     ): ResolvedStream? {
         val t0 = System.currentTimeMillis()
         return try {
+            val (_, sts) = if (profile.isEmbeddedWeb || profile.clientName == "MWEB") {
+                WebViewYouTubeHelper.ensurePlayerJsMetadata(videoId)
+            } else null to null
+            val cachedPot = WebViewYouTubeHelper.getCachedPoToken()
+
             val clientObj = JSONObject().apply {
                 put("clientName", profile.clientName)
                 put("clientVersion", profile.clientVersion)
@@ -928,8 +1042,22 @@ class YouTubeStreamManager {
             val payload = JSONObject().apply {
                 put("videoId", videoId)
                 put("context", contextObj)
+                put("cpn", generateCpn())
                 put("contentCheckOk", true)
                 put("racyCheckOk", true)
+                if (sts != null) {
+                    put("playbackContext", JSONObject().apply {
+                        put("contentPlaybackContext", JSONObject().apply {
+                            put("signatureTimestamp", sts)
+                            put("html5Preference", "HTML5_PREF_WANTS")
+                        })
+                    })
+                }
+                if (!cachedPot.isNullOrBlank() && (profile.isEmbeddedWeb || profile.clientName == "MWEB" || profile.clientName == "IOS")) {
+                    put("serviceIntegrityDimensions", JSONObject().apply {
+                        put("poToken", cachedPot)
+                    })
+                }
             }
 
             val reqBuilder = Request.Builder()
@@ -941,7 +1069,7 @@ class YouTubeStreamManager {
             if (!visitorData.isNullOrBlank()) {
                 reqBuilder.header("X-Goog-Visitor-Id", visitorData)
             }
-            if (profile.isEmbeddedWeb) {
+            if (profile.isEmbeddedWeb || profile.clientName == "MWEB") {
                 reqBuilder.header("Origin", "https://www.youtube.com")
                 reqBuilder.header("Referer", "https://www.youtube.com/")
             }
@@ -970,49 +1098,64 @@ class YouTubeStreamManager {
                 val legacy = streamingData.optJSONArray("formats")
                 val hlsManifest = streamingData.optString("hlsManifestUrl", "")
 
-                val candidates = mutableListOf<Pair<String, Int>>()
+                data class RawCandidate(val plainUrl: String, val cipher: String, val score: Int, val isHls: Boolean = false)
+                val rawCandidates = mutableListOf<RawCandidate>()
                 if (adaptive != null) {
                     for (i in 0 until adaptive.length()) {
                         val fmt = adaptive.optJSONObject(i) ?: continue
                         val mime = fmt.optString("mimeType", "")
                         if (!mime.startsWith("audio/")) continue
                         val url = fmt.optString("url", "")
-                        if (url.isBlank()) continue
+                        val cipher = fmt.optString("signatureCipher", fmt.optString("cipher", ""))
+                        if (url.isBlank() && cipher.isBlank()) continue
                         val bitrate = fmt.optInt("bitrate", 0)
                         val codecBonus = when {
                             mime.contains("mp4a", ignoreCase = true) -> 60_000
                             mime.contains("opus", ignoreCase = true) -> 45_000
                             else -> 10_000
                         }
-                        candidates.add(url to (bitrate + codecBonus))
+                        rawCandidates.add(RawCandidate(url, cipher, bitrate + codecBonus))
                     }
                 }
-                if (candidates.isEmpty() && legacy != null) {
+                if (rawCandidates.isEmpty() && legacy != null) {
                     for (i in 0 until legacy.length()) {
                         val fmt = legacy.optJSONObject(i) ?: continue
                         val url = fmt.optString("url", "")
-                        if (url.isNotBlank()) {
-                            candidates.add(url to fmt.optInt("bitrate", 128_000))
+                        val cipher = fmt.optString("signatureCipher", fmt.optString("cipher", ""))
+                        if (url.isNotBlank() || cipher.isNotBlank()) {
+                            rawCandidates.add(RawCandidate(url, cipher, fmt.optInt("bitrate", 128_000)))
                         }
                     }
                 }
-                if (candidates.isEmpty() && hlsManifest.isNotBlank()) {
-                    candidates.add(hlsManifest to 100_000)
+                if (rawCandidates.isEmpty() && hlsManifest.isNotBlank()) {
+                    rawCandidates.add(RawCandidate(hlsManifest, "", 100_000, isHls = true))
                 }
 
-                val cdnHeaders = if (profile.isEmbeddedWeb) {
+                val cdnHeaders = if (profile.isEmbeddedWeb || profile.clientName == "MWEB") {
                     mapOf("Origin" to "https://www.youtube.com", "Referer" to "https://www.youtube.com/")
                 } else {
                     emptyMap()
                 }
 
-                for ((url, _) in candidates.sortedByDescending { it.second }.take(3)) {
-                    if (verifyStreamReachable(profile.engineId, url, profile.userAgent, cdnHeaders)) {
+                for (cand in rawCandidates.sortedByDescending { it.score }.take(4)) {
+                    var candidateUrl = if (cand.plainUrl.isNotBlank()) {
+                        cand.plainUrl
+                    } else {
+                        WebViewYouTubeHelper.decipherSignatureCipherUrl(cand.cipher, videoId) ?: continue
+                    }
+                    if (!cand.isHls && (candidateUrl.contains("&n=") || candidateUrl.contains("?n="))) {
+                        candidateUrl = WebViewYouTubeHelper.unthrottleUrlIfNeeded(candidateUrl, videoId)
+                    }
+                    if (!cachedPot.isNullOrBlank() && !candidateUrl.contains("pot=")) {
+                        val sep = if (candidateUrl.contains("?")) "&" else "?"
+                        candidateUrl = "${candidateUrl}${sep}pot=${Uri.encode(cachedPot)}"
+                    }
+                    if (verifyStreamReachable(profile.engineId, candidateUrl, profile.userAgent, cdnHeaders, useHeadOnly = cand.isHls)) {
                         SourceDiagnosticsLog.record(
                             SourceAttemptLog(profile.engineId, formatEngineDisplay(profile.engineId), "player", SourceAttemptStatus.SUCCESS, 200, "Поток подтверждён", dt)
                         )
                         return ResolvedStream(
-                            url = url,
+                            url = candidateUrl,
                             userAgent = profile.userAgent,
                             headers = cdnHeaders,
                             expiresAtMs = System.currentTimeMillis() + (3 * 3600 * 1000L),
@@ -1030,7 +1173,7 @@ class YouTubeStreamManager {
         }
     }
 
-    private fun resolveViaWatchPageExtract(videoId: String): ResolvedStream? {
+    private suspend fun resolveViaWatchPageExtract(videoId: String): ResolvedStream? {
         val t0 = System.currentTimeMillis()
         return try {
             val req = Request.Builder()
@@ -1055,11 +1198,19 @@ class YouTubeStreamManager {
                     for (i in 0 until adaptive.length()) {
                         val fmt = adaptive.optJSONObject(i) ?: continue
                         val mime = fmt.optString("mimeType", "")
-                        val url = fmt.optString("url", "")
-                        if (mime.startsWith("audio/") && url.isNotBlank() && verifyStreamReachable("yt_embed", url, DESKTOP_UA)) {
-                            SourceDiagnosticsLog.record(SourceAttemptLog("yt_embed", "YouTube • Web", "watch", SourceAttemptStatus.SUCCESS, 200, "Аудио найдено в HTML", dt))
+                        if (!mime.startsWith("audio/")) continue
+                        val plainUrl = fmt.optString("url", "")
+                        val cipher = fmt.optString("signatureCipher", fmt.optString("cipher", ""))
+                        val resolvedUrl = when {
+                            plainUrl.isNotBlank() -> WebViewYouTubeHelper.unthrottleUrlIfNeeded(plainUrl, videoId)
+                            cipher.isNotBlank() -> WebViewYouTubeHelper.decipherSignatureCipherUrl(cipher, videoId)
+                            else -> null
+                        } ?: continue
+
+                        if (verifyStreamReachable("yt_embed", resolvedUrl, DESKTOP_UA)) {
+                            SourceDiagnosticsLog.record(SourceAttemptLog("yt_embed", "YouTube • Web", "watch", SourceAttemptStatus.SUCCESS, 200, "Аудио расшифровано из HTML", dt))
                             return ResolvedStream(
-                                url = url,
+                                url = resolvedUrl,
                                 userAgent = DESKTOP_UA,
                                 expiresAtMs = System.currentTimeMillis() + (2 * 3600 * 1000L),
                                 engine = "yt_embed"

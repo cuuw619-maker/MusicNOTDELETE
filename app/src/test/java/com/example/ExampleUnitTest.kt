@@ -334,4 +334,61 @@ class ExampleUnitTest {
         assertFalse(unsyncedPlain.isSynced)
         assertFalse(unsyncedPlain.hasWordSync)
     }
+
+    @Test
+    fun soundCloudExtractor_detectsClientIdAcrossBundlePatternsAndSaavnDropsDeadHost() {
+        val id1 = "aBcDeFgHiJkLmNoPqRsTuVwXyZ012345"
+        assertEquals(
+            id1,
+            com.example.online.FreeCatalogProviders.extractSoundCloudClientIdFromText("""var x={client_id:"$id1",env:"prod"};""")
+        )
+        assertEquals(
+            id1,
+            com.example.online.FreeCatalogProviders.extractSoundCloudClientIdFromText("""{"client_id":'$id1'}""")
+        )
+        assertEquals(
+            id1,
+            com.example.online.FreeCatalogProviders.extractSoundCloudClientIdFromText("""https://api-v2.soundcloud.com/tracks?client_id=$id1&limit=10""")
+        )
+
+        val mirrors = com.example.online.FreeCatalogProviders.getJioSaavnMirrorHosts()
+        assertFalse(mirrors.any { it.contains("saavn.dev") })
+    }
+
+    @Test
+    fun bilibiliAndJamendo_exposeFiltersUrisAndDeterministicWbiSignature() {
+        val sourceIds = YouTubeStreamManager.SOURCE_FILTERS.map { it.id }.toSet()
+        assertTrue(sourceIds.containsAll(setOf("jamendo", "bilibili")))
+        assertEquals("Jamendo", com.example.online.displayNameForSource("jamendo"))
+        assertEquals("Bilibili", com.example.online.displayNameForSource("bilibili"))
+
+        val engineIds = YouTubeStreamManager.DELIVERY_ENGINES.map { it.id }.toSet()
+        assertTrue(engineIds.contains("webview_decipher"))
+        assertEquals("YouTube • WebView JS", YouTubeStreamManager.formatEngineDisplay("webview_decipher"))
+
+        val mixin = com.example.online.FreeCatalogProviders.computeBilibiliMixinKey(
+            "7cd084941338484aae1ad9425b84077c",
+            "4932caff0ff746eab6f01bf08b70ac45"
+        )
+        assertEquals(32, mixin.length)
+        val signed = com.example.online.FreeCatalogProviders.signBilibiliWbiQuery(
+            params = mapOf("keyword" to "test", "search_type" to "video"),
+            mixinKey = mixin,
+            wtsSeconds = 1700000000L
+        )
+        assertTrue(signed.contains("wts=1700000000"))
+        assertTrue(signed.contains("w_rid="))
+    }
+
+    @Test
+    fun webViewYouTubeHelper_extractsSignatureCipherSnippetFromPlayerJs() {
+        val fakePlayerJs = """
+            var Qv={sp:function(a,b){a.splice(0,b)},rv:function(a){a.reverse()}};
+            dec=function(a){a=a.split("");Qv.rv(a,1);Qv.sp(a,2);return a.join("")};
+        """.trimIndent()
+        val snippet = com.example.online.WebViewYouTubeHelper.extractSignatureDecipherSnippet(fakePlayerJs, "ABCDEF")
+        assertTrue(snippet != null)
+        assertTrue(snippet!!.contains("Qv"))
+        assertTrue(snippet.contains("ABCDEF"))
+    }
 }

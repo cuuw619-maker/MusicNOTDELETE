@@ -618,6 +618,7 @@ class MusicControllerManager(
     private var resolveJob: Job? = null
     private var preResolveJob: Job? = null
     private val onlineRetryCounts = mutableMapOf<Long, Int>()
+    private val failedVideoIdsBySongId = mutableMapOf<Long, MutableSet<String>>()
 
     suspend fun resolveOnlineUriIfNeeded(
         song: Song,
@@ -678,6 +679,21 @@ class MusicControllerManager(
                 }
             }
 
+            if (host == "bilibili" && path.isNotBlank()) {
+                val biliCandidate = com.example.online.OnlineTrack(
+                    id = path,
+                    title = metaTitle,
+                    artist = metaArtist,
+                    durationSeconds = metaDur / 1000L,
+                    sourceEngine = "bilibili"
+                )
+                val direct = streamManager.resolveDirectTrackPlayableUrl(biliCandidate)
+                if (direct != null) {
+                    _activeStreamEngine.value = "bilibili"
+                    return@withTimeoutOrNull song.copy(contentUriString = direct)
+                }
+            }
+
             if (host == "audius" && path.isNotBlank()) {
                 val audiusCandidate = com.example.online.OnlineTrack(
                     id = path,
@@ -705,12 +721,14 @@ class MusicControllerManager(
                 }
             }
 
+            val excludedIds = if (host == "youtube" && path.isNotBlank()) setOf(path) else emptySet()
             val matched = streamManager.resolveTrackStreamForMetadata(
                 targetTitle = metaTitle,
                 targetArtist = metaArtist,
                 expectedDurationMs = metaDur,
                 preferredEngine = preferredEngine,
-                allowPreviewFallback = false
+                allowPreviewFallback = false,
+                excludedVideoIds = excludedIds
             )
             if (matched != null) {
                 _activeStreamEngine.value = matched.third
@@ -831,8 +849,9 @@ class MusicControllerManager(
     ) {
         val controller = mediaController ?: return
         val attempts = onlineRetryCounts[song.id] ?: 0
-        if (attempts >= 2) {
+        if (attempts >= 3) {
             onlineRetryCounts[song.id] = 0
+            failedVideoIdsBySongId.remove(song.id)
             isResolvingOnline = false
             _playbackState.value = _playbackState.value.copy(
                 isPlaying = false,
@@ -859,6 +878,10 @@ class MusicControllerManager(
                     val u = Uri.parse(raw)
                     if (u.host == "youtube") u.path?.removePrefix("/") else null
                 }
+                val excludedIds = failedVideoIdsBySongId.getOrPut(song.id) { mutableSetOf() }
+                if (!parsedVideoId.isNullOrBlank() && attempts >= 1) {
+                    excludedIds.add(parsedVideoId)
+                }
 
                 val app = context.applicationContext as? com.example.MusicApplication
                 val streamManager = app?.youTubeStreamManager
@@ -867,7 +890,8 @@ class MusicControllerManager(
                     videoId = parsedVideoId,
                     title = song.title,
                     artist = song.artist,
-                    expectedDurationMs = song.durationMs
+                    expectedDurationMs = song.durationMs,
+                    excludedVideoIds = excludedIds.toSet()
                 )
                 isResolvingOnline = false
                 if (alternate != null && index in currentQueueSongs.indices && currentQueueSongs[index].id == song.id) {
@@ -940,6 +964,8 @@ class MusicControllerManager(
         currentQueueSongs.clear()
         currentQueueSongs.addAll(queue)
 
+        onlineSourceBySongId.remove(song.id)
+        failedVideoIdsBySongId.remove(song.id)
         if (song.contentUriString.startsWith("online://")) {
             onlineSourceBySongId[song.id] = song.contentUriString
             val idx = queue.indexOfFirst { it.id == song.id }.coerceAtLeast(0)

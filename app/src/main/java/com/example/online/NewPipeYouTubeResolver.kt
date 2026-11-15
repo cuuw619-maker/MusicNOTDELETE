@@ -85,6 +85,24 @@ object NewPipeYouTubeResolver {
         }
     }
 
+    private fun probeNewPipeStream(url: String, isHls: Boolean = false): Boolean {
+        return try {
+            val builder = okhttp3.Request.Builder()
+                .url(url)
+                .header("User-Agent", NetworkClient.BROWSER_UA)
+            if (isHls) {
+                builder.head()
+            } else {
+                builder.header("Range", "bytes=0-63")
+            }
+            NetworkClient.fastProbeClient.newCall(builder.build()).execute().use { resp ->
+                resp.code in listOf(200, 206, 302, 303, 307)
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun resolveAudioStream(videoId: String): ResolvedStream? {
         if (videoId.isBlank()) return null
         val t0 = System.currentTimeMillis()
@@ -92,36 +110,38 @@ object NewPipeYouTubeResolver {
             ensureInitialized()
             val watchUrl = "https://www.youtube.com/watch?v=$videoId"
             val info = StreamInfo.getInfo(ServiceList.YouTube, watchUrl)
-            val bestAudio = info.audioStreams
+            val audioCandidates = info.audioStreams
                 .filter { it.content.startsWith("http") }
                 .sortedByDescending { stream ->
                     val formatBonus = if (stream.format?.suffix?.equals("m4a", true) == true) 80_000 else 40_000
                     stream.averageBitrate + formatBonus
                 }
-                .firstOrNull()
+                .take(3)
 
-            if (bestAudio != null) {
-                SourceDiagnosticsLog.record(
-                    SourceAttemptLog(
-                        sourceId = "newpipe",
-                        displayName = "YouTube • NewPipe",
-                        stage = "decipher",
-                        status = SourceAttemptStatus.SUCCESS,
-                        httpCode = 200,
-                        detail = "Дешифрован поток (${bestAudio.format?.suffix ?: "audio"} ${bestAudio.averageBitrate}k)",
-                        latencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+            for (bestAudio in audioCandidates) {
+                if (probeNewPipeStream(bestAudio.content, isHls = false)) {
+                    SourceDiagnosticsLog.record(
+                        SourceAttemptLog(
+                            sourceId = "newpipe",
+                            displayName = "YouTube • NewPipe",
+                            stage = "decipher",
+                            status = SourceAttemptStatus.SUCCESS,
+                            httpCode = 200,
+                            detail = "Дешифрован и подтверждён (${bestAudio.format?.suffix ?: "audio"} ${bestAudio.averageBitrate}k)",
+                            latencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                        )
                     )
-                )
-                return ResolvedStream(
-                    url = bestAudio.content,
-                    userAgent = NetworkClient.BROWSER_UA,
-                    expiresAtMs = System.currentTimeMillis() + 4 * 3600_000L,
-                    engine = "newpipe"
-                )
+                    return ResolvedStream(
+                        url = bestAudio.content,
+                        userAgent = NetworkClient.BROWSER_UA,
+                        expiresAtMs = System.currentTimeMillis() + 4 * 3600_000L,
+                        engine = "newpipe"
+                    )
+                }
             }
 
             val hls = info.hlsUrl
-            if (!hls.isNullOrBlank()) {
+            if (!hls.isNullOrBlank() && probeNewPipeStream(hls, isHls = true)) {
                 SourceDiagnosticsLog.record(
                     SourceAttemptLog(
                         sourceId = "newpipe",
@@ -129,7 +149,7 @@ object NewPipeYouTubeResolver {
                         stage = "hls",
                         status = SourceAttemptStatus.SUCCESS,
                         httpCode = 200,
-                        detail = "Выбран HLS-манифест",
+                        detail = "Подтверждён HLS-манифест",
                         latencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
                     )
                 )
@@ -141,14 +161,15 @@ object NewPipeYouTubeResolver {
                 )
             }
 
+            val hadAny = audioCandidates.isNotEmpty() || !hls.isNullOrBlank()
             SourceDiagnosticsLog.record(
                 SourceAttemptLog(
                     sourceId = "newpipe",
                     displayName = "YouTube • NewPipe",
-                    stage = "decipher",
-                    status = SourceAttemptStatus.EMPTY_RESULT,
-                    httpCode = null,
-                    detail = "Список аудиопотоков пуст",
+                    stage = if (hadAny) "cdn_probe" else "decipher",
+                    status = if (hadAny) SourceAttemptStatus.HTTP_ERROR else SourceAttemptStatus.EMPTY_RESULT,
+                    httpCode = if (hadAny) 403 else null,
+                    detail = if (hadAny) "CDN отклонил извлечённые потоки NewPipe (403)" else "Список аудиопотоков пуст",
                     latencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
                 )
             )

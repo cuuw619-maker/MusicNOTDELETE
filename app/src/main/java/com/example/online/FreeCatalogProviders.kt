@@ -14,6 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
@@ -25,7 +26,9 @@ import javax.crypto.spec.SecretKeySpec
  * 3. Audius Discovery Pool (full node list with automatic failover)
  * 4. Bandcamp Public Search (direct track JSON -> MP3-128)
  * 5. Archive.org Music Audio (strict music/MP3/OGG filter + largest audio file pick)
- * 6. Deezer & iTunes Catalogs (metadata + real 30s preview URLs)
+ * 6. Jamendo Public Catalog (full CC-licensed MP3 streams)
+ * 7. Bilibili Music (WBI signed search + DASH M4A audio with Referer headers)
+ * 8. Deezer & iTunes Catalogs (metadata + real 30s preview URLs)
  */
 object FreeCatalogProviders {
 
@@ -71,6 +74,22 @@ object FreeCatalogProviders {
         )
     }
 
+    internal fun extractSoundCloudClientIdFromText(text: String): String? {
+        if (text.isBlank()) return null
+        val patterns = listOf(
+            Regex("""client_id\s*[:=]\s*["']([a-zA-Z0-9]{32})["']"""),
+            Regex("""["']client_id["']\s*:\s*["']([a-zA-Z0-9]{32})["']"""),
+            Regex("""clientId\s*[:=]\s*["']([a-zA-Z0-9]{32})["']"""),
+            Regex("""\bclient_id=([a-zA-Z0-9]{32})\b"""),
+            Regex("""api_key\s*[:=]\s*["']([a-zA-Z0-9]{32})["']""")
+        )
+        for (p in patterns) {
+            val found = p.find(text)?.groupValues?.getOrNull(1)
+            if (!found.isNullOrBlank()) return found
+        }
+        return null
+    }
+
     fun getOrFetchSoundCloudClientId(): String? {
         val now = System.currentTimeMillis()
         val cached = cachedScClientId
@@ -78,52 +97,87 @@ object FreeCatalogProviders {
             return cached
         }
         val t0 = System.currentTimeMillis()
-        return try {
-            val pageReq = Request.Builder()
-                .url("https://soundcloud.com")
-                .header("User-Agent", NetworkClient.BROWSER_UA)
-                .header("Accept", "text/html")
-                .build()
-            val scriptUrls = mutableListOf<String>()
-            client.newCall(pageReq).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    recordAttempt("soundcloud", "SoundCloud", "client_id", SourceAttemptStatus.HTTP_ERROR, resp.code, "Home page HTTP ${resp.code}", t0)
-                    return cached
-                }
-                val html = resp.body?.string() ?: ""
-                Regex("""https://a-v2\.sndcdn\.com/assets/[a-zA-Z0-9._-]+\.js""").findAll(html).forEach {
-                    scriptUrls.add(it.value)
-                }
-            }
-            // Scan from the last scripts first (main app bundles contain client_id)
-            val idPattern = Regex("""client_id\s*[:=]\s*["']([a-zA-Z0-9]{32})["']""")
-            for (jsUrl in scriptUrls.asReversed().take(8)) {
-                try {
-                    val jsReq = Request.Builder()
-                        .url(jsUrl)
-                        .header("User-Agent", NetworkClient.BROWSER_UA)
-                        .build()
-                    client.newCall(jsReq).execute().use { jsResp ->
-                        if (!jsResp.isSuccessful) return@use
-                        val body = jsResp.body?.string() ?: return@use
-                        val match = idPattern.find(body)
-                        if (match != null) {
-                            val foundId = match.groupValues[1]
-                            cachedScClientId = foundId
-                            scClientIdFetchedAtMs = now
-                            recordAttempt("soundcloud", "SoundCloud", "client_id", SourceAttemptStatus.SUCCESS, 200, "Получен публичный client_id", t0)
-                            return foundId
-                        }
+        val pagesToScan = listOf(
+            "https://soundcloud.com",
+            "https://m.soundcloud.com",
+            "https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/293"
+        )
+        val scriptUrls = LinkedHashSet<String>()
+        var lastHttpCode: Int? = null
+        var hadNetworkError: String? = null
+
+        for (pageUrl in pagesToScan) {
+            try {
+                val pageReq = Request.Builder()
+                    .url(pageUrl)
+                    .header("User-Agent", NetworkClient.BROWSER_UA)
+                    .header("Accept", "text/html,application/xhtml+xml")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .build()
+                client.newCall(pageReq).execute().use { resp ->
+                    lastHttpCode = resp.code
+                    if (!resp.isSuccessful) return@use
+                    val html = resp.body?.string() ?: return@use
+
+                    // Check inline hydration scripts first
+                    extractSoundCloudClientIdFromText(html)?.let { inlineId ->
+                        cachedScClientId = inlineId
+                        scClientIdFetchedAtMs = now
+                        recordAttempt("soundcloud", "SoundCloud", "client_id", SourceAttemptStatus.SUCCESS, 200, "Получен client_id из HTML", t0)
+                        return inlineId
                     }
-                } catch (_: Exception) {
+
+                    // Collect all sndcdn JS bundle URLs across assets / scripts
+                    Regex("""(https://[^"'\s<>]+sndcdn\.com/[^"'\s<>]+\.js(?:\?[^"'\s<>]*)?)""").findAll(html).forEach {
+                        scriptUrls.add(it.groupValues[1])
+                    }
+                    Regex("""src=["'](/[^"'\s<>]+\.js(?:\?[^"'\s<>]*)?)["']""").findAll(html).forEach {
+                        val rel = it.groupValues[1]
+                        val origin = Uri.parse(pageUrl).let { u -> "${u.scheme}://${u.host}" }
+                        scriptUrls.add("$origin$rel")
+                    }
                 }
+            } catch (e: Exception) {
+                hadNetworkError = e.message
             }
-            recordAttempt("soundcloud", "SoundCloud", "client_id", SourceAttemptStatus.EMPTY_RESULT, null, "client_id не найден в JS-бандлах", t0)
-            cached
-        } catch (e: Exception) {
-            recordAttempt("soundcloud", "SoundCloud", "client_id", SourceAttemptStatus.NETWORK_ERROR, null, e.message ?: "Ошибка сети", t0)
-            cached
         }
+
+        val orderedScripts = scriptUrls.toList().asReversed().take(16)
+        for (jsUrl in orderedScripts) {
+            try {
+                val jsReq = Request.Builder()
+                    .url(jsUrl)
+                    .header("User-Agent", NetworkClient.BROWSER_UA)
+                    .build()
+                client.newCall(jsReq).execute().use { jsResp ->
+                    if (!jsResp.isSuccessful) return@use
+                    val body = jsResp.body?.string() ?: return@use
+                    val foundId = extractSoundCloudClientIdFromText(body)
+                    if (!foundId.isNullOrBlank()) {
+                        cachedScClientId = foundId
+                        scClientIdFetchedAtMs = now
+                        recordAttempt("soundcloud", "SoundCloud", "client_id", SourceAttemptStatus.SUCCESS, 200, "Получен публичный client_id", t0)
+                        return foundId
+                    }
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        if (hadNetworkError != null && scriptUrls.isEmpty()) {
+            recordAttempt("soundcloud", "SoundCloud", "client_id", SourceAttemptStatus.NETWORK_ERROR, null, hadNetworkError, t0)
+        } else {
+            recordAttempt(
+                "soundcloud",
+                "SoundCloud",
+                "client_id",
+                SourceAttemptStatus.EMPTY_RESULT,
+                lastHttpCode,
+                "client_id не найден (${orderedScripts.size} JS проверено)",
+                t0
+            )
+        }
+        return cached
     }
 
     fun searchSoundCloud(query: String): List<OnlineTrack> {
@@ -382,8 +436,8 @@ object FreeCatalogProviders {
             recordAttempt("saavn", "JioSaavn", "search_direct", SourceAttemptStatus.NETWORK_ERROR, null, e.message ?: "Ошибка", t0)
         }
 
-        // Secondary saavn.sumit / saavn.dev mirror if official endpoint didn't yield results
-        val mirrors = listOf("https://saavn.dev", "https://saavn.sumit.co")
+        // Secondary live mirror if official endpoint didn't yield results (dead saavn.dev removed)
+        val mirrors = getJioSaavnMirrorHosts()
         val encoded = URLEncoder.encode(query.trim(), "UTF-8")
         for (mirror in mirrors) {
             val tm = System.currentTimeMillis()
@@ -454,6 +508,8 @@ object FreeCatalogProviders {
         val subtitle = decodeHtmlBasic(obj.optString("subtitle", obj.optString("primary_artists", "")))
         return subtitle.substringBefore(" - ").ifBlank { "JioSaavn Artist" }
     }
+
+    internal fun getJioSaavnMirrorHosts(): List<String> = listOf("https://saavn.sumit.co")
 
     // ========================================================
     // 3. AUDIUS MULTI-NODE DISCOVERY POOL WITH FAILOVER
@@ -930,6 +986,392 @@ object FreeCatalogProviders {
         } catch (e: Exception) {
             recordAttempt("itunes", "Apple iTunes", "search", SourceAttemptStatus.NETWORK_ERROR, null, e.message ?: "Ошибка", t0)
             emptyList()
+        }
+    }
+
+    // ========================================================
+    // 7. JAMENDO PUBLIC CATALOG (Full CC MP3 Streams)
+    // ========================================================
+
+    private const val JAMENDO_PUBLIC_CLIENT_ID = "709fa152"
+
+    fun searchJamendo(query: String): List<OnlineTrack> {
+        val t0 = System.currentTimeMillis()
+        return try {
+            val encoded = URLEncoder.encode(query.trim(), "UTF-8")
+            val url = "https://api.jamendo.com/v3.0/tracks/?client_id=$JAMENDO_PUBLIC_CLIENT_ID&format=json&limit=12&audioformat=mp32&search=$encoded"
+            val req = Request.Builder()
+                .url(url)
+                .header("Accept", "application/json")
+                .header("User-Agent", NetworkClient.BROWSER_UA)
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    recordAttempt("jamendo", "Jamendo", "search", SourceAttemptStatus.HTTP_ERROR, resp.code, "HTTP ${resp.code}", t0)
+                    return emptyList()
+                }
+                val root = JSONObject(resp.body?.string() ?: "{}")
+                val results = root.optJSONArray("results") ?: return emptyList()
+                val tracks = mutableListOf<OnlineTrack>()
+                for (i in 0 until results.length()) {
+                    val item = results.optJSONObject(i) ?: continue
+                    val id = item.optString("id", "").trim()
+                    val title = item.optString("name", "").trim()
+                    val streamUrl = item.optString("audio", "").trim()
+                    if (id.isBlank() || title.isBlank() || !streamUrl.startsWith("http")) continue
+
+                    val artist = item.optString("artist_name", "Jamendo Artist").trim().ifBlank { "Jamendo Artist" }
+                    val album = item.optString("album_name", "Jamendo").trim().ifBlank { "Jamendo" }
+                    val durSec = item.optLong("duration", 0L)
+                    val thumb = item.optString("album_image", item.optString("image", ""))
+                        .takeIf { it.startsWith("http") }
+
+                    val cand = OnlineTrack(
+                        id = id,
+                        title = title,
+                        artist = artist,
+                        album = album,
+                        durationSeconds = durSec,
+                        thumbnailUrl = thumb,
+                        isOfficialAudio = true,
+                        sourceEngine = "jamendo",
+                        directStreamUrl = streamUrl,
+                        qualityBadge = "CC MP3",
+                        isPreviewOnly = false
+                    )
+                    if (RelevanceScorer.matchesSearchQuery(cand, query)) {
+                        tracks.add(cand)
+                    }
+                }
+                recordAttempt(
+                    "jamendo",
+                    "Jamendo",
+                    "search",
+                    if (tracks.isNotEmpty()) SourceAttemptStatus.SUCCESS else SourceAttemptStatus.EMPTY_RESULT,
+                    200,
+                    "Найдено ${tracks.size} полных треков",
+                    t0
+                )
+                tracks
+            }
+        } catch (e: Exception) {
+            recordAttempt("jamendo", "Jamendo", "search", SourceAttemptStatus.NETWORK_ERROR, null, e.message ?: "Ошибка", t0)
+            emptyList()
+        }
+    }
+
+    // ========================================================
+    // 8. BILIBILI MUSIC (WBI Signed Search + DASH Audio .m4a)
+    // ========================================================
+
+    private val BILIBILI_MIXIN_TAB = intArrayOf(
+        46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+        27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+        37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+        22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52
+    )
+
+    @Volatile
+    private var cachedBilibiliBuvid3: String? = null
+
+    @Volatile
+    private var cachedBilibiliMixinKey: String? = null
+
+    @Volatile
+    private var bilibiliSessionFetchedAtMs: Long = 0L
+
+    internal fun computeBilibiliMixinKey(imgKey: String, subKey: String): String {
+        val raw = imgKey + subKey
+        val sb = StringBuilder()
+        for (idx in BILIBILI_MIXIN_TAB) {
+            if (idx in raw.indices) {
+                sb.append(raw[idx])
+            }
+        }
+        return sb.toString().take(32)
+    }
+
+    internal fun signBilibiliWbiQuery(
+        params: Map<String, String>,
+        mixinKey: String,
+        wtsSeconds: Long = System.currentTimeMillis() / 1000L
+    ): String {
+        val allParams = sortedMapOf<String, String>()
+        params.forEach { (k, v) ->
+            allParams[k] = v.replace(Regex("[!'()*]"), "")
+        }
+        allParams["wts"] = wtsSeconds.toString()
+
+        val encodedQuery = allParams.entries.joinToString("&") { (k, v) ->
+            val ek = URLEncoder.encode(k, "UTF-8").replace("+", "%20")
+            val ev = URLEncoder.encode(v, "UTF-8").replace("+", "%20")
+            "$ek=$ev"
+        }
+        val md5 = MessageDigest.getInstance("MD5")
+            .digest((encodedQuery + mixinKey).toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        return "$encodedQuery&w_rid=$md5"
+    }
+
+    private fun ensureBilibiliSession(): Pair<String?, String?> {
+        val now = System.currentTimeMillis()
+        if (!cachedBilibiliBuvid3.isNullOrBlank() &&
+            !cachedBilibiliMixinKey.isNullOrBlank() &&
+            now - bilibiliSessionFetchedAtMs < 45 * 60_000L
+        ) {
+            return cachedBilibiliBuvid3 to cachedBilibiliMixinKey
+        }
+        try {
+            if (cachedBilibiliBuvid3.isNullOrBlank()) {
+                val spiReq = Request.Builder()
+                    .url("https://api.bilibili.com/x/frontend/finger/spi")
+                    .header("User-Agent", NetworkClient.BROWSER_UA)
+                    .header("Referer", "https://www.bilibili.com/")
+                    .build()
+                client.newCall(spiReq).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val b3 = JSONObject(resp.body?.string() ?: "{}")
+                            .optJSONObject("data")
+                            ?.optString("b_3", "")
+                            ?.takeIf { it.isNotBlank() }
+                        if (b3 != null) cachedBilibiliBuvid3 = b3
+                    }
+                }
+            }
+            val navReq = Request.Builder()
+                .url("https://api.bilibili.com/x/web-interface/nav")
+                .header("User-Agent", NetworkClient.BROWSER_UA)
+                .header("Referer", "https://www.bilibili.com/")
+                .apply {
+                    cachedBilibiliBuvid3?.let { header("Cookie", "buvid3=$it") }
+                }
+                .build()
+            client.newCall(navReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val wbiImg = JSONObject(resp.body?.string() ?: "{}")
+                        .optJSONObject("data")
+                        ?.optJSONObject("wbi_img")
+                    val imgUrl = wbiImg?.optString("img_url", "") ?: ""
+                    val subUrl = wbiImg?.optString("sub_url", "") ?: ""
+                    val imgKey = imgUrl.substringAfterLast('/').substringBefore('.')
+                    val subKey = subUrl.substringAfterLast('/').substringBefore('.')
+                    if (imgKey.isNotBlank() && subKey.isNotBlank()) {
+                        cachedBilibiliMixinKey = computeBilibiliMixinKey(imgKey, subKey)
+                        bilibiliSessionFetchedAtMs = now
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Bilibili session init failed: ${e.message}")
+        }
+        return cachedBilibiliBuvid3 to cachedBilibiliMixinKey
+    }
+
+    fun searchBilibili(query: String): List<OnlineTrack> {
+        val t0 = System.currentTimeMillis()
+        return try {
+            val (buvid3, mixinKey) = ensureBilibiliSession()
+            val queryParams = mapOf(
+                "search_type" to "video",
+                "keyword" to query.trim(),
+                "page" to "1",
+                "page_size" to "12"
+            )
+            val fullUrl = if (!mixinKey.isNullOrBlank()) {
+                val signedQuery = signBilibiliWbiQuery(queryParams, mixinKey)
+                "https://api.bilibili.com/x/web-interface/wbi/search/type?$signedQuery"
+            } else {
+                val encoded = URLEncoder.encode(query.trim(), "UTF-8")
+                "https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=$encoded&page=1&page_size=12"
+            }
+
+            val req = Request.Builder()
+                .url(fullUrl)
+                .header("User-Agent", NetworkClient.BROWSER_UA)
+                .header("Accept", "application/json")
+                .header("Origin", "https://search.bilibili.com")
+                .header("Referer", "https://search.bilibili.com/")
+                .apply {
+                    if (!buvid3.isNullOrBlank()) header("Cookie", "buvid3=$buvid3")
+                }
+                .build()
+
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    recordAttempt("bilibili", "Bilibili", "search", SourceAttemptStatus.HTTP_ERROR, resp.code, "HTTP ${resp.code}", t0)
+                    return emptyList()
+                }
+                val root = JSONObject(resp.body?.string() ?: "{}")
+                if (root.optInt("code", -1) != 0) {
+                    val code = root.optInt("code", -1)
+                    val msg = root.optString("message", "Bilibili code $code")
+                    recordAttempt("bilibili", "Bilibili", "search", SourceAttemptStatus.HTTP_ERROR, code, msg, t0)
+                    return emptyList()
+                }
+                val arr = root.optJSONObject("data")?.optJSONArray("result") ?: JSONArray()
+                val tracks = mutableListOf<OnlineTrack>()
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val bvid = item.optString("bvid", "").trim()
+                    val rawTitle = item.optString("title", "")
+                        .replace(Regex("<[^>]+>"), "")
+                    val title = decodeHtmlBasic(rawTitle)
+                    if (bvid.isBlank() || title.isBlank()) continue
+
+                    val durSec = parseBilibiliDuration(item.optString("duration", "0:00"))
+                    if (durSec > 18 * 60L) continue // Skip ultra-long compilations/podcasts
+
+                    val artist = item.optString("author", "Bilibili").trim().ifBlank { "Bilibili" }
+                    val rawPic = item.optString("pic", "").trim()
+                    val thumb = when {
+                        rawPic.startsWith("//") -> "https:$rawPic"
+                        rawPic.startsWith("http") -> rawPic
+                        else -> null
+                    }
+                    val cand = OnlineTrack(
+                        id = bvid,
+                        title = title,
+                        artist = artist,
+                        album = "Bilibili Music",
+                        durationSeconds = durSec,
+                        thumbnailUrl = thumb,
+                        isOfficialAudio = false,
+                        sourceEngine = "bilibili",
+                        directStreamUrl = null,
+                        qualityBadge = "DASH M4A",
+                        isPreviewOnly = false
+                    )
+                    if (RelevanceScorer.matchesSearchQuery(cand, query)) {
+                        tracks.add(cand)
+                    }
+                }
+                recordAttempt(
+                    "bilibili",
+                    "Bilibili",
+                    "search",
+                    if (tracks.isNotEmpty()) SourceAttemptStatus.SUCCESS else SourceAttemptStatus.EMPTY_RESULT,
+                    200,
+                    "Найдено ${tracks.size} треков",
+                    t0
+                )
+                tracks
+            }
+        } catch (e: Exception) {
+            recordAttempt("bilibili", "Bilibili", "search", SourceAttemptStatus.NETWORK_ERROR, null, e.message ?: "Ошибка", t0)
+            emptyList()
+        }
+    }
+
+    fun resolveBilibiliStream(bvid: String): ResolvedStream? {
+        if (bvid.isBlank()) return null
+        val t0 = System.currentTimeMillis()
+        return try {
+            val (buvid3, _) = ensureBilibiliSession()
+            val referer = "https://www.bilibili.com/video/$bvid"
+            val viewReq = Request.Builder()
+                .url("https://api.bilibili.com/x/web-interface/view?bvid=$bvid")
+                .header("User-Agent", NetworkClient.BROWSER_UA)
+                .header("Referer", referer)
+                .apply {
+                    if (!buvid3.isNullOrBlank()) header("Cookie", "buvid3=$buvid3")
+                }
+                .build()
+
+            val cid = client.newCall(viewReq).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                val data = JSONObject(resp.body?.string() ?: "{}").optJSONObject("data")
+                data?.optLong("cid", 0L)?.takeIf { it > 0L }
+                    ?: data?.optJSONArray("pages")?.optJSONObject(0)?.optLong("cid", 0L)?.takeIf { it > 0L }
+            } ?: run {
+                recordAttempt("bilibili", "Bilibili", "view", SourceAttemptStatus.EMPTY_RESULT, null, "Не найден cid для $bvid", t0)
+                return null
+            }
+
+            val playReq = Request.Builder()
+                .url("https://api.bilibili.com/x/player/playurl?bvid=$bvid&cid=$cid&qn=80&fnval=16&fourk=0")
+                .header("User-Agent", NetworkClient.BROWSER_UA)
+                .header("Referer", referer)
+                .header("Origin", "https://www.bilibili.com")
+                .apply {
+                    if (!buvid3.isNullOrBlank()) header("Cookie", "buvid3=$buvid3")
+                }
+                .build()
+
+            client.newCall(playReq).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    recordAttempt("bilibili", "Bilibili", "playurl", SourceAttemptStatus.HTTP_ERROR, resp.code, "HTTP ${resp.code}", t0)
+                    return null
+                }
+                val data = JSONObject(resp.body?.string() ?: "{}").optJSONObject("data") ?: return null
+                val dashAudios = data.optJSONObject("dash")?.optJSONArray("audio")
+                val candidateUrls = mutableListOf<Pair<String, Int>>()
+
+                if (dashAudios != null) {
+                    for (i in 0 until dashAudios.length()) {
+                        val item = dashAudios.optJSONObject(i) ?: continue
+                        val bw = item.optInt("bandwidth", 0)
+                        val base = item.optString("baseUrl", item.optString("base_url", ""))
+                        if (base.startsWith("http")) candidateUrls.add(base to bw)
+                        val backups = item.optJSONArray("backupUrl") ?: item.optJSONArray("backup_url")
+                        if (backups != null) {
+                            for (j in 0 until backups.length()) {
+                                val bk = backups.optString(j, "")
+                                if (bk.startsWith("http")) candidateUrls.add(bk to (bw - 1000))
+                            }
+                        }
+                    }
+                }
+                if (candidateUrls.isEmpty()) {
+                    val durl = data.optJSONArray("durl")
+                    if (durl != null && durl.length() > 0) {
+                        val u = durl.optJSONObject(0)?.optString("url", "") ?: ""
+                        if (u.startsWith("http")) candidateUrls.add(u to 64_000)
+                    }
+                }
+
+                val streamHeaders = buildMap {
+                    put("Referer", referer)
+                    put("Origin", "https://www.bilibili.com")
+                    if (!buvid3.isNullOrBlank()) put("Cookie", "buvid3=$buvid3")
+                }
+
+                for ((streamUrl, _) in candidateUrls.sortedByDescending { it.second }.take(4)) {
+                    val probeReq = Request.Builder()
+                        .url(streamUrl)
+                        .header("User-Agent", NetworkClient.BROWSER_UA)
+                        .header("Range", "bytes=0-63")
+                        .apply { streamHeaders.forEach { (k, v) -> header(k, v) } }
+                        .build()
+                    val ok = runCatching {
+                        client.newCall(probeReq).execute().use { pr -> pr.code in listOf(200, 206, 302, 307) }
+                    }.getOrDefault(false)
+                    if (ok) {
+                        recordAttempt("bilibili", "Bilibili", "playurl", SourceAttemptStatus.SUCCESS, 200, "DASH M4A поток готов", t0)
+                        return ResolvedStream(
+                            url = streamUrl,
+                            userAgent = NetworkClient.BROWSER_UA,
+                            headers = streamHeaders,
+                            expiresAtMs = System.currentTimeMillis() + 90 * 60_000L,
+                            engine = "bilibili"
+                        )
+                    }
+                }
+
+                recordAttempt("bilibili", "Bilibili", "playurl", SourceAttemptStatus.HTTP_ERROR, 403, "CDN Bilibili отклонил поток", t0)
+                null
+            }
+        } catch (e: Exception) {
+            recordAttempt("bilibili", "Bilibili", "playurl", SourceAttemptStatus.NETWORK_ERROR, null, e.message ?: "Ошибка", t0)
+            null
+        }
+    }
+
+    private fun parseBilibiliDuration(raw: String): Long {
+        val parts = raw.trim().split(":").mapNotNull { it.toLongOrNull() }
+        return when (parts.size) {
+            2 -> parts[0] * 60L + parts[1]
+            3 -> parts[0] * 3600L + parts[1] * 60L + parts[2]
+            else -> 0L
         }
     }
 

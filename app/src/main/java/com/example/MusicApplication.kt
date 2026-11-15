@@ -67,7 +67,9 @@ class MusicApplication : Application(), ImageLoaderFactory {
         musicRepository = MusicRepository(this, database.musicDao(), preferencesManager)
         equalizerManager = EqualizerManager(preferencesManager)
         spotifyManager = com.example.spotify.SpotifyManager(this, musicRepository)
-        youTubeStreamManager = com.example.online.YouTubeStreamManager()
+        youTubeStreamManager = com.example.online.YouTubeStreamManager().apply {
+            init(this@MusicApplication)
+        }
         lyricsManager = com.example.lyrics.LyricsManager()
 
         musicControllerManager = MusicControllerManager(
