@@ -803,17 +803,43 @@ class YouTubeStreamManager {
         }
     }
 
+    /**
+     * Googlevideo URLs carry their own Unix expiry ("expire" query parameter).
+     * Do not keep them in the in-memory cache longer than the CDN signature is valid.
+     * A safety margin avoids handing ExoPlayer a URL that expires while it is opening.
+     */
+    private fun cacheSafeExpiry(stream: ResolvedStream): Long {
+        val host = runCatching { Uri.parse(stream.url).host.orEmpty() }.getOrDefault("")
+        if (!host.contains("googlevideo.com", ignoreCase = true)) return stream.expiresAtMs
+
+        val urlExpirySeconds = runCatching {
+            Uri.parse(stream.url).getQueryParameter("expire")?.toLongOrNull()
+        }.getOrNull() ?: return stream.expiresAtMs
+
+        val cdnExpiryMs = urlExpirySeconds * 1000L - 90_000L
+        return minOf(stream.expiresAtMs, cdnExpiryMs)
+    }
+
     private fun cacheStream(key: String, stream: ResolvedStream) {
-        streamCache[key] = stream
-        urlHeadersCache[stream.url] = stream
+        val safeExpiry = cacheSafeExpiry(stream)
+        if (safeExpiry <= System.currentTimeMillis()) {
+            // The URL is already expired (or too close to expiry); never cache it.
+            streamCache.remove(key)
+            urlHeadersCache.remove(stream.url)
+            return
+        }
+
+        val safeStream = stream.copy(expiresAtMs = safeExpiry)
+        streamCache[key] = safeStream
+        urlHeadersCache[stream.url] = safeStream
         val host = runCatching { Uri.parse(stream.url).host }.getOrNull()
         if (!host.isNullOrBlank()) {
-            hostHeadersCache[host] = stream
+            hostHeadersCache[host] = safeStream
             if (host.contains("googlevideo.com", ignoreCase = true)) {
-                hostHeadersCache["googlevideo.com"] = stream
+                hostHeadersCache["googlevideo.com"] = safeStream
             }
             if (host.contains("bilivideo.", ignoreCase = true)) {
-                hostHeadersCache["bilivideo.com"] = stream
+                hostHeadersCache["bilivideo.com"] = safeStream
             }
         }
     }
@@ -826,6 +852,27 @@ class YouTubeStreamManager {
         useHeadOnly: Boolean = false
     ): Boolean {
         val t0 = System.currentTimeMillis()
+        val parsedUri = runCatching { Uri.parse(url) }.getOrNull()
+        val host = parsedUri?.host.orEmpty()
+        if (host.contains("googlevideo.com", ignoreCase = true)) {
+            val expireSeconds = runCatching {
+                parsedUri?.getQueryParameter("expire")?.toLongOrNull()
+            }.getOrNull()
+            if (expireSeconds != null && expireSeconds * 1000L <= System.currentTimeMillis() + 90_000L) {
+                SourceDiagnosticsLog.record(
+                    SourceAttemptLog(
+                        sourceId = sourceId,
+                        displayName = formatEngineDisplay(sourceId),
+                        stage = "cdn_probe",
+                        status = SourceAttemptStatus.HTTP_ERROR,
+                        httpCode = 403,
+                        detail = "Подписанная ссылка Googlevideo истекла или истекает менее чем через 90 секунд",
+                        latencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    )
+                )
+                return false
+            }
+        }
         return try {
             val reqBuilder = Request.Builder()
                 .url(url)
