@@ -852,6 +852,27 @@ class YouTubeStreamManager {
         useHeadOnly: Boolean = false
     ): Boolean {
         val t0 = System.currentTimeMillis()
+        val parsedUri = runCatching { Uri.parse(url) }.getOrNull()
+        val host = parsedUri?.host.orEmpty()
+        if (host.contains("googlevideo.com", ignoreCase = true)) {
+            val expireSeconds = runCatching {
+                parsedUri?.getQueryParameter("expire")?.toLongOrNull()
+            }.getOrNull()
+            if (expireSeconds != null && expireSeconds * 1000L <= System.currentTimeMillis() + 90_000L) {
+                SourceDiagnosticsLog.record(
+                    SourceAttemptLog(
+                        sourceId = sourceId,
+                        displayName = formatEngineDisplay(sourceId),
+                        stage = "cdn_probe",
+                        status = SourceAttemptStatus.HTTP_ERROR,
+                        httpCode = 403,
+                        detail = "Подписанная ссылка Googlevideo истекла или истекает менее чем через 90 секунд",
+                        latencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    )
+                )
+                return false
+            }
+        }
         return try {
             val reqBuilder = Request.Builder()
                 .url(url)
