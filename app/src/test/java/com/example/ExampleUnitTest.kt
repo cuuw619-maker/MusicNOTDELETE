@@ -208,4 +208,130 @@ class ExampleUnitTest {
         assertEquals(0.5f, com.example.ui.components.MorphShapeLut.smoothStep(0.5f), 0.0001f)
         assertEquals(1f, com.example.ui.components.MorphShapeLut.smoothStep(2f), 0.0001f)
     }
+
+    @Test
+    fun parseTtml_preservesSyllableContinuityAndWordGrouping() {
+        val manager = LyricsManager()
+        val ttml = """
+            <tt xmlns="http://www.w3.org/ns/ttml">
+              <body>
+                <div>
+                  <p begin="00:10.000" end="00:13.000">
+                    <span begin="00:10.000" end="00:10.400">Hel</span><span begin="00:10.400" end="00:10.900">lo</span> <span begin="00:11.000" end="00:11.800">world</span>
+                  </p>
+                </div>
+              </body>
+            </tt>
+        """.trimIndent()
+
+        val lines = manager.parseLrc(ttml).filter { !it.isInstrumental }
+        assertEquals(1, lines.size)
+        val line = lines.first()
+        assertEquals("Hello world", line.primaryText)
+        assertEquals(3, line.words.size)
+        assertFalse(line.words[0].trailingSpace)
+        assertTrue(line.words[1].trailingSpace)
+        assertEquals(line.words[0].syllableGroupId, line.words[1].syllableGroupId)
+        assertTrue(line.words[2].syllableGroupId != line.words[1].syllableGroupId)
+    }
+
+    @Test
+    fun relevanceScorer_acceptsExactMatchAndRejectsUnrelatedOrWrongDuration() {
+        val goodMatch = OnlineTrack(
+            id = "sc_1",
+            title = "Midnight City",
+            artist = "M83",
+            durationSeconds = 243L,
+            isOfficialAudio = true,
+            sourceEngine = "soundcloud",
+            directStreamUrl = "https://cdn.example/m83.mp3"
+        )
+        val unrelated = OnlineTrack(
+            id = "arch_bad",
+            title = "Random Classical Lecture Episode 14",
+            artist = "Public Podcast",
+            durationSeconds = 243L,
+            sourceEngine = "archive"
+        )
+        val wrongDuration = OnlineTrack(
+            id = "yt_short",
+            title = "Midnight City",
+            artist = "M83",
+            durationSeconds = 40L,
+            sourceEngine = "youtube"
+        )
+
+        val goodAssess = com.example.online.RelevanceScorer.assess(goodMatch, "Midnight City", "M83", 244_000L)
+        val badAssess = com.example.online.RelevanceScorer.assess(unrelated, "Midnight City", "M83", 244_000L)
+        val durAssess = com.example.online.RelevanceScorer.assess(wrongDuration, "Midnight City", "M83", 244_000L)
+
+        assertTrue(goodAssess.isAcceptable)
+        assertFalse(badAssess.isAcceptable)
+        assertFalse(durAssess.isAcceptable)
+    }
+
+    @Test
+    fun sourceDiagnosticsLog_recordsAndFormatsCopyableReport() {
+        com.example.online.SourceDiagnosticsLog.clear()
+        val entry = com.example.online.SourceAttemptLog(
+            sourceId = "soundcloud",
+            displayName = "SoundCloud",
+            stage = "stream",
+            status = com.example.online.SourceAttemptStatus.HTTP_ERROR,
+            httpCode = 403,
+            detail = "Expired client_id",
+            latencyMs = 142L
+        )
+        com.example.online.SourceDiagnosticsLog.record(entry)
+        val recent = com.example.online.SourceDiagnosticsLog.recent(5)
+        assertEquals(1, recent.size)
+
+        val report = com.example.online.PlaybackDiagnosticReport(
+            trackTitle = "Starboy",
+            trackArtist = "The Weeknd",
+            errorCodeLabel = "HTTP 403",
+            summary = "Доступ запрещён",
+            attempts = recent
+        )
+        val formatted = com.example.online.SourceDiagnosticsLog.formatCopyableReport(report)
+        assertTrue(formatted.contains("HTTP 403"))
+        assertTrue(formatted.contains("SoundCloud"))
+        assertTrue(formatted.contains("The Weeknd"))
+    }
+
+    @Test
+    fun sourceFilters_distinguishFullTracksFromExplicit30sPreviews() {
+        val allFilter = YouTubeStreamManager.SOURCE_FILTERS.first { it.id == "all" }
+        val deezerFilter = YouTubeStreamManager.SOURCE_FILTERS.first { it.id == "deezer" }
+        val itunesFilter = YouTubeStreamManager.SOURCE_FILTERS.first { it.id == "itunes" }
+        assertTrue(allFilter.label.contains("полн", ignoreCase = true))
+        assertTrue(deezerFilter.label.contains("30"))
+        assertTrue(itunesFilter.label.contains("30"))
+
+        val engineIds = YouTubeStreamManager.DELIVERY_ENGINES.map { it.id }.toSet()
+        assertTrue(engineIds.contains("innertube_ios"))
+        assertTrue(engineIds.contains("innertube_android_music"))
+    }
+
+    @Test
+    fun lyricsState_distinguishesSyncedVsPlainStatusCorrectly() {
+        val syncedWord = com.example.lyrics.LyricsState(
+            title = "Song",
+            artist = "Artist",
+            isSynced = true,
+            hasWordSync = true,
+            source = "BetterLyrics"
+        )
+        val unsyncedPlain = com.example.lyrics.LyricsState(
+            title = "Song",
+            artist = "Artist",
+            plainLyrics = "Plain verse line",
+            isSynced = false,
+            hasWordSync = false,
+            source = "YouTube Music"
+        )
+        assertTrue(syncedWord.isSynced && syncedWord.hasWordSync)
+        assertFalse(unsyncedPlain.isSynced)
+        assertFalse(unsyncedPlain.hasWordSync)
+    }
 }

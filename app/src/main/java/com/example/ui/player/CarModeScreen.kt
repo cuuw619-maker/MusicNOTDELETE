@@ -163,14 +163,14 @@ fun CarModeScreen(
                 val progress = if (playbackState.durationMs > 0) {
                     (playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
                 } else 0f
-                LinearProgressIndicator(
+                com.example.ui.components.LinearWavyProgressIndicator(
                     progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(10.dp)
-                        .clip(RoundedCornerShape(5.dp)),
+                    isPlaying = playbackState.isPlaying,
                     color = MaterialTheme.colorScheme.primary,
-                    trackColor = Color(0xFF262A33)
+                    trackColor = Color(0xFF262A33),
+                    height = 14.dp,
+                    strokeWidth = 4.5.dp,
+                    amplitudeDp = 3.2.dp
                 )
             }
 

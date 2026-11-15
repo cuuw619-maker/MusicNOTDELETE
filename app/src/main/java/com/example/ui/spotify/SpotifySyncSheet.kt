@@ -104,6 +104,7 @@ fun SpotifySyncSheet(
     var selectedAuthTab by remember { mutableIntStateOf(0) }
     var spDcInput by remember { mutableStateOf("") }
     var customClientIdInput by remember { mutableStateOf(viewModel.spotifyManager.customClientId) }
+    var showWebLoginDialog by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -273,7 +274,26 @@ fun SpotifySyncSheet(
                             text = "Подключение личного аккаунта",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Войдите прямо внутри плеера, чтобы без лимитов загрузить все личные плейлисты и «Любимые треки».",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Spacer(modifier = Modifier.height(10.dp))
+
+                        com.example.ui.components.ExpressiveCapsuleLoadingButton(
+                            text = "Войти в аккаунт Spotify (Web)",
+                            isLoading = authState.isLoading,
+                            onClick = { showWebLoginDialog = true },
+                            containerColor = SpotifyGreen,
+                            contentColor = Color.White,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("spotify_open_webview_login_btn")
+                        )
+
+                        Spacer(modifier = Modifier.height(14.dp))
 
                         val authMethods = remember {
                             listOf(
@@ -307,30 +327,21 @@ fun SpotifySyncSheet(
                                 modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(modifier = Modifier.height(12.dp))
-                            Button(
+                            com.example.ui.components.ExpressiveCapsuleLoadingButton(
+                                text = "Подключить через Web-токен",
+                                isLoading = authState.isLoading,
+                                enabled = spDcInput.isNotBlank(),
                                 onClick = {
-                                    performHapticFeedback(view, HapticType.MEDIUM)
                                     viewModel.connectSpotifyWithWebToken(spDcInput) { ok ->
                                         if (ok) spDcInput = ""
                                     }
                                 },
-                                enabled = !authState.isLoading && spDcInput.isNotBlank(),
-                                shape = CircleShape,
-                                colors = ButtonDefaults.buttonColors(containerColor = SpotifyGreen),
+                                containerColor = SpotifyGreen,
+                                contentColor = Color.White,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .defaultMinSize(minHeight = 48.dp)
-                            ) {
-                                if (authState.isLoading) {
-                                    ExpressiveLoadingIndicator(
-                                        size = 24.dp,
-                                        color = Color.White,
-                                        containerColor = Color.Transparent
-                                    )
-                                } else {
-                                    Text("Подключить через Web-токен", color = Color.White, fontWeight = FontWeight.Bold)
-                                }
-                            }
+                                    .testTag("spotify_connect_token_btn")
+                            )
                         } else {
                             Text(
                                 text = "Для официального OAuth добавьте в Spotify Developer Dashboard Redirect URI ниже и введите свой Client ID:",
@@ -498,6 +509,34 @@ fun SpotifySyncSheet(
                         )
                     }
                 } else {
+                    if (authState.importProgressTotal > 0) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = SpotifyGreen.copy(alpha = 0.14f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                                Text(
+                                    text = "Импортировано ${authState.importProgressLoaded} / ${authState.importProgressTotal} треков",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.ExtraBold),
+                                    color = SpotifyGreen
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                com.example.ui.components.LinearWavyProgressIndicator(
+                                    progress = {
+                                        (authState.importProgressLoaded.toFloat() /
+                                            authState.importProgressTotal.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+                                    },
+                                    isPlaying = true,
+                                    color = SpotifyGreen,
+                                    trackColor = SpotifyGreen.copy(alpha = 0.22f)
+                                )
+                            }
+                        }
+                    }
+
                     Text(
                         text = "Ваши плейлисты (${authState.playlists.size})",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
@@ -639,5 +678,24 @@ fun SpotifySyncSheet(
 
             Spacer(modifier = Modifier.height(24.dp))
         }
+    }
+
+    if (showWebLoginDialog) {
+        SpotifyWebLoginDialog(
+            onSessionCaptured = { accessToken, clientToken, spDc ->
+                showWebLoginDialog = false
+                viewModel.connectSpotifyWithWebSession(
+                    accessToken = accessToken,
+                    clientToken = clientToken,
+                    spDcCookie = spDc
+                ) { ok ->
+                    if (ok) {
+                        isErrorStatus = false
+                        statusMessage = "Аккаунт Spotify подключен через Web!"
+                    }
+                }
+            },
+            onDismiss = { showWebLoginDialog = false }
+        )
     }
 }

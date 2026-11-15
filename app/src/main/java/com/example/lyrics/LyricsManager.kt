@@ -25,7 +25,9 @@ enum class LyricSpeaker {
 data class LyricWord(
     val text: String,
     val startTimeMs: Long,
-    val endTimeMs: Long
+    val endTimeMs: Long,
+    val trailingSpace: Boolean = true,
+    val syllableGroupId: Int = -1
 )
 
 @Immutable
@@ -50,6 +52,7 @@ data class LyricsState(
     val lines: List<DualLyricLine> = emptyList(),
     val plainLyrics: String = "",
     val source: String = "",
+    val isSynced: Boolean = false,
     val hasDualLines: Boolean = false,
     val hasWordSync: Boolean = false,
     val hasDuet: Boolean = false,
@@ -73,15 +76,26 @@ class LyricsManager {
     suspend fun getLyrics(
         title: String,
         artist: String,
-        durationSeconds: Long = 0L
+        durationSeconds: Long = 0L,
+        youtubeVideoId: String? = null,
+        ytStreamManager: com.example.online.YouTubeStreamManager? = null
     ): LyricsState = withContext(Dispatchers.IO) {
         val cleanTitle = cleanSongTitle(title)
         val cleanArtist = cleanArtistName(artist)
-        val cacheKey = "${cleanArtist.lowercase()}|${cleanTitle.lowercase()}|$durationSeconds"
+        val cacheKey = "${cleanArtist.lowercase()}|${cleanTitle.lowercase()}|$durationSeconds|${youtubeVideoId.orEmpty()}"
         lyricsCache[cacheKey]?.let { return@withContext it }
 
         try {
-            // 1. Word/Syllable-level Lyrics API (BetterLyrics / LyricsPlus JSON format)
+            // 1. Real BetterLyrics TTML API (syllable-accurate Apple/TTML timing)
+            if (cleanTitle.isNotBlank() && cleanArtist.isNotBlank()) {
+                val betterTtml = fetchBetterLyricsTtml(cleanTitle, cleanArtist, durationSeconds)
+                if (betterTtml != null && betterTtml.lines.isNotEmpty()) {
+                    lyricsCache[cacheKey] = betterTtml
+                    return@withContext betterTtml
+                }
+            }
+
+            // 2. Word/Syllable-level Lyrics API (LyricsPlus JSON mirrors)
             if (cleanTitle.isNotBlank() && cleanArtist.isNotBlank()) {
                 val wordSynced = fetchWordLevelLyrics(cleanTitle, cleanArtist, durationSeconds)
                 if (wordSynced != null && wordSynced.lines.isNotEmpty()) {
@@ -90,31 +104,103 @@ class LyricsManager {
                 }
             }
 
-            // 2. Direct duration-verified match on LRCLIB
+            // 3. Meld-style Native YouTube Music Synced Lyrics (direct videoId lookup)
+            var ytmPlainFallback: LyricsState? = null
+            if (!youtubeVideoId.isNullOrBlank() && ytStreamManager != null) {
+                val ytmNative = ytStreamManager.fetchYouTubeMusicNativeLyrics(youtubeVideoId)
+                if (ytmNative != null) {
+                    if (ytmNative.isSynced && ytmNative.timedLines.isNotEmpty()) {
+                        val timed = ytmNative.timedLines.mapIndexed { idx, (startMs, lineText) ->
+                            val nextStart = ytmNative.timedLines.getOrNull(idx + 1)?.first ?: (startMs + 3800L)
+                            val endMs = (nextStart - 80L).coerceAtLeast(startMs + 450L)
+                            val (sp, lbl, cleanLine) = extractInlineSpeakerPrefix(lineText)
+                            DualLyricLine(
+                                timestampMs = startMs,
+                                endTimeMs = endMs,
+                                primaryText = cleanLine,
+                                words = synthesizeNaturalWords(cleanLine, startMs, endMs),
+                                isSynced = true,
+                                hasWordTiming = false,
+                                speaker = sp,
+                                speakerLabel = lbl,
+                                isBackground = sp == LyricSpeaker.BACKGROUND
+                            )
+                        }
+                        val enriched = insertInstrumentalBreaks(timed)
+                        val ytmState = LyricsState(
+                            title = title,
+                            artist = artist,
+                            lines = enriched,
+                            plainLyrics = ytmNative.plainText,
+                            source = ytmNative.sourceLabel,
+                            isSynced = true,
+                            hasDualLines = false,
+                            hasWordSync = false,
+                            hasDuet = enriched.any { it.speaker == LyricSpeaker.SECOND || it.speaker == LyricSpeaker.BOTH }
+                        )
+                        lyricsCache[cacheKey] = ytmState
+                        return@withContext ytmState
+                    } else if (ytmNative.plainText.isNotBlank()) {
+                        val plainLines = ytmNative.plainText.lines().filter { it.isNotBlank() }.map { line ->
+                            val (sp, lbl, cleanLine) = extractInlineSpeakerPrefix(line.trim())
+                            DualLyricLine(
+                                timestampMs = -1L,
+                                primaryText = cleanLine,
+                                isSynced = false,
+                                speaker = sp,
+                                speakerLabel = lbl,
+                                isBackground = sp == LyricSpeaker.BACKGROUND
+                            )
+                        }
+                        ytmPlainFallback = LyricsState(
+                            title = title,
+                            artist = artist,
+                            lines = plainLines,
+                            plainLyrics = ytmNative.plainText,
+                            source = ytmNative.sourceLabel,
+                            isSynced = false,
+                            hasDualLines = false,
+                            hasDuet = plainLines.any { it.speaker == LyricSpeaker.SECOND || it.speaker == LyricSpeaker.BOTH }
+                        )
+                    }
+                }
+            }
+
+            // 4. Direct duration-verified match on LRCLIB
             if (cleanTitle.isNotBlank() && cleanArtist.isNotBlank()) {
                 val directLrc = fetchFromLrclibDirect(cleanTitle, cleanArtist, durationSeconds)
-                if (directLrc != null && directLrc.lines.isNotEmpty()) {
+                if (directLrc != null && directLrc.lines.isNotEmpty() && directLrc.isSynced) {
                     lyricsCache[cacheKey] = directLrc
                     return@withContext directLrc
                 }
             }
 
-            // 3. Duration-scored search match on LRCLIB
+            // 5. Duration-scored search match on LRCLIB (prefer synced before plain)
             val searchQuery = if (cleanArtist.isNotBlank()) "$cleanArtist $cleanTitle" else cleanTitle
             val searchLrc = fetchFromLrclibSearch(searchQuery, cleanTitle, cleanArtist, durationSeconds)
-            if (searchLrc != null && searchLrc.lines.isNotEmpty()) {
+            if (searchLrc != null && searchLrc.lines.isNotEmpty() && searchLrc.isSynced) {
                 lyricsCache[cacheKey] = searchLrc
                 return@withContext searchLrc
             }
 
-            // 4. NetEase Cloud Music (LRC + parallel translation + YRC word timing)
+            // 6. NetEase Cloud Music (LRC + parallel translation + YRC word timing)
             val neteaseLrc = fetchFromNetEase(searchQuery, cleanTitle, durationSeconds)
             if (neteaseLrc != null && neteaseLrc.lines.isNotEmpty()) {
                 lyricsCache[cacheKey] = neteaseLrc
                 return@withContext neteaseLrc
             }
 
-            // 5. Fallback plain lyrics
+            // 7. Fallback to unsynced LRCLIB / YTM / Lyrics.ovh plain text
+            val unsyncedLrc = searchLrc?.takeIf { it.lines.isNotEmpty() }
+            if (unsyncedLrc != null) {
+                lyricsCache[cacheKey] = unsyncedLrc
+                return@withContext unsyncedLrc
+            }
+            if (ytmPlainFallback != null && ytmPlainFallback.lines.isNotEmpty()) {
+                lyricsCache[cacheKey] = ytmPlainFallback
+                return@withContext ytmPlainFallback
+            }
+
             if (cleanTitle.isNotBlank() && cleanArtist.isNotBlank()) {
                 val fallback = fetchFromFallbackSources(cleanTitle, cleanArtist)
                 if (fallback != null && fallback.lines.isNotEmpty()) {
@@ -126,16 +212,75 @@ class LyricsManager {
             LyricsState(
                 title = title,
                 artist = artist,
-                errorMessage = "Текст не найден. Используйте поиск (иконка лупы) или вставьте LRC / TTML / SRT."
+                isSynced = false,
+                errorMessage = "Текст не найден. Нажмите на лупу для ручного поиска или вставьте LRC / TTML."
             )
         } catch (e: Exception) {
             Log.e("LyricsManager", "Error fetching lyrics", e)
             LyricsState(
                 title = title,
                 artist = artist,
+                isSynced = false,
                 errorMessage = "Ошибка загрузки текста: ${e.localizedMessage}"
             )
         }
+    }
+
+    private fun fetchBetterLyricsTtml(
+        title: String,
+        artist: String,
+        durationSeconds: Long
+    ): LyricsState? {
+        val encTitle = URLEncoder.encode(title, "UTF-8")
+        val encArtist = URLEncoder.encode(artist, "UTF-8")
+        val durParam = if (durationSeconds > 0) "&d=$durationSeconds" else ""
+        val endpoints = listOf(
+            "https://lyrics-api.boidu.dev/getLyrics?a=$encArtist&s=$encTitle$durParam",
+            "https://lyrics-api.boidu.dev/ttml/getLyrics?a=$encArtist&s=$encTitle$durParam"
+        )
+
+        for (url in endpoints) {
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("Accept", "application/json, application/xml, text/xml")
+                    .header("User-Agent", "imux-music-player/2.0")
+                    .build()
+
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@use
+                    val body = response.body?.string()?.trim() ?: return@use
+                    val ttmlContent = when {
+                        body.startsWith("{") -> {
+                            val json = JSONObject(body)
+                            json.optString("ttml", "")
+                                .ifBlank { json.optString("lyrics", "") }
+                        }
+                        body.contains("<tt") -> body
+                        else -> ""
+                    }
+                    if (!ttmlContent.contains("<tt") || !ttmlContent.contains("<p")) return@use
+
+                    val parsed = insertInstrumentalBreaks(parseTtml(ttmlContent))
+                    if (parsed.isNotEmpty()) {
+                        return LyricsState(
+                            title = title,
+                            artist = artist,
+                            lines = parsed,
+                            plainLyrics = parsed.filter { !it.isInstrumental }.joinToString("\n") { it.primaryText },
+                            source = "BetterLyrics TTML",
+                            isSynced = parsed.any { it.isSynced },
+                            hasDualLines = parsed.any { !it.secondaryText.isNullOrBlank() },
+                            hasWordSync = parsed.any { it.hasWordTiming },
+                            hasDuet = parsed.any { it.speaker == LyricSpeaker.SECOND || it.speaker == LyricSpeaker.BOTH }
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("LyricsManager", "BetterLyrics endpoint failed ($url): ${e.message}")
+            }
+        }
+        return null
     }
 
     private fun fetchWordLevelLyrics(
@@ -197,13 +342,32 @@ class LyricsManager {
                         val syllabusArr = lineObj.optJSONArray("syllabus")
                         val words = mutableListOf<LyricWord>()
                         if (syllabusArr != null && syllabusArr.length() > 0) {
+                            var groupId = 0
                             for (w in 0 until syllabusArr.length()) {
                                 val sym = syllabusArr.optJSONObject(w) ?: continue
-                                val wText = sym.optString("text", "")
+                                val rawSymText = sym.optString("text", "")
+                                val wText = rawSymText.trim()
                                 val wStart = sym.optLong("time", startTime)
                                 val wDur = sym.optLong("duration", 250L).coerceAtLeast(60L)
                                 if (wText.isNotEmpty()) {
-                                    words.add(LyricWord(wText, wStart, wStart + wDur))
+                                    val nextSym = if (w + 1 < syllabusArr.length()) syllabusArr.optJSONObject(w + 1) else null
+                                    val nextTrimmed = nextSym?.optString("text", "")?.trim().orEmpty()
+                                    val isExplicitPart = sym.optBoolean("isWordPart", false) ||
+                                        sym.optBoolean("isPartOfWord", false)
+                                    val fusedWithNext = nextTrimmed.isNotEmpty() &&
+                                        rawSymText.lastOrNull()?.isWhitespace() != true &&
+                                        text.contains("$wText$nextTrimmed", ignoreCase = true)
+                                    val hasSpaceAfter = !(isExplicitPart || fusedWithNext)
+                                    words.add(
+                                        LyricWord(
+                                            text = wText,
+                                            startTimeMs = wStart,
+                                            endTimeMs = wStart + wDur,
+                                            trailingSpace = hasSpaceAfter,
+                                            syllableGroupId = groupId
+                                        )
+                                    )
+                                    if (hasSpaceAfter) groupId++
                                 }
                             }
                         }
@@ -239,6 +403,7 @@ class LyricsManager {
                             lines = enriched,
                             plainLyrics = plainSb.toString().trim(),
                             source = if (type.equals("Word", true)) "BetterLyrics Word-Sync" else "LyricsPlus Sync",
+                            isSynced = enriched.any { it.isSynced },
                             hasDualLines = enriched.any { !it.secondaryText.isNullOrBlank() },
                             hasWordSync = enriched.any { it.hasWordTiming },
                             hasDuet = enriched.any { it.speaker == LyricSpeaker.SECOND || it.speaker == LyricSpeaker.BOTH }
@@ -366,6 +531,7 @@ class LyricsManager {
                     lines = lines,
                     plainLyrics = plain.ifBlank { lines.filter { !it.isInstrumental }.joinToString("\n") { it.primaryText } },
                     source = "LRCLIB Sync",
+                    isSynced = true,
                     hasDualLines = lines.any { !it.secondaryText.isNullOrBlank() },
                     hasWordSync = lines.any { it.hasWordTiming },
                     hasDuet = lines.any { it.speaker == LyricSpeaker.SECOND || it.speaker == LyricSpeaker.BOTH }
@@ -391,6 +557,7 @@ class LyricsManager {
                 lines = plainLines,
                 plainLyrics = plain,
                 source = "LRCLIB Text",
+                isSynced = false,
                 hasDualLines = false,
                 hasDuet = plainLines.any { it.speaker == LyricSpeaker.SECOND || it.speaker == LyricSpeaker.BOTH }
             )
@@ -473,6 +640,7 @@ class LyricsManager {
                     lines = enriched,
                     plainLyrics = enriched.filter { !it.isInstrumental }.joinToString("\n") { it.primaryText },
                     source = if (yrcRaw.isNotBlank()) "NetEase YRC + Перевод" else "NetEase Sync",
+                    isSynced = true,
                     hasDualLines = enriched.any { !it.secondaryText.isNullOrBlank() },
                     hasWordSync = enriched.any { it.hasWordTiming },
                     hasDuet = enriched.any { it.speaker == LyricSpeaker.SECOND || it.speaker == LyricSpeaker.BOTH }
@@ -568,6 +736,7 @@ class LyricsManager {
                             lines = plainLines,
                             plainLyrics = lyrics,
                             source = "Lyrics.ovh",
+                            isSynced = false,
                             hasDualLines = false,
                             hasDuet = plainLines.any { it.speaker == LyricSpeaker.SECOND || it.speaker == LyricSpeaker.BOTH }
                         )
@@ -727,27 +896,61 @@ class LyricsManager {
 
             val spanMatches = spanRegex.findAll(body).toList()
             if (spanMatches.isNotEmpty()) {
-                for (sm in spanMatches) {
+                var mainGroupId = 0
+                var bgGroupId = 0
+                for (sIdx in spanMatches.indices) {
+                    val sm = spanMatches[sIdx]
                     val sAttrs = sm.groupValues[1]
-                    val sRawText = decodeXmlEntities(sm.groupValues[2].replace(Regex("<[^>]+>"), "")).trim()
-                    if (sRawText.isBlank()) continue
+                    val rawInner = decodeXmlEntities(sm.groupValues[2].replace(Regex("<[^>]+>"), ""))
+                    val sCleanText = rawInner.trim()
+                    if (sCleanText.isBlank()) continue
+
+                    val nextSpan = spanMatches.getOrNull(sIdx + 1)
+                    val gapAfter = if (nextSpan != null && nextSpan.range.first > sm.range.last) {
+                        body.substring(sm.range.last + 1, nextSpan.range.first)
+                    } else {
+                        " "
+                    }
+                    val hasSpaceAfter = (rawInner.lastOrNull()?.isWhitespace() == true) ||
+                        gapAfter.any { it.isWhitespace() }
+
                     val role = extractXmlAttr(sAttrs, "ttm:role")?.lowercase() ?: ""
                     when {
                         role.contains("x-translation") -> {
-                            translationText = if (translationText == null) sRawText else "$translationText $sRawText"
+                            translationText = if (translationText == null) sCleanText else "$translationText $sCleanText"
                         }
                         role.contains("x-bg") -> {
-                            bgTextSb.append(sRawText).append(' ')
+                            bgTextSb.append(sCleanText)
+                            if (hasSpaceAfter) bgTextSb.append(' ')
                             val sbMs = extractXmlAttr(sAttrs, "begin")?.let { parseFlexibleTimeMs(it) } ?: startMs
                             val seMs = extractXmlAttr(sAttrs, "end")?.let { parseFlexibleTimeMs(it) } ?: endMs
-                            bgWords.add(LyricWord(sRawText, sbMs, seMs.coerceAtLeast(sbMs + 60L)))
+                            bgWords.add(
+                                LyricWord(
+                                    text = sCleanText,
+                                    startTimeMs = sbMs,
+                                    endTimeMs = seMs.coerceAtLeast(sbMs + 60L),
+                                    trailingSpace = hasSpaceAfter,
+                                    syllableGroupId = bgGroupId
+                                )
+                            )
+                            if (hasSpaceAfter) bgGroupId++
                         }
                         else -> {
-                            mainTextSb.append(sRawText).append(' ')
+                            mainTextSb.append(sCleanText)
+                            if (hasSpaceAfter) mainTextSb.append(' ')
                             val sbMs = extractXmlAttr(sAttrs, "begin")?.let { parseFlexibleTimeMs(it) }
                             val seMs = extractXmlAttr(sAttrs, "end")?.let { parseFlexibleTimeMs(it) }
                             if (sbMs != null) {
-                                mainWords.add(LyricWord(sRawText, sbMs, (seMs ?: (sbMs + 280L)).coerceAtLeast(sbMs + 60L)))
+                                mainWords.add(
+                                    LyricWord(
+                                        text = sCleanText,
+                                        startTimeMs = sbMs,
+                                        endTimeMs = (seMs ?: (sbMs + 280L)).coerceAtLeast(sbMs + 60L),
+                                        trailingSpace = hasSpaceAfter,
+                                        syllableGroupId = mainGroupId
+                                    )
+                                )
+                                if (hasSpaceAfter) mainGroupId++
                             }
                         }
                     }
@@ -936,17 +1139,21 @@ class LyricsManager {
             }
             // Explicit [Singer]: prefix
             Regex("^\\[([^\\]]{1,20})\\]:\\s+.+").matches(text) -> {
-                val m = Regex("^\\[([^\\]]{1,20})\\]:\\s+(.+)$").find(text)!!
-                val singer = m.groupValues[1].trim()
-                val body = m.groupValues[2].trim()
-                val sp = speakerNameMap.getOrPut(singer.lowercase()) {
-                    when (speakerNameMap.size) {
-                        0 -> LyricSpeaker.FIRST
-                        1 -> LyricSpeaker.SECOND
-                        else -> LyricSpeaker.BOTH
+                val m = Regex("^\\[([^\\]]{1,20})\\]:\\s+(.+)$").find(text)
+                if (m == null) {
+                    LyricSpeakerMeta(LyricSpeaker.FIRST, null, text, false, false)
+                } else {
+                    val singer = m.groupValues[1].trim()
+                    val body = m.groupValues[2].trim()
+                    val sp = speakerNameMap.getOrPut(singer.lowercase()) {
+                        when (speakerNameMap.size) {
+                            0 -> LyricSpeaker.FIRST
+                            1 -> LyricSpeaker.SECOND
+                            else -> LyricSpeaker.BOTH
+                        }
                     }
+                    LyricSpeakerMeta(sp, if (sp == LyricSpeaker.FIRST) null else singer, body, false, true)
                 }
-                LyricSpeakerMeta(sp, if (sp == LyricSpeaker.FIRST) null else singer, body, false, true)
             }
             else -> LyricSpeakerMeta(LyricSpeaker.FIRST, null, text, false, false)
         }
@@ -1098,8 +1305,9 @@ class LyricsManager {
 
     private fun cleanSongTitle(title: String): String {
         return title
-            .replace(Regex("(?i)\\[(official|video|audio|lyrics|hd|4k|music video|visualizer|remastered).*?\\]"), "")
-            .replace(Regex("(?i)\\((official|video|audio|lyrics|hd|4k|music video|visualizer|remastered).*?\\)"), "")
+            .replace(Regex("(?i)\\[(official|video|audio|lyrics|lyric|hd|4k|music video|visualizer|remaster|remastered).*?\\]"), "")
+            .replace(Regex("(?i)\\((official|video|audio|lyrics|lyric|hd|4k|music video|visualizer|remaster|remastered).*?\\)"), "")
+            .replace(Regex("(?i)\\s+-\\s+(remaster|remastered|live|explicit|clean|version).*$"), "")
             .replace(Regex("(?i)\\s+(ft|feat)\\..*"), "")
             .trim()
     }

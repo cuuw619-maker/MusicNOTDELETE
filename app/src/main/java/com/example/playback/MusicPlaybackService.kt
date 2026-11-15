@@ -106,8 +106,9 @@ class MusicPlaybackService : MediaSessionService() {
         val app = applicationContext as? MusicApplication
         val streamManager = app?.youTubeStreamManager
 
-        // Header-aware DataSource so YouTube CDN URLs receive the matching client User-Agent & Referer
+        // Header-aware DataSource so YouTube/SoundCloud/CDN URLs receive matching User-Agent & Referer
         val httpBaseFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(com.example.network.NetworkClient.BROWSER_UA)
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(20_000)

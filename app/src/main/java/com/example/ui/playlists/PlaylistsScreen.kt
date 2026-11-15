@@ -127,8 +127,9 @@ fun PlaylistsScreen(
         },
         label = "PlaylistDetailTransition"
     ) { isDetail ->
-        if (isDetail && selectedPlaylist != null) {
-            val playlist = selectedPlaylist!!
+        val currentPlaylist = selectedPlaylist
+        if (isDetail && currentPlaylist != null) {
+            val playlist = currentPlaylist
             PlaylistDetailScreen(
                 playlist = playlist,
                 songs = playlistSongs,
@@ -149,6 +150,7 @@ fun PlaylistsScreen(
                 modifier = modifier
                     .fillMaxSize()
                     .testTag("playlists_screen"),
+                containerColor = androidx.compose.ui.graphics.Color.Transparent,
                 floatingActionButton = {
                     FloatingActionButton(
                         onClick = { viewModel.setCreatePlaylistDialogVisible(true) },

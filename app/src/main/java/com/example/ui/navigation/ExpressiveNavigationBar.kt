@@ -3,7 +3,6 @@ package com.example.ui.navigation
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -14,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -57,6 +57,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.components.agslGlassRim
+import com.example.ui.components.morphPolygonShape
 import com.example.ui.util.HapticFeedbackType
 import com.example.ui.util.rememberHapticHelper
 import kotlinx.coroutines.launch
@@ -71,14 +73,21 @@ val MAIN_NAV_DESTINATIONS = listOf(
     NavDestination.SETTINGS
 )
 
+val DOCK_CATEGORY_DESTINATIONS = listOf(
+    NavDestination.HOME,
+    NavDestination.LIBRARY,
+    NavDestination.PLAYLISTS,
+    NavDestination.SETTINGS
+)
+
 private const val VISUAL_DRAG_FACTOR = 1.0f
 
 /**
- * Calibrated floating "Oval inside Oval" navigation bar:
- * - Outer Oval: Floating rounded capsule container with soft elevation and clean outline.
- * - Inner Oval: Interactive selected indicator calibrated with equal margin on all sides (CircleShape),
- *   following the finger with direct 1:1 tracking and organic micro-morphing.
- * - Symmetrical 5-tab layout with crisp Material 3 icons and clear labels.
+ * Material 3 Expressive floating dock adapted with separated "Oval Categories + Detached Circle"
+ * geometry:
+ * - Left: Elongated M3 Expressive tonal oval capsule containing category tabs (Home, Library, Playlists, Settings)
+ *   with direct 1:1 finger-tracked selection indicator and AGSL Flagship rim sheen.
+ * - Right: Detached 64.dp circular orbital Search action button with bouncy spring response & geometric wave glow.
  */
 @Composable
 fun ExpressiveFloatingNavigationBar(
@@ -87,31 +96,38 @@ fun ExpressiveFloatingNavigationBar(
     modifier: Modifier = Modifier
 ) {
     val haptic = rememberHapticHelper()
-    val destinations = MAIN_NAV_DESTINATIONS
+    val destinations = DOCK_CATEGORY_DESTINATIONS
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val selectedIndex = destinations.indexOf(currentDestination).coerceAtLeast(0)
 
-    Box(
+    val selectedIndex = destinations.indexOf(currentDestination)
+    val isCategorySelected = selectedIndex >= 0
+    val isSearchSelected = currentDestination == NavDestination.SEARCH
+
+    Row(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 14.dp, vertical = 6.dp),
-        contentAlignment = Alignment.Center
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
+        // ==========================================
+        // LEFT: ELONGATED OVAL CATEGORIES CAPSULE
+        // ==========================================
         Surface(
             modifier = Modifier
-                .fillMaxWidth()
+                .weight(1f)
                 .shadow(
                     elevation = 8.dp,
                     shape = CircleShape,
                     spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                    ambientColor = Color.Black.copy(alpha = 0.10f)
+                    ambientColor = Color.Black.copy(alpha = 0.12f)
                 )
-                .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f),
-                    shape = CircleShape
+                .agslGlassRim(
+                    cornerRadiusDp = 999.dp,
+                    primaryColor = MaterialTheme.colorScheme.primary,
+                    tertiaryColor = MaterialTheme.colorScheme.tertiary
                 )
                 .testTag("floating_navigation_bar"),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -128,9 +144,8 @@ fun ExpressiveFloatingNavigationBar(
                 val tabCount = destinations.size
                 val slotWidthPx = totalWidthPx / tabCount.toFloat()
 
-                // Calibrated Indicator oval dimensions: leaves 3-4dp padding all around
-                val indicatorWidthPx = slotWidthPx * 0.90f
-                val indicatorHeightDp = 44.dp
+                val indicatorWidthPx = slotWidthPx * 0.92f
+                val indicatorHeightDp = 46.dp
 
                 val minAllowedLeft = 0f
                 val maxAllowedLeft = (totalWidthPx - indicatorWidthPx).coerceAtLeast(0f)
@@ -141,51 +156,43 @@ fun ExpressiveFloatingNavigationBar(
                 var isDragging by remember { mutableStateOf(false) }
                 var pressedSlotIndex by remember { mutableStateOf<Int?>(null) }
 
-                // M3 Expressive noticeable swell when pressing or dragging the selection oval
+                val pillScaleAlpha by animateFloatAsState(
+                    targetValue = if (isCategorySelected || isDragging) 1f else 0f,
+                    animationSpec = spring(dampingRatio = 0.72f, stiffness = 440f),
+                    label = "dock_pill_visibility"
+                )
                 val capsuleScaleX by animateFloatAsState(
                     targetValue = when {
-                        isDragging -> 1.15f
-                        isPressed -> 1.13f
+                        isDragging -> 1.13f
+                        isPressed -> 1.11f
                         else -> 1.0f
                     },
-                    animationSpec = spring(
-                        dampingRatio = 0.56f,
-                        stiffness = 460f
-                    ),
+                    animationSpec = spring(dampingRatio = 0.56f, stiffness = 460f),
                     label = "inner_oval_scale_x"
                 )
                 val capsuleScaleY by animateFloatAsState(
                     targetValue = when {
-                        isDragging -> 1.18f
-                        isPressed -> 1.15f
+                        isDragging -> 1.16f
+                        isPressed -> 1.13f
                         else -> 1.0f
                     },
-                    animationSpec = spring(
-                        dampingRatio = 0.56f,
-                        stiffness = 460f
-                    ),
+                    animationSpec = spring(dampingRatio = 0.56f, stiffness = 460f),
                     label = "inner_oval_scale_y"
                 )
 
-                // Sync indicator position with smooth spring physics when selectedIndex changes
-                LaunchedEffect(selectedIndex, slotWidthPx, indicatorWidthPx, isDragging) {
-                    if (!isDragging) {
-                        val targetCenterPx = (selectedIndex + 0.5f) * slotWidthPx
+                val effectiveIdx = selectedIndex.coerceAtLeast(0)
+                LaunchedEffect(effectiveIdx, isCategorySelected, slotWidthPx, indicatorWidthPx, isDragging) {
+                    if (!isDragging && isCategorySelected) {
+                        val targetCenterPx = (effectiveIdx + 0.5f) * slotWidthPx
                         val targetLeftPx = targetCenterPx - (indicatorWidthPx / 2f)
                         val clampedTarget = targetLeftPx.coerceIn(minAllowedLeft, maxAllowedLeft)
                         indicatorOffsetXPx.animateTo(
                             targetValue = clampedTarget,
-                            animationSpec = spring(
-                                dampingRatio = 0.72f,
-                                stiffness = 450f
-                            )
+                            animationSpec = spring(dampingRatio = 0.72f, stiffness = 450f)
                         )
                     }
                 }
 
-                // ==========================================
-                // LAYER 1: THE INTERACTIVE INNER OVAL (Visual indicator)
-                // ==========================================
                 val indicatorWidthDp = with(density) { indicatorWidthPx.toDp() }
 
                 val targetPressIdx = pressedSlotIndex
@@ -212,36 +219,48 @@ fun ExpressiveFloatingNavigationBar(
                     )
                 }
 
-                Box(
-                    modifier = Modifier
-                        .offset {
-                            val currentX = if (isDragging) dragVisualXPx else indicatorOffsetXPx.value
-                            IntOffset(
-                                x = currentX.roundToInt(),
-                                y = 0
-                            )
-                        }
-                        .width(indicatorWidthDp)
-                        .height(indicatorHeightDp)
-                        .align(Alignment.CenterStart)
-                        .graphicsLayer {
-                            scaleX = capsuleScaleX
-                            scaleY = capsuleScaleY
-                            shadowElevation = if (isPressed || isDragging) 14f else 2f
-                        }
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer)
-                        .border(
-                            width = if (isPressed || isDragging) 1.5.dp else 1.dp,
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = if (isPressed || isDragging) 0.42f else 0.20f),
-                            shape = CircleShape
-                        )
-                        .testTag("nav_selected_indicator")
+                // Smooth sleek M3 Expressive active category indicator oval
+                val dragCompressionX by animateFloatAsState(
+                    targetValue = if (isDragging) 1.07f else if (isPressed) 1.04f else 1.0f,
+                    animationSpec = spring(dampingRatio = 0.62f, stiffness = 460f),
+                    label = "pill_comp_x"
+                )
+                val dragCompressionY by animateFloatAsState(
+                    targetValue = if (isDragging) 0.94f else if (isPressed) 0.96f else 1.0f,
+                    animationSpec = spring(dampingRatio = 0.62f, stiffness = 460f),
+                    label = "pill_comp_y"
                 )
 
-                // ==========================================
-                // LAYER 2: THE 5 TABS (ICONS & LABELS)
-                // ==========================================
+                if (pillScaleAlpha > 0.02f) {
+                    Box(
+                        modifier = Modifier
+                            .offset {
+                                val currentX = if (isDragging) dragVisualXPx else indicatorOffsetXPx.value
+                                IntOffset(x = currentX.roundToInt(), y = 0)
+                            }
+                            .width(indicatorWidthDp)
+                            .height(indicatorHeightDp)
+                            .align(Alignment.CenterStart)
+                            .graphicsLayer {
+                                scaleX = capsuleScaleX * dragCompressionX * pillScaleAlpha.coerceIn(0.6f, 1f)
+                                scaleY = capsuleScaleY * dragCompressionY * pillScaleAlpha.coerceIn(0.6f, 1f)
+                                alpha = pillScaleAlpha
+                                shadowElevation = if (isPressed || isDragging) 10f else 1.5f
+                            }
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                            .border(
+                                width = if (isPressed || isDragging) 1.25.dp else 0.8.dp,
+                                color = MaterialTheme.colorScheme.primary.copy(
+                                    alpha = if (isPressed || isDragging) 0.36f else 0.16f
+                                ),
+                                shape = CircleShape
+                            )
+                            .testTag("nav_selected_indicator")
+                    )
+                }
+
+                // 4 Category Slots
                 Row(
                     modifier = Modifier.fillMaxSize(),
                     horizontalArrangement = Arrangement.SpaceEvenly,
@@ -251,12 +270,10 @@ fun ExpressiveFloatingNavigationBar(
                         val isSelected = selectedIndex == index
                         val isSlotPressed = pressedSlotIndex == index
                         val contentColor by animateColorAsState(
-                            targetValue = if (isSelected) {
-                                MaterialTheme.colorScheme.onPrimaryContainer
-                            } else if (isSlotPressed) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
+                            targetValue = when {
+                                isSelected -> MaterialTheme.colorScheme.onPrimaryContainer
+                                isSlotPressed -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
                             },
                             animationSpec = tween(durationMillis = 150, easing = LinearEasing),
                             label = "nav_content_color_${destination.route}"
@@ -268,18 +285,12 @@ fun ExpressiveFloatingNavigationBar(
                                 isSelected -> 1.12f
                                 else -> 1.0f
                             },
-                            animationSpec = spring(
-                                dampingRatio = 0.52f,
-                                stiffness = 420f
-                            ),
+                            animationSpec = spring(dampingRatio = 0.52f, stiffness = 420f),
                             label = "tab_icon_scale_${destination.route}"
                         )
                         val tabIconOffsetY by animateDpAsState(
                             targetValue = if (isSelected) (-2).dp else 0.dp,
-                            animationSpec = spring(
-                                dampingRatio = 0.65f,
-                                stiffness = 420f
-                            ),
+                            animationSpec = spring(dampingRatio = 0.65f, stiffness = 420f),
                             label = "tab_icon_offset_y_${destination.route}"
                         )
 
@@ -293,13 +304,10 @@ fun ExpressiveFloatingNavigationBar(
                             Column(
                                 modifier = Modifier
                                     .padding(horizontal = 2.dp)
-                                    .graphicsLayer {
-                                        translationY = tabIconOffsetY.toPx()
-                                    },
+                                    .graphicsLayer { translationY = tabIconOffsetY.toPx() },
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center
                             ) {
-                                // Icon with bouncy pop scale when active
                                 Icon(
                                     imageVector = destination.icon,
                                     contentDescription = destination.title,
@@ -312,7 +320,6 @@ fun ExpressiveFloatingNavigationBar(
                                         }
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
-                                // Title text always visible for all 5 tabs
                                 Text(
                                     text = destination.title,
                                     color = contentColor,
@@ -328,11 +335,7 @@ fun ExpressiveFloatingNavigationBar(
                     }
                 }
 
-                // ==========================================
-                // LAYER 3: STATIONARY TOUCH LAYER (FULL BAR)
-                // Handles direct finger-tracking drag of selected oval & direct tab taps.
-                // Coordinates are directly in stationary container space [0, totalWidthPx].
-                // ==========================================
+                // Stationary Touch & Drag Overlay
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -355,9 +358,7 @@ fun ExpressiveFloatingNavigationBar(
                                     while (true) {
                                         val event = awaitPointerEvent()
                                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                        if (!change.pressed) {
-                                            break
-                                        }
+                                        if (!change.pressed) break
 
                                         val currentFingerX = change.position.x
                                         val totalFingerDeltaX = currentFingerX - dragStartFingerX
@@ -379,7 +380,6 @@ fun ExpressiveFloatingNavigationBar(
                                             }
                                         } else {
                                             change.consume()
-                                            // Synchronous calculation from finger position without accumulated lag
                                             val newX = dragStartOvalX + totalFingerDeltaX * VISUAL_DRAG_FACTOR
                                             currentVisualX = newX.coerceIn(minAllowedLeft, maxAllowedLeft)
                                             dragVisualXPx = currentVisualX
@@ -388,7 +388,7 @@ fun ExpressiveFloatingNavigationBar(
                                             val hoveredIndex = destinations.indices.minByOrNull { i ->
                                                 val tabCenter = (i + 0.5f) * slotWidthPx
                                                 abs(tabCenter - currentCenter)
-                                            } ?: selectedIndex
+                                            } ?: effectiveIdx
                                             pressedSlotIndex = hoveredIndex
 
                                             if (hoveredIndex != lastHapticIndex) {
@@ -402,13 +402,11 @@ fun ExpressiveFloatingNavigationBar(
                                     pressedSlotIndex = null
                                     if (isDragStarted) {
                                         isDragging = false
-                                        // Take actual current center of oval on release
                                         val finalCenter = currentVisualX + indicatorWidthPx / 2f
-                                        // Compare exact distances to ALL tab centers
                                         val closestIndex = destinations.indices.minByOrNull { i ->
                                             val tabCenter = (i + 0.5f) * slotWidthPx
                                             abs(tabCenter - finalCenter)
-                                        } ?: selectedIndex
+                                        } ?: effectiveIdx
 
                                         if (closestIndex != selectedIndex) {
                                             haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
@@ -420,17 +418,12 @@ fun ExpressiveFloatingNavigationBar(
                                             val targetCenter = (closestIndex + 0.5f) * slotWidthPx
                                             val targetLeft = (targetCenter - indicatorWidthPx / 2f)
                                                 .coerceIn(minAllowedLeft, maxAllowedLeft)
-                                            // Controlled lively bounce upon settling into target center
                                             indicatorOffsetXPx.animateTo(
                                                 targetValue = targetLeft,
-                                                animationSpec = spring(
-                                                    dampingRatio = 0.68f,
-                                                    stiffness = 400f
-                                                )
+                                                animationSpec = spring(dampingRatio = 0.68f, stiffness = 400f)
                                             )
                                         }
                                     } else {
-                                        // If released without drag: it's a direct tab tap
                                         val tappedIndex = (down.position.x / slotWidthPx).toInt()
                                             .coerceIn(0, destinations.size - 1)
                                         if (tappedIndex != selectedIndex) {
@@ -441,6 +434,94 @@ fun ExpressiveFloatingNavigationBar(
                                 }
                             }
                         }
+                )
+            }
+        }
+
+        // ==========================================
+        // RIGHT: DETACHED CIRCULAR SEARCH BUTTON
+        // ==========================================
+        val searchInteraction = remember { MutableInteractionSource() }
+        val searchPressed by searchInteraction.collectIsPressedAsState()
+        val searchScale by animateFloatAsState(
+            targetValue = when {
+                searchPressed -> 0.90f
+                isSearchSelected -> 1.07f
+                else -> 1.0f
+            },
+            animationSpec = spring(dampingRatio = 0.54f, stiffness = 460f),
+            label = "detached_search_circle_scale"
+        )
+        val searchBg by animateColorAsState(
+            targetValue = if (isSearchSelected) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            },
+            animationSpec = tween(180),
+            label = "detached_search_bg"
+        )
+        val searchFg by animateColorAsState(
+            targetValue = if (isSearchSelected) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            animationSpec = tween(180),
+            label = "detached_search_fg"
+        )
+
+        val searchActiveShape = remember { morphPolygonShape(3) }
+        val searchShape = if (isSearchSelected) searchActiveShape else CircleShape
+        Surface(
+            onClick = {
+                haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
+                onNavigate(NavDestination.SEARCH)
+            },
+            interactionSource = searchInteraction,
+            shape = searchShape,
+            color = searchBg,
+            contentColor = searchFg,
+            tonalElevation = if (isSearchSelected) 6.dp else 3.dp,
+            border = androidx.compose.foundation.BorderStroke(
+                width = if (isSearchSelected) 1.5.dp else 1.dp,
+                color = if (isSearchSelected) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                } else {
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
+                }
+            ),
+            modifier = Modifier
+                .size(64.dp)
+                .graphicsLayer {
+                    scaleX = searchScale
+                    scaleY = searchScale
+                }
+                .then(
+                    if (!isSearchSelected) {
+                        Modifier
+                            .shadow(
+                                elevation = 8.dp,
+                                shape = CircleShape,
+                                spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                            )
+                            .agslGlassRim(
+                                cornerRadiusDp = 999.dp,
+                                primaryColor = MaterialTheme.colorScheme.primary,
+                                tertiaryColor = MaterialTheme.colorScheme.tertiary
+                            )
+                    } else {
+                        Modifier
+                    }
+                )
+                .testTag("nav_${NavDestination.SEARCH.route}")
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = NavDestination.SEARCH.icon,
+                    contentDescription = NavDestination.SEARCH.title,
+                    tint = searchFg,
+                    modifier = Modifier.size(26.dp)
                 )
             }
         }

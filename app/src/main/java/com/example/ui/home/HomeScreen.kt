@@ -65,6 +65,7 @@ import com.example.ui.components.ExpressiveSectionHeader
 import com.example.ui.components.LinearWavyProgressIndicator
 import com.example.ui.components.SongListItem
 import com.example.ui.components.groupedItemShape
+import com.example.ui.components.morphPolygonShape
 import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.viewmodel.MusicViewModel
 
@@ -236,8 +237,8 @@ fun HomeScreen(
                                 if (playbackState.currentSong != null) viewModel.playPause()
                                 else viewModel.playSong(heroSong, recentlyPlayed.ifEmpty { allSongs })
                             },
-                            modifier = Modifier.size(48.dp),
-                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.size(50.dp),
+                            shape = morphPolygonShape(3),
                             colors = IconButtonDefaults.filledIconButtonColors(
                                 containerColor = MaterialTheme.colorScheme.primary,
                                 contentColor = MaterialTheme.colorScheme.onPrimary
@@ -265,6 +266,7 @@ fun HomeScreen(
                     icon = Icons.Filled.Shuffle,
                     color = MaterialTheme.colorScheme.primaryContainer,
                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shapeIndex = 4,
                     onClick = {
                         if (allSongs.isNotEmpty()) {
                             viewModel.controllerManager.toggleShuffle()
@@ -280,6 +282,7 @@ fun HomeScreen(
                     icon = Icons.Filled.Favorite,
                     color = MaterialTheme.colorScheme.tertiaryContainer,
                     tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    shapeIndex = 2,
                     onClick = onNavigateToFavorites,
                     modifier = Modifier.weight(1f).testTag("home_favorites_card")
                 )
@@ -290,6 +293,7 @@ fun HomeScreen(
                     icon = Icons.Rounded.QueueMusic,
                     color = MaterialTheme.colorScheme.secondaryContainer,
                     tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    shapeIndex = 5,
                     onClick = onNavigateToPlaylists,
                     modifier = Modifier.weight(1f).testTag("home_playlists_card")
                 )
@@ -306,7 +310,7 @@ fun HomeScreen(
                     contentPadding = PaddingValues(horizontal = 20.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(recentlyPlayed.take(10), key = { "recent_${it.id}" }) { song ->
+                    itemsIndexed(recentlyPlayed.take(10), key = { idx, song -> "recent_${song.id}_$idx" }) { _, song ->
                         RecentSongCard(
                             song = song,
                             isCurrent = playbackState.currentSong?.id == song.id,
@@ -387,7 +391,7 @@ fun HomeScreen(
             }
             itemsIndexed(
                 items = topMostPlayed,
-                key = { _, song -> "most_${song.id}" },
+                key = { idx, song -> "most_${song.id}_$idx" },
                 contentType = { _, _ -> "song" }
             ) { index, song ->
                 SongListItem(
@@ -420,7 +424,7 @@ fun HomeScreen(
             }
             itemsIndexed(
                 items = topRecentAdded,
-                key = { _, song -> "added_${song.id}" },
+                key = { idx, song -> "added_${song.id}_$idx" },
                 contentType = { _, _ -> "song" }
             ) { index, song ->
                 SongListItem(
@@ -471,7 +475,8 @@ private fun QuickActionCard(
     color: Color,
     tint: Color,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    shapeIndex: Int = 1
 ) {
     Card(
         modifier = modifier
@@ -490,12 +495,11 @@ private fun QuickActionCard(
                 .padding(14.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(11.dp))
-                    .background(tint.copy(alpha = 0.14f)),
-                contentAlignment = Alignment.Center
+            ExpressiveMorphShapeSurface(
+                shapeIndex = shapeIndex,
+                containerColor = tint.copy(alpha = 0.16f),
+                contentColor = tint,
+                modifier = Modifier.size(38.dp)
             ) {
                 Icon(
                     imageVector = icon,
@@ -581,11 +585,11 @@ private fun RecentSongCard(
 
                 FilledIconButton(
                     onClick = onClick,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = morphPolygonShape(2),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(6.dp)
-                        .size(34.dp),
+                        .size(36.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.primary
                     )

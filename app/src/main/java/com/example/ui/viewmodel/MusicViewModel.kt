@@ -45,6 +45,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val playbackState: StateFlow<PlaybackState> = controllerManager.playbackState
     val playbackPositionMs: StateFlow<Long> = controllerManager.playbackPositionMs
     val activeStreamEngine: StateFlow<String> = controllerManager.activeStreamEngine
+    val diagnosticReport = controllerManager.diagnosticReport
     val equalizerState = equalizerManager.equalizerState
 
     // Sleep Timer
@@ -216,6 +217,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedDeliveryEngine = MutableStateFlow("auto")
     val selectedDeliveryEngine: StateFlow<String> = _selectedDeliveryEngine.asStateFlow()
+
+    private val _sourceHealthStatuses = MutableStateFlow<List<com.example.online.SourceHealthStatus>>(emptyList())
+    val sourceHealthStatuses: StateFlow<List<com.example.online.SourceHealthStatus>> = _sourceHealthStatuses.asStateFlow()
+
+    private val _isCheckingSourceHealth = MutableStateFlow(false)
+    val isCheckingSourceHealth: StateFlow<Boolean> = _isCheckingSourceHealth.asStateFlow()
 
     private var sourceSwitcherReplaceCurrent = true
     private var alternativeSearchJob: kotlinx.coroutines.Job? = null
@@ -642,6 +649,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun connectSpotifyWithWebSession(
+        accessToken: String?,
+        clientToken: String?,
+        spDcCookie: String?,
+        onDone: (Boolean) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val ok = spotifyManager.connectWithCapturedWebSession(accessToken, clientToken, spDcCookie)
+            onDone(ok)
+        }
+    }
+
     fun fetchSpotifyPlaylists() {
         viewModelScope.launch {
             spotifyManager.fetchUserPlaylists()
@@ -693,14 +712,21 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 kotlinx.coroutines.delay(420L)
             }
             _isOnlineSearchLoading.value = true
-            val results = youTubeStreamManager.search(trimmed, activeFilter)
-            if (_searchQuery.value.trim() == trimmed && _onlineSourceFilter.value == activeFilter) {
-                _onlineSearchResults.value = results
-                _isOnlineSearchLoading.value = false
-                if (results.isNotEmpty()) {
-                    scheduleHistoryCommitCheck()
+            try {
+                val results = youTubeStreamManager.search(trimmed, activeFilter)
+                if (_searchQuery.value.trim() == trimmed && _onlineSourceFilter.value == activeFilter) {
+                    _onlineSearchResults.value = results
+                    _isOnlineSearchLoading.value = false
+                    if (results.isNotEmpty()) {
+                        scheduleHistoryCommitCheck()
+                    }
+                } else {
+                    _isOnlineSearchLoading.value = false
                 }
-            } else {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                android.util.Log.e("MusicViewModel", "Online search failed", t)
                 _isOnlineSearchLoading.value = false
             }
         }
@@ -708,8 +734,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun playOnlineTrack(track: OnlineTrack) {
         commitHistoryOnResultSelected()
+        controllerManager.dismissDiagnosticReport()
         val queue = _onlineSearchResults.value.map { it.toSong() }
-        val target = queue.find { it.title == track.title && it.artist == track.artist } ?: track.toSong()
+        val targetSong = track.toSong()
+        val target = queue.find { it.id == targetSong.id } ?: targetSong
         controllerManager.playSong(target, if (queue.isNotEmpty()) queue else listOf(target))
     }
 
@@ -765,9 +793,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         alternativeSearchJob?.cancel()
         alternativeSearchJob = viewModelScope.launch {
             _isAlternativeLoading.value = true
-            val tracks = youTubeStreamManager.search(q, filter)
-            _alternativeTracks.value = tracks
-            _isAlternativeLoading.value = false
+            try {
+                val tracks = youTubeStreamManager.search(q, filter)
+                _alternativeTracks.value = tracks
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                android.util.Log.e("MusicViewModel", "Alternative search failed", t)
+                _alternativeTracks.value = emptyList()
+            } finally {
+                _isAlternativeLoading.value = false
+            }
         }
     }
 
@@ -786,11 +822,26 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun retryPlayback() {
+        controllerManager.dismissDiagnosticReport()
         controllerManager.retryCurrentTrack()
     }
 
     fun clearPlaybackError() {
         controllerManager.clearError()
+        controllerManager.dismissDiagnosticReport()
+    }
+
+    fun dismissDiagnosticReport() {
+        controllerManager.dismissDiagnosticReport()
+    }
+
+    fun runSourceHealthCheck() {
+        if (_isCheckingSourceHealth.value) return
+        viewModelScope.launch {
+            _isCheckingSourceHealth.value = true
+            _sourceHealthStatuses.value = youTubeStreamManager.testAllSourcesHealth()
+            _isCheckingSourceHealth.value = false
+        }
     }
 
     // ==========================================
@@ -798,17 +849,19 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // ==========================================
     fun loadLyrics(song: Song) {
         _lyricsOffsetMs.value = preferencesManager.getLyricsOffset(song.id)
+        val ytVideoId = controllerManager.getYouTubeVideoIdForSong(song.id)
         viewModelScope.launch {
-            _lyricsState.value = _lyricsState.value.copy(
+            _lyricsState.value = com.example.lyrics.LyricsState(
                 title = song.title,
                 artist = song.artist,
-                isLoading = true,
-                errorMessage = null
+                isLoading = true
             )
             val state = lyricsManager.getLyrics(
                 title = song.title,
                 artist = song.artist,
-                durationSeconds = song.durationMs / 1000L
+                durationSeconds = song.durationMs / 1000L,
+                youtubeVideoId = ytVideoId,
+                ytStreamManager = youTubeStreamManager
             )
             _lyricsState.value = state
         }
@@ -827,11 +880,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun searchLyricsManually(query: String) {
         viewModelScope.launch {
-            _lyricsState.value = _lyricsState.value.copy(isLoading = true, errorMessage = null)
+            _lyricsState.value = com.example.lyrics.LyricsState(
+                title = query,
+                artist = "",
+                isLoading = true
+            )
             val state = lyricsManager.getLyrics(
                 title = query,
                 artist = "",
-                durationSeconds = 0L
+                durationSeconds = 0L,
+                youtubeVideoId = null,
+                ytStreamManager = youTubeStreamManager
             )
             _lyricsState.value = state
         }

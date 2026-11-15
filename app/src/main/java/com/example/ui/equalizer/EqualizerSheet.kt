@@ -158,12 +158,13 @@ fun EqualizerSheet(
                         }
                     }
 
-                    Switch(
+                    com.example.ui.components.ExpressiveGeometricSwitch(
                         checked = equalizerState.isEnabled,
                         onCheckedChange = {
                             performHapticFeedback(view, HapticType.TOGGLE)
                             onToggleEnabled(it)
                         },
+                        pattern = com.example.ui.components.GeometricPatternKind.WAVES,
                         modifier = Modifier.testTag("equalizer_master_switch")
                     )
                 }

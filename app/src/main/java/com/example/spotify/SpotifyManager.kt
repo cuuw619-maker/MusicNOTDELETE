@@ -53,7 +53,9 @@ data class SpotifyAuthState(
     val user: SpotifyUser? = null,
     val playlists: List<SpotifyPlaylist> = emptyList(),
     val isLoading: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val importProgressLoaded: Int = 0,
+    val importProgressTotal: Int = 0
 )
 
 class SpotifyManager(
@@ -127,6 +129,67 @@ class SpotifyManager(
     }
 
     /**
+     * Connects user's Spotify account directly from the in-app WebView session capture
+     * (`accessToken`, `client-token`, and `sp_dc` cookie), avoiding TOTP/HTTP 400 issues.
+     */
+    suspend fun connectWithCapturedWebSession(
+        accessToken: String?,
+        clientToken: String?,
+        spDcCookie: String?
+    ): Boolean = withContext(Dispatchers.IO) {
+        _authState.value = _authState.value.copy(isLoading = true, errorMessage = null)
+        try {
+            val cleanSpDc = spDcCookie?.trim()?.takeIf { it.isNotBlank() }
+            if (!cleanSpDc.isNullOrBlank()) {
+                prefs.edit().putString(KEY_SP_DC_COOKIE, cleanSpDc).apply()
+            }
+            val cleanClientToken = clientToken?.trim()?.takeIf { it.isNotBlank() }
+            if (!cleanClientToken.isNullOrBlank()) {
+                prefs.edit().putString(KEY_CLIENT_TOKEN, cleanClientToken).apply()
+            }
+
+            val resolvedToken = accessToken
+                ?.removePrefix("Bearer ")
+                ?.removePrefix("bearer ")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: cleanSpDc?.let { exchangeSpDcCookieForToken(it) }
+
+            if (resolvedToken.isNullOrBlank()) {
+                _authState.value = _authState.value.copy(
+                    isLoading = false,
+                    errorMessage = "Не удалось получить accessToken из Web-сессии Spotify. Попробуйте ещё раз."
+                )
+                return@withContext false
+            }
+
+            saveTokens(resolvedToken, null, 3500L, method = "WebView Вход")
+            val profileOk = fetchUserProfile(resolvedToken)
+            if (!profileOk) {
+                prefs.edit()
+                    .putString(KEY_USER_ID, "spotify_web")
+                    .putString(KEY_USER_NAME, "Spotify Аккаунт")
+                    .apply()
+                _authState.value = _authState.value.copy(
+                    isConnected = true,
+                    authMethod = "WebView Вход",
+                    user = SpotifyUser("spotify_web", "Spotify Аккаунт"),
+                    isLoading = false
+                )
+            }
+            fetchUserPlaylists()
+            true
+        } catch (e: Exception) {
+            Log.e("SpotifyManager", "connectWithCapturedWebSession error", e)
+            _authState.value = _authState.value.copy(
+                isLoading = false,
+                errorMessage = "Ошибка Web-входа Spotify: ${e.localizedMessage}"
+            )
+            false
+        }
+    }
+
+    /**
      * Connects user's full Spotify account using a Web Player session cookie (`sp_dc=...`) OR Bearer access token.
      */
     suspend fun connectWithWebTokenOrCookie(rawInput: String): Boolean = withContext(Dispatchers.IO) {
@@ -150,7 +213,7 @@ class SpotifyManager(
             if (accessToken.isNullOrBlank()) {
                 _authState.value = _authState.value.copy(
                     isLoading = false,
-                    errorMessage = "Не удалось получить токен Spotify из sp_dc. Проверьте актуальность cookie."
+                    errorMessage = "Не удалось получить токен Spotify из sp_dc. Используйте «Войти в аккаунт Spotify (Web)»."
                 )
                 return@withContext false
             }
@@ -278,11 +341,23 @@ class SpotifyManager(
         }
     }
 
+    private fun Request.Builder.withSpotifyApiHeaders(token: String): Request.Builder {
+        header("Authorization", "Bearer $token")
+        header("Accept", "application/json")
+        header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+        val clientToken = prefs.getString(KEY_CLIENT_TOKEN, null)
+        if (!clientToken.isNullOrBlank()) {
+            header("client-token", clientToken)
+            header("App-Platform", "WebPlayer")
+        }
+        return this
+    }
+
     private suspend fun fetchUserProfile(accessToken: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
                 .url("https://api.spotify.com/v1/me")
-                .header("Authorization", "Bearer $accessToken")
+                .withSpotifyApiHeaders(accessToken)
                 .build()
 
             client.newCall(request).execute().use { response ->
@@ -317,7 +392,7 @@ class SpotifyManager(
     }
 
     /**
-     * Fetches current authorized user's playlists + synthetic Liked Songs entry.
+     * Fetches ALL playlists of the authorized user with full pagination + Liked Songs entry.
      */
     suspend fun fetchUserPlaylists() = withContext(Dispatchers.IO) {
         val token = getValidAccessToken() ?: run {
@@ -327,27 +402,48 @@ class SpotifyManager(
         _authState.value = _authState.value.copy(isLoading = true, errorMessage = null)
 
         try {
-            val request = Request.Builder()
-                .url("https://api.spotify.com/v1/me/playlists?limit=50")
-                .header("Authorization", "Bearer $token")
-                .build()
+            var likedTotal = 0
+            try {
+                val likedCountReq = Request.Builder()
+                    .url("https://api.spotify.com/v1/me/tracks?limit=1")
+                    .withSpotifyApiHeaders(token)
+                    .build()
+                client.newCall(likedCountReq).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        likedTotal = JSONObject(resp.body?.string() ?: "{}").optInt("total", 0)
+                    }
+                }
+            } catch (_: Exception) {
+            }
 
-            client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
+            val playlists = mutableListOf<SpotifyPlaylist>()
+            playlists.add(
+                SpotifyPlaylist(
+                    id = LIKED_SONGS_ID,
+                    name = "Любимые треки Spotify",
+                    description = "Вся ваша коллекция понравившихся треков",
+                    trackCount = likedTotal,
+                    ownerName = _authState.value.user?.displayName ?: "Вы"
+                )
+            )
+
+            var nextUrl: String? = "https://api.spotify.com/v1/me/playlists?limit=50"
+            var firstErrorCode: Int? = null
+
+            while (nextUrl != null) {
+                val request = Request.Builder()
+                    .url(nextUrl)
+                    .withSpotifyApiHeaders(token)
+                    .build()
+
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        firstErrorCode = response.code
+                        nextUrl = null
+                        return@use
+                    }
                     val json = JSONObject(response.body?.string() ?: "{}")
                     val items = json.optJSONArray("items") ?: JSONArray()
-                    val playlists = mutableListOf<SpotifyPlaylist>()
-
-                    // Add virtual "Liked Songs" playlist option
-                    playlists.add(
-                        SpotifyPlaylist(
-                            id = LIKED_SONGS_ID,
-                            name = "Любимые треки Spotify",
-                            description = "Ваша коллекция понравившихся треков",
-                            trackCount = 50,
-                            ownerName = _authState.value.user?.displayName ?: "Вы"
-                        )
-                    )
 
                     for (i in 0 until items.length()) {
                         val item = items.optJSONObject(i) ?: continue
@@ -375,18 +471,21 @@ class SpotifyManager(
                             )
                         )
                     }
-
-                    _authState.value = _authState.value.copy(
-                        playlists = playlists,
-                        isLoading = false,
-                        errorMessage = null
-                    )
-                } else {
-                    _authState.value = _authState.value.copy(
-                        isLoading = false,
-                        errorMessage = "Не удалось загрузить плейлисты (HTTP ${response.code}). Проверьте токен."
-                    )
+                    nextUrl = if (json.isNull("next")) null else json.optString("next").takeIf { it.isNotBlank() }
                 }
+            }
+
+            if (firstErrorCode != null && playlists.size <= 1) {
+                _authState.value = _authState.value.copy(
+                    isLoading = false,
+                    errorMessage = "Не удалось загрузить плейлисты (HTTP $firstErrorCode). Войдите заново через Web-аккаунт."
+                )
+            } else {
+                _authState.value = _authState.value.copy(
+                    playlists = playlists,
+                    isLoading = false,
+                    errorMessage = null
+                )
             }
         } catch (e: Exception) {
             Log.e("SpotifyManager", "fetchUserPlaylists error", e)
@@ -395,7 +494,7 @@ class SpotifyManager(
     }
 
     /**
-     * Fetches tracks of a playlist via authenticated Web API or anonymous Web Token / Embed page.
+     * Fetches ALL tracks of a playlist without arbitrary count caps via paginated Web API or Embed JSON fallback.
      */
     suspend fun fetchPlaylistTracks(playlistId: String): List<SpotifyTrack> = withContext(Dispatchers.IO) {
         if (playlistId == LIKED_SONGS_ID) {
@@ -408,10 +507,10 @@ class SpotifyManager(
         if (!token.isNullOrBlank()) {
             var nextUrl: String? = "https://api.spotify.com/v1/playlists/$playlistId/tracks?limit=100"
             try {
-                while (nextUrl != null && tracksList.size < 300) {
+                while (nextUrl != null) {
                     val request = Request.Builder()
                         .url(nextUrl)
-                        .header("Authorization", "Bearer $token")
+                        .withSpotifyApiHeaders(token)
                         .build()
 
                     client.newCall(request).execute().use { response ->
@@ -420,6 +519,7 @@ class SpotifyManager(
                             return@use
                         }
                         val json = JSONObject(response.body?.string() ?: "{}")
+                        val total = json.optInt("total", 0)
                         val items = json.optJSONArray("items") ?: JSONArray()
 
                         for (i in 0 until items.length()) {
@@ -428,7 +528,11 @@ class SpotifyManager(
                             if (parsed != null) tracksList.add(parsed)
                         }
 
-                        nextUrl = if (json.isNull("next")) null else json.optString("next")
+                        _authState.value = _authState.value.copy(
+                            importProgressLoaded = tracksList.size,
+                            importProgressTotal = maxOf(total, tracksList.size)
+                        )
+                        nextUrl = if (json.isNull("next")) null else json.optString("next").takeIf { it.isNotBlank() }
                     }
                 }
             } catch (e: Exception) {
@@ -446,22 +550,33 @@ class SpotifyManager(
         tracksList
     }
 
-    private fun fetchLikedTracks(): List<SpotifyTrack> {
-        val token = prefs.getString(KEY_ACCESS_TOKEN, null) ?: return emptyList()
+    private suspend fun fetchLikedTracks(): List<SpotifyTrack> {
+        val token = getValidAccessToken() ?: return emptyList()
         val result = mutableListOf<SpotifyTrack>()
+        var nextUrl: String? = "https://api.spotify.com/v1/me/tracks?limit=50"
         try {
-            val req = Request.Builder()
-                .url("https://api.spotify.com/v1/me/tracks?limit=50")
-                .header("Authorization", "Bearer $token")
-                .build()
-            client.newCall(req).execute().use { resp ->
-                if (resp.isSuccessful) {
+            while (nextUrl != null) {
+                val req = Request.Builder()
+                    .url(nextUrl)
+                    .withSpotifyApiHeaders(token)
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        nextUrl = null
+                        return@use
+                    }
                     val json = JSONObject(resp.body?.string() ?: "{}")
+                    val total = json.optInt("total", 0)
                     val items = json.optJSONArray("items") ?: JSONArray()
                     for (i in 0 until items.length()) {
                         val trackObj = items.optJSONObject(i)?.optJSONObject("track") ?: continue
                         parseSpotifyTrackObject(trackObj)?.let { result.add(it) }
                     }
+                    _authState.value = _authState.value.copy(
+                        importProgressLoaded = result.size,
+                        importProgressTotal = maxOf(total, result.size)
+                    )
+                    nextUrl = if (json.isNull("next")) null else json.optString("next").takeIf { it.isNotBlank() }
                 }
             }
         } catch (e: Exception) {
@@ -512,9 +627,19 @@ class SpotifyManager(
         spotifyPlaylist: SpotifyPlaylist,
         onProgress: (Int, Int) -> Unit = { _, _ -> }
     ): Playlist? = withContext(Dispatchers.IO) {
-        val tracks = fetchPlaylistTracks(spotifyPlaylist.id)
-        if (tracks.isEmpty()) return@withContext null
-        persistPlaylistAndTracks(spotifyPlaylist.name, spotifyPlaylist.coverUrl, tracks, onProgress)
+        try {
+            val tracks = fetchPlaylistTracks(spotifyPlaylist.id)
+            if (tracks.isEmpty()) return@withContext null
+            persistPlaylistAndTracks(spotifyPlaylist.name, spotifyPlaylist.coverUrl, tracks) { loaded, total ->
+                _authState.value = _authState.value.copy(
+                    importProgressLoaded = loaded,
+                    importProgressTotal = total
+                )
+                onProgress(loaded, total)
+            }
+        } finally {
+            _authState.value = _authState.value.copy(importProgressLoaded = 0, importProgressTotal = 0)
+        }
     }
 
     /**
@@ -797,6 +922,7 @@ class SpotifyManager(
         private const val KEY_CODE_VERIFIER = "key_spotify_code_verifier"
         private const val KEY_CUSTOM_CLIENT_ID = "key_spotify_custom_client_id"
         private const val KEY_SP_DC_COOKIE = "key_spotify_sp_dc"
+        private const val KEY_CLIENT_TOKEN = "key_spotify_client_token"
         private const val KEY_AUTH_METHOD = "key_spotify_auth_method"
         private const val KEY_USER_ID = "key_spotify_user_id"
         private const val KEY_USER_NAME = "key_spotify_user_name"

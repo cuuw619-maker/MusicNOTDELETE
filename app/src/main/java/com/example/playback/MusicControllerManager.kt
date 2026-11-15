@@ -64,6 +64,13 @@ class MusicControllerManager(
     private val _activeStreamEngine = MutableStateFlow("local")
     val activeStreamEngine: StateFlow<String> = _activeStreamEngine.asStateFlow()
 
+    private val _diagnosticReport = MutableStateFlow<com.example.online.PlaybackDiagnosticReport?>(null)
+    val diagnosticReport: StateFlow<com.example.online.PlaybackDiagnosticReport?> = _diagnosticReport.asStateFlow()
+
+    fun dismissDiagnosticReport() {
+        _diagnosticReport.value = null
+    }
+
     private var originalQueue = mutableListOf<Song>()
     private var currentQueueSongs = mutableListOf<Song>()
     private var positionUpdateJob: Job? = null
@@ -135,6 +142,26 @@ class MusicControllerManager(
             override fun onPlaybackStateChanged(state: Int) {
                 updatePlaybackState()
                 if (state == Player.STATE_ENDED) {
+                    val cur = _playbackState.value.currentSong
+                    val pos = controller.currentPosition.coerceAtLeast(0L)
+                    val knownDur = cur?.durationMs ?: 0L
+                    val isOnline = cur != null && (
+                        cur.contentUriString.startsWith("http") ||
+                            cur.id < 0L ||
+                            onlineSourceBySongId.containsKey(cur.id)
+                        )
+                    // Anti-30s YouTube cutoff detection: recover cleanly if stream drops prematurely mid-song
+                    if (cur != null && isOnline && knownDur > 75_000L && pos in 12_000L..(knownDur - 25_000L) && (onlineRetryCounts[cur.id] ?: 0) < 2) {
+                        val idx = controller.currentMediaItemIndex
+                        recoverOnlineStreamError(
+                            index = idx,
+                            song = cur,
+                            lastErrorCode = "EARLY_EOF_30S",
+                            lastErrorSummary = "Поток прервался на ${pos / 1000}с — переключение клиента InnerTubeX",
+                            resumeAtMs = pos
+                        )
+                        return
+                    }
                     stopPositionUpdates()
                 }
             }
@@ -167,18 +194,29 @@ class MusicControllerManager(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                Log.e("MusicControllerManager", "Player error: ${error.message}", error)
+                Log.e("MusicControllerManager", "Player error: ${error.errorCodeName} ${error.message}", error)
+                val (codeLabel, reasonText) = extractPlayerErrorDetails(error)
+                com.example.online.SourceDiagnosticsLog.record(
+                    com.example.online.SourceAttemptLog(
+                        sourceId = _activeStreamEngine.value,
+                        displayName = com.example.online.YouTubeStreamManager.formatEngineDisplay(_activeStreamEngine.value),
+                        stage = "exoplayer",
+                        status = com.example.online.SourceAttemptStatus.HTTP_ERROR,
+                        httpCode = codeLabel.removePrefix("HTTP ").toIntOrNull(),
+                        detail = "$codeLabel: $reasonText"
+                    )
+                )
                 val cur = _playbackState.value.currentSong
                 val idx = controller.currentMediaItemIndex
                 if (cur != null && (cur.contentUriString.startsWith("online://") || cur.id < 0L || onlineSourceBySongId.containsKey(cur.id))) {
-                    recoverOnlineStreamError(idx, cur)
+                    recoverOnlineStreamError(idx, cur, lastErrorCode = codeLabel, lastErrorSummary = reasonText)
                     return
                 }
                 isResolvingOnline = false
                 _playbackState.value = _playbackState.value.copy(
                     isPlaying = false,
                     isBuffering = false,
-                    errorMessage = "Ошибка воспроизведения: ${error.localizedMessage ?: "Не удалось воспроизвести трек"}"
+                    errorMessage = "Ошибка ($codeLabel): $reasonText"
                 )
             }
 
@@ -300,6 +338,12 @@ class MusicControllerManager(
 
     fun getOriginalOnlineUriForSong(songId: Long): String? = onlineSourceBySongId[songId]
 
+    fun getYouTubeVideoIdForSong(songId: Long): String? {
+        val raw = onlineSourceBySongId[songId] ?: return null
+        val uri = runCatching { Uri.parse(raw) }.getOrNull() ?: return null
+        return if (uri.host == "youtube") uri.path?.removePrefix("/")?.takeIf { it.isNotBlank() } else null
+    }
+
     fun switchDeliveryEngineForCurrent(preferredEngine: String) {
         val controller = mediaController ?: return
         val current = _playbackState.value.currentSong ?: return
@@ -381,6 +425,7 @@ class MusicControllerManager(
     }
 
     fun replaceCurrentTrackWithOnlineCandidate(track: com.example.online.OnlineTrack) {
+        _diagnosticReport.value = null
         val newSong = track.toSong()
         onlineSourceBySongId[newSong.id] = track.buildOnlineUri()
         val controller = mediaController
@@ -603,6 +648,21 @@ class MusicControllerManager(
             val app = context.applicationContext as? com.example.MusicApplication
             val streamManager = app?.youTubeStreamManager ?: return@withTimeoutOrNull song
 
+            if (host == "soundcloud" && path.isNotBlank()) {
+                val scCandidate = com.example.online.OnlineTrack(
+                    id = path,
+                    title = metaTitle,
+                    artist = metaArtist,
+                    durationSeconds = metaDur / 1000L,
+                    sourceEngine = "soundcloud"
+                )
+                val direct = streamManager.resolveDirectTrackPlayableUrl(scCandidate)
+                if (direct != null) {
+                    _activeStreamEngine.value = "soundcloud"
+                    return@withTimeoutOrNull song.copy(contentUriString = direct)
+                }
+            }
+
             if (host == "archive" && path.isNotBlank()) {
                 val archiveCandidate = com.example.online.OnlineTrack(
                     id = path,
@@ -649,7 +709,8 @@ class MusicControllerManager(
                 targetTitle = metaTitle,
                 targetArtist = metaArtist,
                 expectedDurationMs = metaDur,
-                preferredEngine = preferredEngine
+                preferredEngine = preferredEngine,
+                allowPreviewFallback = false
             )
             if (matched != null) {
                 _activeStreamEngine.value = matched.third
@@ -663,6 +724,51 @@ class MusicControllerManager(
         resolved ?: song
     }
 
+    @OptIn(UnstableApi::class)
+    private fun extractPlayerErrorDetails(error: PlaybackException): Pair<String, String> {
+        var cause: Throwable? = error.cause
+        var httpCode: Int? = null
+        while (cause != null) {
+            if (cause is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) {
+                httpCode = cause.responseCode
+                break
+            }
+            cause = cause.cause
+        }
+        val codeLabel = if (httpCode != null) "HTTP $httpCode" else error.errorCodeName
+        val detail = when (httpCode) {
+            403 -> "Сервер отклонил доступ (403 Forbidden / подпись ссылки устарела)"
+            404 -> "Аудиофайл не найден на сервере (404 Not Found)"
+            410 -> "Срок действия ссылки на поток истёк (410 Gone)"
+            429 -> "Слишком много запросов к источнику (429 Too Many Requests)"
+            500, 502, 503 -> "Удалённый сервер источника перегружен (HTTP $httpCode)"
+            else -> error.cause?.localizedMessage ?: error.localizedMessage ?: "Сбой сетевого потока"
+        }
+        return codeLabel to detail
+    }
+
+    private suspend fun publishDiagnosticFailure(
+        song: Song,
+        errorCodeLabel: String,
+        summary: String
+    ) {
+        val app = context.applicationContext as? com.example.MusicApplication
+        val streamManager = app?.youTubeStreamManager
+        val alternatives = runCatching {
+            streamManager?.findRelevantAlternatives(song.title, song.artist, song.durationMs) ?: emptyList()
+        }.getOrDefault(emptyList())
+        val logs = com.example.online.SourceDiagnosticsLog.recent(18)
+        _diagnosticReport.value = com.example.online.PlaybackDiagnosticReport(
+            trackTitle = song.title,
+            trackArtist = song.artist,
+            errorCodeLabel = errorCodeLabel,
+            summary = summary,
+            attempts = logs,
+            suggestedAlternatives = alternatives,
+            canAutoRetryOtherSources = true
+        )
+    }
+
     private fun resolveAndPlayIndex(index: Int, song: Song) {
         val controller = mediaController ?: return
         resolveJob?.cancel()
@@ -673,11 +779,16 @@ class MusicControllerManager(
                 val resolvedSong = resolveOnlineUriIfNeeded(song)
                 if (resolvedSong.contentUriString.startsWith("online://")) {
                     isResolvingOnline = false
+                    val recentLogs = com.example.online.SourceDiagnosticsLog.recent(10)
+                    val lastCode = recentLogs.firstOrNull { it.httpCode != null }?.httpCode?.let { "HTTP $it" }
+                        ?: "NO_WORKING_STREAM"
+                    val summary = "Все зеркала не выдали рабочий поток для «${song.title}». Подберите альтернативу ниже."
                     _playbackState.value = _playbackState.value.copy(
                         isPlaying = false,
                         isBuffering = false,
-                        errorMessage = "Не удалось загрузить поток для «${song.title}». Проверьте сеть или повторите."
+                        errorMessage = "$summary ($lastCode)"
                     )
+                    publishDiagnosticFailure(song, lastCode, summary)
                     return@launch
                 }
                 onlineRetryCounts[song.id] = 0
@@ -700,16 +811,24 @@ class MusicControllerManager(
                 throw e
             } catch (e: Exception) {
                 isResolvingOnline = false
+                val msg = e.localizedMessage ?: "Сетевая ошибка"
                 _playbackState.value = _playbackState.value.copy(
                     isPlaying = false,
                     isBuffering = false,
-                    errorMessage = "Ошибка потока для «${song.title}»"
+                    errorMessage = "Ошибка потока ($msg)"
                 )
+                publishDiagnosticFailure(song, "STREAM_EXCEPTION", msg)
             }
         }
     }
 
-    private fun recoverOnlineStreamError(index: Int, song: Song) {
+    private fun recoverOnlineStreamError(
+        index: Int,
+        song: Song,
+        lastErrorCode: String = "STREAM_ERROR",
+        lastErrorSummary: String = "Источник недоступен",
+        resumeAtMs: Long = 0L
+    ) {
         val controller = mediaController ?: return
         val attempts = onlineRetryCounts[song.id] ?: 0
         if (attempts >= 2) {
@@ -718,8 +837,11 @@ class MusicControllerManager(
             _playbackState.value = _playbackState.value.copy(
                 isPlaying = false,
                 isBuffering = false,
-                errorMessage = "Источник временно недоступен для «${song.title}». Попробуйте повторить."
+                errorMessage = "Источник временно недоступен ($lastErrorCode): $lastErrorSummary"
             )
+            scope.launch {
+                publishDiagnosticFailure(song, lastErrorCode, lastErrorSummary)
+            }
             return
         }
         onlineRetryCounts[song.id] = attempts + 1
@@ -755,7 +877,7 @@ class MusicControllerManager(
                     val oIdx = originalQueue.indexOfFirst { it.id == song.id }
                     if (oIdx in originalQueue.indices) originalQueue[oIdx] = updated
                     controller.replaceMediaItem(index, songToMediaItem(updated))
-                    controller.seekTo(index, 0L)
+                    controller.seekTo(index, resumeAtMs.coerceAtLeast(0L))
                     controller.prepare()
                     controller.play()
                     updatePlaybackState()
@@ -763,19 +885,22 @@ class MusicControllerManager(
                     _playbackState.value = _playbackState.value.copy(
                         isPlaying = false,
                         isBuffering = false,
-                        errorMessage = "Не удалось подобрать рабочее зеркало для «${song.title}»"
+                        errorMessage = "Ошибка ($lastErrorCode): не удалось подобрать зеркало для «${song.title}»"
                     )
+                    publishDiagnosticFailure(song, lastErrorCode, lastErrorSummary)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 isResolvingOnline = false
                 throw e
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 isResolvingOnline = false
+                val msg = e.localizedMessage ?: lastErrorSummary
                 _playbackState.value = _playbackState.value.copy(
                     isPlaying = false,
                     isBuffering = false,
-                    errorMessage = "Сбой загрузки потока для «${song.title}»"
+                    errorMessage = "Сбой загрузки ($lastErrorCode): $msg"
                 )
+                publishDiagnosticFailure(song, lastErrorCode, msg)
             }
         }
     }
@@ -836,11 +961,16 @@ class MusicControllerManager(
                     val resolvedSong = resolveOnlineUriIfNeeded(song)
                     if (resolvedSong.contentUriString.startsWith("online://")) {
                         isResolvingOnline = false
+                        val recentLogs = com.example.online.SourceDiagnosticsLog.recent(10)
+                        val lastCode = recentLogs.firstOrNull { it.httpCode != null }?.httpCode?.let { "HTTP $it" }
+                            ?: "NO_WORKING_STREAM"
+                        val summary = "Источники не вернули аудиопоток для «${song.title}». Выберите другой источник."
                         _playbackState.value = _playbackState.value.copy(
                             isPlaying = false,
                             isBuffering = false,
-                            errorMessage = "Не удалось загрузить поток для «${song.title}». Проверьте сеть или повторите."
+                            errorMessage = "$summary ($lastCode)"
                         )
+                        publishDiagnosticFailure(song, lastCode, summary)
                         return@launch
                     }
 
@@ -864,13 +994,15 @@ class MusicControllerManager(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     isResolvingOnline = false
                     throw e
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                     isResolvingOnline = false
+                    val msg = e.localizedMessage ?: "Не удалось запустить поток"
                     _playbackState.value = _playbackState.value.copy(
                         isPlaying = false,
                         isBuffering = false,
-                        errorMessage = "Не удалось запустить поток для «${song.title}»"
+                        errorMessage = "Ошибка: $msg"
                     )
+                    publishDiagnosticFailure(song, "PLAYBACK_INIT_ERROR", msg)
                 }
             }
             return

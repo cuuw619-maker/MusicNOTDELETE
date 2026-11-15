@@ -876,12 +876,13 @@ private fun SettingsSwitchRow(
             )
         }
         Spacer(modifier = Modifier.width(8.dp))
-        Switch(
+        com.example.ui.components.ExpressiveGeometricSwitch(
             checked = checked,
             onCheckedChange = {
                 haptic.performHaptic(HapticFeedbackType.MEDIUM_TICK)
                 onCheckedChange(it)
-            }
+            },
+            pattern = com.example.ui.components.GeometricPatternKind.ARC
         )
     }
 }

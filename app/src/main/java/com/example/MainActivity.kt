@@ -55,6 +55,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -173,6 +175,15 @@ fun MainApp(
     val audioBalance by viewModel.audioBalance.collectAsStateWithLifecycle()
     val activeStreamEngine by viewModel.activeStreamEngine.collectAsStateWithLifecycle()
     val isSourceSwitcherVisible by viewModel.isSourceSwitcherVisible.collectAsStateWithLifecycle()
+    val diagnosticReport by viewModel.diagnosticReport.collectAsStateWithLifecycle()
+    val sourceHealthStatuses by viewModel.sourceHealthStatuses.collectAsStateWithLifecycle()
+    val isCheckingSourceHealth by viewModel.isCheckingSourceHealth.collectAsStateWithLifecycle()
+    val reducedMotion by viewModel.reducedMotion.collectAsStateWithLifecycle()
+
+    val context = LocalContext.current
+    var pendingCrashReport by remember {
+        mutableStateOf(com.example.util.CrashHandler.getLastCrashReport(context))
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -206,7 +217,16 @@ fun MainApp(
         return
     }
 
+    androidx.compose.material3.Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
     Box(modifier = Modifier.fillMaxSize()) {
+        com.example.ui.components.AmbientGeometricShapesOverlay(
+            isPlaying = playbackState.isPlaying,
+            reducedMotion = reducedMotion,
+            modifier = Modifier.fillMaxSize()
+        )
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val isWideScreen = maxWidth >= 600.dp
 
@@ -224,7 +244,8 @@ fun MainApp(
                             .fillMaxHeight()
                     ) {
                         Scaffold(
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier.fillMaxSize(),
+                            containerColor = Color.Transparent
                         ) { innerPadding ->
                             Box(
                                 modifier = Modifier
@@ -280,7 +301,8 @@ fun MainApp(
                 // Phone layout: Expressive Floating Navigation Bar + Mini Player
                 Box(modifier = Modifier.fillMaxSize()) {
                     Scaffold(
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        containerColor = Color.Transparent
                     ) { innerPadding ->
                         Box(
                             modifier = Modifier
@@ -404,6 +426,7 @@ fun MainApp(
             )
         }
     }
+    }
 
 
     // Modal Bottom Sheets & Dialogs
@@ -472,14 +495,16 @@ fun MainApp(
         )
     }
 
-    if (isLyricsVisible && playbackState.currentSong != null) {
-        com.example.ui.player.LyricsBottomSheet(
-            song = playbackState.currentSong!!,
-            currentPositionMs = playbackState.currentPositionMs,
-            viewModel = viewModel,
-            onSeekTo = { viewModel.seekTo(it) },
-            onDismiss = { viewModel.setLyricsSheetVisible(false) }
-        )
+    if (isLyricsVisible) {
+        playbackState.currentSong?.let { activeSong ->
+            com.example.ui.player.LyricsBottomSheet(
+                song = activeSong,
+                currentPositionMs = playbackState.currentPositionMs,
+                viewModel = viewModel,
+                onSeekTo = { viewModel.seekTo(it) },
+                onDismiss = { viewModel.setLyricsSheetVisible(false) }
+            )
+        }
     }
 
     if (isSpotifySheetVisible) {
@@ -489,11 +514,13 @@ fun MainApp(
         )
     }
 
-    if (isAudioInspectorVisible && playbackState.currentSong != null) {
-        com.example.ui.player.AudioInspectorDialog(
-            song = playbackState.currentSong!!,
-            onDismiss = { viewModel.setAudioInspectorVisible(false) }
-        )
+    if (isAudioInspectorVisible) {
+        playbackState.currentSong?.let { activeSong ->
+            com.example.ui.player.AudioInspectorDialog(
+                song = activeSong,
+                onDismiss = { viewModel.setAudioInspectorVisible(false) }
+            )
+        }
     }
 
     if (isCarModeActive) {
@@ -506,22 +533,50 @@ fun MainApp(
         )
     }
 
-    if (isBookmarksVisible && playbackState.currentSong != null) {
-        com.example.ui.player.BookmarksSheet(
-            song = playbackState.currentSong,
-            currentPositionMs = playbackState.currentPositionMs,
-            bookmarks = currentSongBookmarks,
-            onAddBookmark = { viewModel.addBookmark(playbackState.currentSong!!.id, it) },
-            onRemoveBookmark = { viewModel.removeBookmark(playbackState.currentSong!!.id, it) },
-            onSeekTo = { viewModel.seekTo(it) },
-            onDismiss = { viewModel.setBookmarksSheetVisible(false) }
-        )
+    if (isBookmarksVisible) {
+        playbackState.currentSong?.let { activeSong ->
+            com.example.ui.player.BookmarksSheet(
+                song = activeSong,
+                currentPositionMs = playbackState.currentPositionMs,
+                bookmarks = currentSongBookmarks,
+                onAddBookmark = { viewModel.addBookmark(activeSong.id, it) },
+                onRemoveBookmark = { viewModel.removeBookmark(activeSong.id, it) },
+                onSeekTo = { viewModel.seekTo(it) },
+                onDismiss = { viewModel.setBookmarksSheetVisible(false) }
+            )
+        }
     }
 
     if (isSourceSwitcherVisible) {
         com.example.ui.player.TrackSourceSwitcherSheet(
             viewModel = viewModel,
             onDismiss = { viewModel.closeSourceSwitcher() }
+        )
+    }
+
+    if (diagnosticReport != null) {
+        com.example.ui.dialogs.ErrorDiagnosticsDialog(
+            report = diagnosticReport,
+            sourceHealthStatuses = sourceHealthStatuses,
+            isCheckingHealth = isCheckingSourceHealth,
+            onRunHealthCheck = { viewModel.runSourceHealthCheck() },
+            onRetryPlayback = { viewModel.retryPlayback() },
+            onOpenSourceSwitcher = { viewModel.openSourceSwitcherForCurrent() },
+            onSelectAlternativeTrack = { alt ->
+                viewModel.dismissDiagnosticReport()
+                viewModel.playOnlineTrack(alt)
+            },
+            onDismiss = { viewModel.dismissDiagnosticReport() }
+        )
+    }
+
+    pendingCrashReport?.let { crashText ->
+        com.example.ui.dialogs.CrashReportDialog(
+            report = crashText,
+            onDismiss = {
+                com.example.util.CrashHandler.clearLastCrashReport(context)
+                pendingCrashReport = null
+            }
         )
     }
 }

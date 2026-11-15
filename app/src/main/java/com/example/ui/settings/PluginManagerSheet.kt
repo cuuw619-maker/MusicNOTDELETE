@@ -305,12 +305,13 @@ fun PluginManagerSheet(
                                     )
                                 }
 
-                                Switch(
+                                com.example.ui.components.ExpressiveGeometricSwitch(
                                     checked = item.isEnabled,
                                     onCheckedChange = { checked ->
                                         haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
                                         onTogglePlugin(item.plugin.id, checked)
-                                    }
+                                    },
+                                    pattern = com.example.ui.components.GeometricPatternKind.SNAKE
                                 )
                             }
 

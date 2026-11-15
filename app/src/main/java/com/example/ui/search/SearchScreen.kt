@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.NetworkCheck
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Search
@@ -47,7 +48,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -74,10 +77,10 @@ import com.example.ui.animation.performHapticFeedback
 import com.example.ui.components.AlbumCard
 import com.example.ui.components.AnimatedSoundwaveBars
 import com.example.ui.components.ArtistListItem
-import com.example.ui.components.CircularWavyProgressIndicator
 import com.example.ui.components.ConnectedGroupItem
 import com.example.ui.components.EmptyStateView
 import com.example.ui.components.ExpressiveConnectedButtonGroup
+import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.ExpressiveOvalChoiceChip
 import com.example.ui.components.ExpressiveSectionHeader
 import com.example.ui.components.SongListItem
@@ -104,6 +107,9 @@ fun SearchScreen(
     val onlineResults by viewModel.onlineSearchResults.collectAsStateWithLifecycle()
     val isOnlineLoading by viewModel.isOnlineSearchLoading.collectAsStateWithLifecycle()
     val onlineSourceFilter by viewModel.onlineSourceFilter.collectAsStateWithLifecycle()
+    val sourceHealthStatuses by viewModel.sourceHealthStatuses.collectAsStateWithLifecycle()
+    val isCheckingSourceHealth by viewModel.isCheckingSourceHealth.collectAsStateWithLifecycle()
+    var showSourceHealthDialog by remember { mutableStateOf(false) }
 
     val view = LocalView.current
     val context = LocalContext.current
@@ -188,7 +194,7 @@ fun SearchScreen(
                     .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(SearchCategory.values()) { category ->
+                items(SearchCategory.values(), key = { it.name }) { category ->
                     FilterChip(
                         selected = searchCategory == category,
                         onClick = { viewModel.setSearchCategory(category) },
@@ -240,7 +246,7 @@ fun SearchScreen(
                             }
                             itemsIndexed(
                                 items = searchResult.songs,
-                                key = { _, song -> "song_${song.id}" },
+                                key = { idx, song -> "song_${song.id}_$idx" },
                                 contentType = { _, _ -> "song" }
                             ) { index, song ->
                                 SongListItem(
@@ -298,7 +304,7 @@ fun SearchScreen(
                             }
                             itemsIndexed(
                                 items = searchResult.artists,
-                                key = { _, artist -> "artist_${artist.name}" },
+                                key = { idx, artist -> "artist_${artist.name}_$idx" },
                                 contentType = { _, _ -> "artist" }
                             ) { index, artist ->
                                 ArtistListItem(
@@ -318,12 +324,55 @@ fun SearchScreen(
                 }
             }
         } else {
-            // ONLINE MULTI-SOURCE STREAMING SEARCH
+            // ONLINE MULTI-SOURCE STREAMING SEARCH + LIVE SOURCE HEALTH CHIP
             LazyRow(
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                item(key = "source_health_test_chip") {
+                    val healthyCount = sourceHealthStatuses.count { it.isHealthy }
+                    val testLabel = when {
+                        isCheckingSourceHealth -> "Пинг..."
+                        sourceHealthStatuses.isNotEmpty() -> "Тест: $healthyCount/${sourceHealthStatuses.size}"
+                        else -> "Тест источников"
+                    }
+                    Surface(
+                        onClick = {
+                            performHapticFeedback(view, HapticType.LIGHT)
+                            showSourceHealthDialog = true
+                            if (sourceHealthStatuses.isEmpty() && !isCheckingSourceHealth) {
+                                viewModel.runSourceHealthCheck()
+                            }
+                        },
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier
+                            .height(36.dp)
+                            .testTag("online_source_health_chip")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.NetworkCheck,
+                                contentDescription = "Тест источников",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = testLabel,
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 11.5.sp
+                                )
+                            )
+                        }
+                    }
+                }
                 items(YouTubeStreamManager.SOURCE_FILTERS, key = { it.id }) { source ->
                     ExpressiveOvalChoiceChip(
                         label = source.label,
@@ -346,10 +395,10 @@ fun SearchScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularWavyProgressIndicator(
-                            size = 58.dp,
+                        ExpressiveLoadingIndicator(
+                            size = 54.dp,
                             color = onlineAccent,
-                            trackColor = onlineContainer.copy(alpha = 0.45f)
+                            containerColor = onlineContainer.copy(alpha = 0.45f)
                         )
                         Spacer(modifier = Modifier.height(14.dp))
                         Text(
@@ -374,7 +423,7 @@ fun SearchScreen(
                     EmptyStateView(
                         icon = Icons.Rounded.Cloud,
                         title = "Онлайн-стриминг музыки",
-                        subtitle = "Ищите треки в YouTube, Audius, JioSaavn, Archive.org и Deezer. Выбирайте лучшие версии на лету.",
+                        subtitle = "Бесплатные полные треки: YouTube Music (InnerTubeX), SoundCloud, Bandcamp, Audius, JioSaavn и Archive.org.",
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -416,7 +465,7 @@ fun SearchScreen(
 
                     itemsIndexed(
                         items = onlineResults,
-                        key = { _, track -> "online_${track.sourceEngine}_${track.id}" },
+                        key = { idx, track -> "online_${track.sourceEngine}_${track.id}_$idx" },
                         contentType = { _, _ -> "online_track" }
                     ) { index, track ->
                         val currentSong = playbackState.currentSong
@@ -521,6 +570,22 @@ fun SearchScreen(
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
                                             )
                                         }
+                                        if (track.isPreviewOnly) {
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.75f)
+                                            ) {
+                                                Text(
+                                                    text = "30с превью",
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        fontSize = 9.5.sp,
+                                                        fontWeight = FontWeight.ExtraBold
+                                                    ),
+                                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
                                         Text(
                                             text = "${track.artist} • ${Song.formatDuration(track.durationMs)}",
                                             style = MaterialTheme.typography.bodySmall,
@@ -580,6 +645,19 @@ fun SearchScreen(
                 }
             }
         }
+    }
+
+    if (showSourceHealthDialog) {
+        com.example.ui.dialogs.ErrorDiagnosticsDialog(
+            report = null,
+            sourceHealthStatuses = sourceHealthStatuses,
+            isCheckingHealth = isCheckingSourceHealth,
+            onRunHealthCheck = { viewModel.runSourceHealthCheck() },
+            onRetryPlayback = {},
+            onOpenSourceSwitcher = {},
+            onSelectAlternativeTrack = {},
+            onDismiss = { showSourceHealthDialog = false }
+        )
     }
 }
 

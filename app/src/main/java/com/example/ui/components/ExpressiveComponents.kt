@@ -12,6 +12,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -23,8 +24,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,6 +36,8 @@ import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,22 +49,27 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -72,6 +82,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -155,6 +166,7 @@ object MorphShapeLut {
  * Generates a Material 3 Expressive organic polygon [Shape] indexed into [MorphShapeLut].
  */
 fun morphPolygonShape(shapeIndex: Int): Shape = GenericShape { size, _ ->
+    if (size.width <= 0f || size.height <= 0f) return@GenericShape
     val idx = ((shapeIndex % MorphShapeLut.SHAPE_COUNT) + MorphShapeLut.SHAPE_COUNT) % MorphShapeLut.SHAPE_COUNT
     val table = MorphShapeLut.radii[idx]
     val cx = size.width / 2f
@@ -849,6 +861,12 @@ fun ExpressiveOvalChoiceChip(
         label = "oval_choice_fg"
     )
 
+    val checkProgress by animateFloatAsState(
+        targetValue = if (selected) 1f else 0f,
+        animationSpec = tween(durationMillis = 260),
+        label = "oval_choice_check"
+    )
+
     Surface(
         onClick = {
             if (enabled) {
@@ -877,30 +895,46 @@ fun ExpressiveOvalChoiceChip(
                 scaleY = scale
             }
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = if (selected || isPressed) FontWeight.ExtraBold else FontWeight.SemiBold,
-                    fontSize = fontSizeSp.sp
-                ),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center
-            )
-            if (!subtitle.isNullOrBlank()) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                    color = fg.copy(alpha = 0.78f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center
-                )
+        Box(contentAlignment = Alignment.Center) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                if (checkProgress > 0.05f) {
+                    Canvas(modifier = Modifier.size(13.dp)) {
+                        drawAnimatedCheckmark(
+                            progress = checkProgress,
+                            color = fg,
+                            strokeWidthPx = 2.dp.toPx()
+                        )
+                    }
+                }
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = if (selected || isPressed) FontWeight.ExtraBold else FontWeight.SemiBold,
+                            fontSize = fontSizeSp.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center
+                    )
+                    if (!subtitle.isNullOrBlank()) {
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            color = fg.copy(alpha = 0.78f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
             }
         }
     }
@@ -1119,6 +1153,405 @@ fun ExpressiveSectionHeader(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
                 )
             }
+        }
+    }
+}
+
+enum class GeometricPatternKind {
+    SNAKE,
+    ARC,
+    WAVES,
+    STRIPES
+}
+
+/**
+ * Draws a 2-segment stem-to-tip animated checkmark cleanly from progress in 0f..1f.
+ */
+fun DrawScope.drawAnimatedCheckmark(
+    progress: Float,
+    color: Color,
+    strokeWidthPx: Float = 2.4.dp.toPx()
+) {
+    val p = progress.coerceIn(0f, 1f)
+    if (p <= 0.01f) return
+    val w = size.width
+    val h = size.height
+    val start = Offset(w * 0.20f, h * 0.54f)
+    val vertex = Offset(w * 0.43f, h * 0.76f)
+    val end = Offset(w * 0.82f, h * 0.28f)
+
+    val firstLeg = (p / 0.42f).coerceIn(0f, 1f)
+    val firstTip = Offset(
+        start.x + (vertex.x - start.x) * firstLeg,
+        start.y + (vertex.y - start.y) * firstLeg
+    )
+    drawLine(
+        color = color,
+        start = start,
+        end = firstTip,
+        strokeWidth = strokeWidthPx,
+        cap = StrokeCap.Round
+    )
+
+    if (p > 0.42f) {
+        val secondLeg = ((p - 0.42f) / 0.58f).coerceIn(0f, 1f)
+        val secondTip = Offset(
+            vertex.x + (end.x - vertex.x) * secondLeg,
+            vertex.y + (end.y - vertex.y) * secondLeg
+        )
+        drawLine(
+            color = color,
+            start = vertex,
+            end = secondTip,
+            strokeWidth = strokeWidthPx,
+            cap = StrokeCap.Round
+        )
+    }
+}
+
+/**
+ * Lightweight animated geometric motif layer for M3 Expressive switches, chips, and pill buttons.
+ * Uses a single reused `Path()` and automatically lowers step count / freezes motion on `POTATO` devices.
+ */
+@Composable
+fun GeometricAnimatedBackdrop(
+    pattern: GeometricPatternKind,
+    color: Color,
+    isAnimating: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val profile = LocalPerformanceProfile.current
+    val runMotion = isAnimating && !profile.isPotato
+    val phase = if (runMotion) {
+        val transition = rememberInfiniteTransition(label = "geom_backdrop_$pattern")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2f * PI.toFloat()),
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 2800, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "geom_phase"
+        ).value
+    } else {
+        0.7f
+    }
+    val path = remember { Path() }
+    val stepPx = if (profile.isPotato) 10f else 5f
+
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        if (w <= 2f || h <= 2f) return@Canvas
+
+        when (pattern) {
+            GeometricPatternKind.SNAKE -> {
+                path.reset()
+                val cy = h * 0.5f
+                val amp = h * 0.24f
+                val freq = (2f * PI.toFloat()) / (w * 0.52f).coerceAtLeast(16f)
+                var x = 0f
+                path.moveTo(x, cy + sin(x * freq - phase) * amp)
+                while (x < w) {
+                    x = (x + stepPx).coerceAtMost(w)
+                    path.lineTo(x, cy + sin(x * freq - phase) * amp)
+                }
+                drawPath(
+                    path = path,
+                    color = color,
+                    style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+            }
+            GeometricPatternKind.WAVES -> {
+                for (waveIdx in 0..1) {
+                    path.reset()
+                    val cy = h * (0.36f + waveIdx * 0.28f)
+                    val amp = h * 0.14f
+                    val freq = (2f * PI.toFloat()) / (w * 0.44f).coerceAtLeast(14f)
+                    val pShift = phase + waveIdx * 1.7f
+                    var x = 0f
+                    path.moveTo(x, cy + sin(x * freq - pShift) * amp)
+                    while (x < w) {
+                        x = (x + stepPx).coerceAtMost(w)
+                        path.lineTo(x, cy + sin(x * freq - pShift) * amp)
+                    }
+                    drawPath(
+                        path = path,
+                        color = color,
+                        style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+            }
+            GeometricPatternKind.ARC -> {
+                val offsetShift = ((phase / (2f * PI.toFloat())) * w * 0.45f)
+                val arcSize = min(w, h) * 1.15f
+                for (i in -1..2) {
+                    val left = i * (arcSize * 0.85f) + (offsetShift % (arcSize * 0.85f)) - arcSize * 0.5f
+                    drawArc(
+                        color = color,
+                        startAngle = 200f,
+                        sweepAngle = 140f,
+                        useCenter = false,
+                        topLeft = Offset(left, h * 0.12f),
+                        size = Size(arcSize, arcSize),
+                        style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+                    )
+                }
+            }
+            GeometricPatternKind.STRIPES -> {
+                val period = 12.dp.toPx()
+                val shift = (phase / (2f * PI.toFloat())) * period
+                var startX = -h + shift
+                while (startX < w + h) {
+                    drawLine(
+                        color = color,
+                        start = Offset(startX, h),
+                        end = Offset(startX + h * 0.65f, 0f),
+                        strokeWidth = 2.dp.toPx(),
+                        cap = StrokeCap.Round
+                    )
+                    startX += period
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Material 3 Expressive Geometric Animated Switch:
+ * Replaces generic switches with morphing thumb spring physics, an animated path-drawn checkmark
+ * (`0f -> 1f` stem-to-tip), and subtle running geometric background motifs (snake/arcs/waves/stripes).
+ */
+@Composable
+fun ExpressiveGeometricSwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    pattern: GeometricPatternKind = GeometricPatternKind.WAVES,
+    enabled: Boolean = true,
+    checkedTrackColor: Color = MaterialTheme.colorScheme.primary,
+    uncheckedTrackColor: Color = MaterialTheme.colorScheme.surfaceContainerHighest,
+    checkedThumbColor: Color = MaterialTheme.colorScheme.onPrimary,
+    uncheckedThumbColor: Color = MaterialTheme.colorScheme.outline
+) {
+    val view = LocalView.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+
+    val thumbFraction by animateFloatAsState(
+        targetValue = if (checked) 1f else 0f,
+        animationSpec = SpringTokens.spatialFast(),
+        label = "geom_switch_pos"
+    )
+    val checkTrim by animateFloatAsState(
+        targetValue = if (checked) 1f else 0f,
+        animationSpec = tween(durationMillis = if (checked) 280 else 160),
+        label = "geom_switch_check"
+    )
+    val trackColor by animateColorAsState(
+        targetValue = if (checked) checkedTrackColor else uncheckedTrackColor,
+        animationSpec = SpringTokens.effectsDefault(),
+        label = "geom_switch_track"
+    )
+    val thumbColor by animateColorAsState(
+        targetValue = if (checked) checkedThumbColor else uncheckedThumbColor,
+        animationSpec = SpringTokens.effectsDefault(),
+        label = "geom_switch_thumb"
+    )
+    val thumbSizeDp by animateDpAsState(
+        targetValue = when {
+            isPressed -> 27.dp
+            checked -> 24.dp
+            else -> 18.dp
+        },
+        animationSpec = SpringTokens.bouncy(),
+        label = "geom_switch_thumb_size"
+    )
+
+    val trackWidthDp = 56.dp
+    val trackHeightDp = 32.dp
+    val horizontalPadDp = 4.dp
+
+    Box(
+        modifier = modifier
+            .defaultMinSize(minWidth = 56.dp, minHeight = 48.dp)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                role = Role.Switch,
+                onClick = {
+                    performHapticFeedback(view, HapticType.TOGGLE)
+                    onCheckedChange(!checked)
+                }
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        val thumbCornerDp by animateDpAsState(
+            targetValue = if (checked) 9.dp else thumbSizeDp / 2f,
+            animationSpec = SpringTokens.spatialFast(),
+            label = "geom_switch_thumb_corner"
+        )
+
+        Surface(
+            shape = CircleShape,
+            color = trackColor.copy(alpha = if (enabled) 1f else 0.45f),
+            border = if (!checked) {
+                BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.48f))
+            } else null,
+            modifier = Modifier.size(width = trackWidthDp, height = trackHeightDp)
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                val maxTravelDp = trackWidthDp - thumbSizeDp - horizontalPadDp * 2
+                val offsetXDp = horizontalPadDp + (maxTravelDp * thumbFraction)
+
+                Surface(
+                    shape = RoundedCornerShape(thumbCornerDp),
+                    color = thumbColor,
+                    shadowElevation = if (checked) 3.dp else 1.dp,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .offset { IntOffset(x = offsetXDp.roundToPx(), y = 0) }
+                        .size(thumbSizeDp)
+                ) {
+                    if (checkTrim > 0.04f) {
+                        Canvas(modifier = Modifier.fillMaxSize().padding(4.dp)) {
+                            drawAnimatedCheckmark(
+                                progress = checkTrim,
+                                color = checkedTrackColor,
+                                strokeWidthPx = 2.3.dp.toPx()
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Capsule / Stadium-matched M3 Expressive Wavy Loading Indicator:
+ * Draws a clean animated sine wave running smoothly along a wide pill/oval capsule track
+ * instead of squeezing an incompatible circle inside an oval button.
+ */
+@Composable
+fun CapsuleWavyLoadingIndicator(
+    modifier: Modifier = Modifier,
+    width: Dp = 120.dp,
+    height: Dp = 20.dp,
+    color: Color = MaterialTheme.colorScheme.onPrimary,
+    trackColor: Color = color.copy(alpha = 0.22f)
+) {
+    val profile = LocalPerformanceProfile.current
+    val transition = rememberInfiniteTransition(label = "capsule_wavy_loader")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2f * PI.toFloat()),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = if (profile.isPotato) 1500 else 1050, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "capsule_phase"
+    )
+    val path = remember { Path() }
+    val stepPx = if (profile.isPotato) 6f else 3f
+
+    Canvas(
+        modifier = modifier
+            .size(width = width, height = height)
+            .clip(CircleShape)
+    ) {
+        val w = size.width
+        val h = size.height
+        val cy = h * 0.5f
+        val pad = 4.dp.toPx()
+        val usableW = (w - pad * 2f).coerceAtLeast(12f)
+        val amp = (h * 0.22f).coerceAtLeast(2.dp.toPx())
+        val wavelength = 22.dp.toPx()
+
+        drawRoundRect(
+            color = trackColor,
+            topLeft = Offset.Zero,
+            size = Size(w, h),
+            cornerRadius = CornerRadius(h * 0.5f, h * 0.5f)
+        )
+
+        val sweepCenter = (phase / (2f * PI.toFloat()))
+        val segStart = (pad + usableW * ((sweepCenter - 0.28f).coerceAtLeast(0f)))
+        val segEnd = (pad + usableW * ((sweepCenter + 0.28f).coerceAtMost(1f)))
+
+        path.reset()
+        var x = pad
+        path.moveTo(x, cy + sin((x / wavelength) * (2f * PI.toFloat()) - phase) * amp)
+        while (x < pad + usableW) {
+            x = (x + stepPx).coerceAtMost(pad + usableW)
+            val edgeTaper = minOf((x - pad) / 14f, (pad + usableW - x) / 14f).coerceIn(0f, 1f)
+            val pulseBoost = if (x in segStart..segEnd) 1.25f else 0.65f
+            val y = cy + sin((x / wavelength) * (2f * PI.toFloat()) - phase) * amp * edgeTaper * pulseBoost
+            path.lineTo(x, y)
+        }
+        drawPath(
+            path = path,
+            color = color,
+            style = Stroke(width = 2.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
+}
+
+/**
+ * Wide Oval/Capsule Action Button that displays [ExpressiveLoadingIndicator] cleanly
+ * during loading states without distracting internal waves.
+ */
+@Composable
+fun ExpressiveCapsuleLoadingButton(
+    text: String,
+    isLoading: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    containerColor: Color = MaterialTheme.colorScheme.primary,
+    contentColor: Color = MaterialTheme.colorScheme.onPrimary,
+    pattern: GeometricPatternKind = GeometricPatternKind.STRIPES
+) {
+    val view = LocalView.current
+    Button(
+        onClick = {
+            performHapticFeedback(view, HapticType.MEDIUM)
+            onClick()
+        },
+        enabled = enabled && !isLoading,
+        shape = CircleShape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+            disabledContainerColor = if (isLoading) containerColor.copy(alpha = 0.88f) else containerColor.copy(alpha = 0.38f),
+            disabledContentColor = contentColor
+        ),
+        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
+        modifier = modifier.defaultMinSize(minHeight = 48.dp)
+    ) {
+        if (isLoading) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ExpressiveLoadingIndicator(
+                    size = 24.dp,
+                    color = contentColor,
+                    containerColor = contentColor.copy(alpha = 0.16f)
+                )
+                Text(
+                    text = "Загрузка...",
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                    color = contentColor
+                )
+            }
+        } else {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                color = contentColor
+            )
         }
     }
 }

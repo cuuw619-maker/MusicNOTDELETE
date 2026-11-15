@@ -60,6 +60,7 @@ class MusicApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        com.example.util.CrashHandler.install(this)
 
         database = MusicDatabase.getInstance(this)
         preferencesManager = PreferencesManager(this)

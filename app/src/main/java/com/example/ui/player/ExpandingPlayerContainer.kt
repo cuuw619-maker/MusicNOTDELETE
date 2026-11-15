@@ -265,15 +265,18 @@ fun ExpandingPlayerContainer(
                         val progress = if (playbackState.durationMs > 0) {
                             (playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
                         } else 0f
-                        LinearProgressIndicator(
+                        com.example.ui.components.LinearWavyProgressIndicator(
                             progress = { progress },
+                            isPlaying = playbackState.isPlaying,
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            height = 6.dp,
+                            strokeWidth = 2.6.dp,
+                            amplitudeDp = 1.6.dp,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(3.dp)
                                 .align(Alignment.BottomCenter)
-                                .graphicsLayer { alpha = miniAlpha },
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.surfaceVariant
+                                .graphicsLayer { alpha = miniAlpha }
                         )
                     }
                 }

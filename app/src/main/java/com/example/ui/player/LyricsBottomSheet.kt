@@ -74,10 +74,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -98,12 +99,12 @@ import com.example.lyrics.LyricSpeaker
 import com.example.lyrics.LyricWord
 import com.example.model.Song
 import com.example.ui.components.AgslAmbientGlowCanvas
-import com.example.ui.components.CircularWavyProgressIndicator
+import com.example.ui.components.AmbientGeometricShapesOverlay
 import com.example.ui.components.ConnectedGroupItem
 import com.example.ui.components.ExpressiveConnectedButtonGroup
 import com.example.ui.components.ExpressiveHorizontalFloatingToolbar
+import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.FloatingToolbarStyle
-import com.example.ui.components.LinearWavyProgressIndicator
 import com.example.ui.components.ToolbarActionItem
 import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.theme.MonoFontFamily
@@ -158,7 +159,7 @@ fun LyricsBottomSheet(
     LaunchedEffect(song.id) {
         viewModel.playbackPositionMs.collect { pos ->
             latestLivePosRef.longValue = pos
-            if (!playbackState.isPlaying || abs(pos - smoothPosMs) > 110L) {
+            if (!playbackState.isPlaying || abs(pos - smoothPosMs) > 420L) {
                 smoothPosMs = pos
             }
         }
@@ -171,11 +172,16 @@ fun LyricsBottomSheet(
         while (true) {
             withFrameNanos { frameNanos ->
                 val dtMs = ((frameNanos - lastFrameNanos) / 1_000_000.0 * latestSpeed).toLong()
-                    .coerceIn(0L, 100L)
+                    .coerceIn(0L, 80L)
                 lastFrameNanos = frameNanos
                 val predicted = smoothPosMs + dtMs
                 val playerNow = latestLivePosRef.longValue
-                smoothPosMs = if (abs(playerNow - predicted) > 95L) playerNow else predicted
+                val drift = playerNow - predicted
+                smoothPosMs = when {
+                    abs(drift) > 420L -> playerNow
+                    abs(drift) > 8L -> predicted + (drift * 0.16f).toLong()
+                    else -> predicted
+                }
             }
         }
     }
@@ -194,6 +200,25 @@ fun LyricsBottomSheet(
             viewModel.lyricsManager.parseLrc(customLyricsText)
         } else {
             lyricsState.lines
+        }
+    }
+
+    val isSyncedAvailable = remember(effectiveLines, lyricsState.isSynced, customLyricsText) {
+        if (customLyricsText.isNotBlank()) {
+            effectiveLines.any { it.isSynced }
+        } else {
+            lyricsState.isSynced || effectiveLines.any { it.isSynced }
+        }
+    }
+    val isWordSyncedAvailable = remember(effectiveLines, lyricsState.hasWordSync) {
+        lyricsState.hasWordSync || effectiveLines.any { it.hasWordTiming }
+    }
+
+    LaunchedEffect(song.id, lyricsState.isLoading, isSyncedAvailable, effectiveLines.size) {
+        if (!lyricsState.isLoading && effectiveLines.isNotEmpty() && !isSyncedAvailable && displayMode == LyricsDisplayMode.SYNCED) {
+            displayMode = LyricsDisplayMode.PLAIN
+        } else if (!lyricsState.isLoading && isSyncedAvailable && displayMode == LyricsDisplayMode.PLAIN) {
+            displayMode = LyricsDisplayMode.SYNCED
         }
     }
 
@@ -349,6 +374,49 @@ fun LyricsBottomSheet(
                                     }
                                 }
                             }
+                            Spacer(modifier = Modifier.height(5.dp))
+                            val (statusLabel, statusBg, statusFg) = when {
+                                lyricsState.isLoading -> Triple(
+                                    "Поиск текста...",
+                                    Color.White.copy(alpha = 0.16f),
+                                    Color.White
+                                )
+                                effectiveLines.isEmpty() -> Triple(
+                                    "Не найдено",
+                                    Color(0xFFFF8A80).copy(alpha = 0.22f),
+                                    Color(0xFFFFCDD2)
+                                )
+                                isWordSyncedAvailable && isSyncedAvailable -> Triple(
+                                    "Синхронизировано • По словам",
+                                    Color(0xFF69F0AE).copy(alpha = 0.22f),
+                                    Color(0xFFB9F6CA)
+                                )
+                                isSyncedAvailable -> Triple(
+                                    "Синхронизировано • По строкам",
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.32f),
+                                    Color(0xFFD0E4FF)
+                                )
+                                else -> Triple(
+                                    "Не синхронизировано • Обычный текст",
+                                    Color(0xFFFFD180).copy(alpha = 0.22f),
+                                    Color(0xFFFFE0B2)
+                                )
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = statusBg,
+                                modifier = Modifier.testTag("lyrics_sync_status_badge")
+                            ) {
+                                Text(
+                                    text = statusLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    ),
+                                    color = statusFg,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
+                            }
                         }
                     }
 
@@ -364,18 +432,6 @@ fun LyricsBottomSheet(
                             tint = Color.White.copy(alpha = 0.9f)
                         )
                     }
-                }
-
-                if (lyricsState.isLoading) {
-                    LinearWavyProgressIndicator(
-                        isPlaying = true,
-                        color = Color.White,
-                        trackColor = Color.White.copy(alpha = 0.16f),
-                        height = 8.dp,
-                        strokeWidth = 2.6.dp,
-                        amplitudeDp = 2.dp,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
                 }
 
                 // Timing Offset Calibration Capsule
@@ -527,14 +583,14 @@ fun LyricsBottomSheet(
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularWavyProgressIndicator(
-                                size = 56.dp,
+                            ExpressiveLoadingIndicator(
+                                size = 54.dp,
                                 color = Color.White,
-                                trackColor = Color.White.copy(alpha = 0.18f)
+                                containerColor = Color.White.copy(alpha = 0.16f)
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
-                                text = "Синхронизация по слогам и таймингам...",
+                                text = "Поиск текста (BetterLyrics • YouTube Music)...",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = Color.White.copy(alpha = 0.85f)
                             )
@@ -775,6 +831,14 @@ private fun AdaptiveLyricsBackdrop(
             )
         }
 
+        AmbientGeometricShapesOverlay(
+            isPlaying = isPlaying,
+            primaryColor = accentColor,
+            secondaryColor = Color(0xFF6BA6FF),
+            tertiaryColor = secondaryColor,
+            modifier = Modifier.fillMaxSize()
+        )
+
         if (!artworkUri.isNullOrBlank()) {
             val blurModifier = if (profile.enableLiveBlur && !profile.isPotato && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 Modifier.blur(54.dp)
@@ -989,30 +1053,50 @@ private fun KineticLyricLineItem(
                 }
 
                 if (isActive && line.words.isNotEmpty() && line.isSynced) {
+                    val wordGroups = remember(line.words) {
+                        val groups = mutableListOf<List<LyricWord>>()
+                        var current = mutableListOf<LyricWord>()
+                        for (w in line.words) {
+                            current.add(w)
+                            if (w.trailingSpace) {
+                                groups.add(current)
+                                current = mutableListOf()
+                            }
+                        }
+                        if (current.isNotEmpty()) groups.add(current)
+                        groups
+                    }
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp, flowAlignment),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        line.words.forEach { word ->
-                            if (profile.detailedPerCharWave && word.text.length in 1..20) {
-                                KineticSyllablePerCharWord(
-                                    word = word,
-                                    highlightColor = voiceHighlightColor,
-                                    fontSizeSp = if (isBg) 18 else 25,
-                                    isItalic = isBg,
-                                    enableGlow = profile.enableHeavyShadows,
-                                    currentTimeProvider = currentTimeProvider
-                                )
-                            } else {
-                                KineticWordWaveSweep(
-                                    word = word,
-                                    highlightColor = voiceHighlightColor,
-                                    fontSizeSp = if (isBg) 18 else 25,
-                                    isItalic = isBg,
-                                    enableGlow = profile.enableHeavyShadows,
-                                    currentTimeProvider = currentTimeProvider
-                                )
+                        wordGroups.forEach { group ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Start
+                            ) {
+                                group.forEach { word ->
+                                    if (profile.detailedPerCharWave && word.text.length in 1..20) {
+                                        KineticSyllablePerCharWord(
+                                            word = word,
+                                            highlightColor = voiceHighlightColor,
+                                            fontSizeSp = if (isBg) 18 else 25,
+                                            isItalic = isBg,
+                                            enableGlow = profile.enableHeavyShadows,
+                                            currentTimeProvider = currentTimeProvider
+                                        )
+                                    } else {
+                                        KineticWordWaveSweep(
+                                            word = word,
+                                            highlightColor = voiceHighlightColor,
+                                            fontSizeSp = if (isBg) 18 else 25,
+                                            isItalic = isBg,
+                                            enableGlow = profile.enableHeavyShadows,
+                                            currentTimeProvider = currentTimeProvider
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -1051,9 +1135,9 @@ private fun KineticLyricLineItem(
 }
 
 /**
- * Flagship Per-Character Kinetic Wave Renderer:
- * Each character receives an elastic zoom crest (1.0x -> 1.16x), smooth vertical wave float,
- * subtle horizontal breathing push, and glowing sweep without per-frame recomposition.
+ * Flagship Fluid BetterLyrics Syllable & Per-Character Renderer:
+ * Combines smooth sine-eased lift + spring zoom with a soft-feathered horizontal gradient
+ * (`BlendMode.DstIn`) mask instead of sharp clip cuts or shaky rotation jitter.
  */
 @Composable
 private fun KineticSyllablePerCharWord(
@@ -1073,8 +1157,8 @@ private fun KineticSyllablePerCharWord(
     val glowStyle = if (enableGlow) {
         wordStyle.copy(
             shadow = Shadow(
-                color = highlightColor.copy(alpha = 0.62f),
-                blurRadius = 14f
+                color = highlightColor.copy(alpha = 0.64f),
+                blurRadius = 16f
             )
         )
     } else {
@@ -1095,45 +1179,59 @@ private fun KineticSyllablePerCharWord(
             Box(
                 modifier = Modifier.graphicsLayer {
                     val nowMs = currentTimeProvider()
-                    val wordProgress = ((nowMs - word.startTimeMs).toFloat() / totalDur).coerceIn(0f, 1.35f)
+                    val rawP = (nowMs - word.startTimeMs).toFloat() / totalDur
+                    // Gentle 90ms anticipation swell before syllable attack
+                    val anticipation = (((nowMs - (word.startTimeMs - 90L)).toFloat() / 90f).coerceIn(0f, 1f)) * 0.18f
+                    val wordProgress = rawP.coerceIn(0f, 1.35f)
                     val isWordActive = wordProgress in 0f..1.25f
 
                     val distFromWave = abs(wordProgress - cMid)
-                    val bell = if (isWordActive && distFromWave < 0.34f) {
-                        val norm = 1f - (distFromWave / 0.34f)
+                    val bell = if (isWordActive && distFromWave < 0.38f) {
+                        val norm = 1f - (distFromWave / 0.38f)
                         sin(norm * (PI.toFloat() * 0.5f))
                     } else 0f
 
-                    val zoom = 1.0f + 0.16f * bell
+                    val crest = maxOf(bell, anticipation * (1f - cMid * 0.5f))
+                    val zoom = 1.0f + 0.11f * crest
                     scaleX = zoom
                     scaleY = zoom
-                    translationY = ((-4.2f * bell) + if (wordProgress >= cEnd) -0.9f else 0f).dp.toPx()
-                    translationX = ((wordProgress - cMid).coerceIn(-0.4f, 0.4f) * -2.2f * bell).dp.toPx()
-                    if (enableGlow) {
-                        rotationZ = ((i % 2 * 2 - 1) * 1.6f * bell)
-                    }
+                    translationY = ((-3.4f * bell) + if (wordProgress >= cEnd) -1.0f else -0.4f * anticipation).dp.toPx()
                 }
             ) {
                 Text(
                     text = ch,
                     style = wordStyle,
-                    color = highlightColor.copy(alpha = 0.32f)
+                    color = highlightColor.copy(alpha = 0.30f)
                 )
                 Text(
                     text = ch,
                     style = glowStyle,
                     color = highlightColor,
-                    modifier = Modifier.drawWithContent {
-                        val nowMs = currentTimeProvider()
-                        val wordProgress = ((nowMs - word.startTimeMs).toFloat() / totalDur).coerceIn(0f, 1f)
-                        val span = (cEnd - cStart).coerceAtLeast(0.01f)
-                        val charFill = ((wordProgress - cStart) / span).coerceIn(0f, 1f)
-                        if (charFill > 0f) {
-                            clipRect(right = size.width * charFill) {
-                                this@drawWithContent.drawContent()
+                    modifier = Modifier
+                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent {
+                            val nowMs = currentTimeProvider()
+                            val rawProgress = ((nowMs - word.startTimeMs).toFloat() / totalDur).coerceIn(0f, 1f)
+                            val span = (cEnd - cStart).coerceAtLeast(0.01f)
+                            val fill = ((rawProgress - cStart) / span).coerceIn(0f, 1f)
+                            if (fill >= 0.995f) {
+                                drawContent()
+                            } else if (fill > 0.005f) {
+                                drawContent()
+                                val feather = 0.28f
+                                val edgeEnd = (fill * (1f + feather)).coerceIn(0.01f, 1f)
+                                val edgeStart = (edgeEnd - feather).coerceIn(0f, edgeEnd - 0.005f)
+                                drawRect(
+                                    brush = Brush.horizontalGradient(
+                                        0f to Color.White,
+                                        edgeStart to Color.White,
+                                        edgeEnd to Color.Transparent,
+                                        1f to Color.Transparent
+                                    ),
+                                    blendMode = BlendMode.DstIn
+                                )
                             }
                         }
-                    }
                 )
             }
         }
@@ -1141,9 +1239,8 @@ private fun KineticSyllablePerCharWord(
 }
 
 /**
- * Low-End / Long-Word Optimized Kinetic Wave Renderer:
- * Animates the entire word box with elastic zoom, wave lift, and smooth left-to-right gradient sweep
- * using only 2 Text nodes total -> ideal for potato phones!
+ * Low-End / Long-Word Optimized Fluid Glow Wave Renderer:
+ * Smooth feathered gradient wipe (`BlendMode.DstIn`) + damped spring lift using only 2 Text nodes total.
  */
 @Composable
 private fun KineticWordWaveSweep(
@@ -1163,8 +1260,8 @@ private fun KineticWordWaveSweep(
     val glowStyle = if (enableGlow) {
         wordStyle.copy(
             shadow = Shadow(
-                color = highlightColor.copy(alpha = 0.55f),
-                blurRadius = 12f
+                color = highlightColor.copy(alpha = 0.56f),
+                blurRadius = 14f
             )
         )
     } else {
@@ -1179,11 +1276,11 @@ private fun KineticWordWaveSweep(
             val isCurrentWord = nowMs in word.startTimeMs..word.endTimeMs
             val bell = if (isCurrentWord) sin(progress * PI.toFloat()).coerceIn(0f, 1f) else 0f
             val liftY = when {
-                isCurrentWord -> -3.2f * bell
-                progress >= 1f -> -0.8f
+                isCurrentWord -> -3.0f * bell
+                progress >= 1f -> -0.9f
                 else -> 0f
             }
-            val zoom = 1.0f + 0.09f * bell
+            val zoom = 1.0f + 0.075f * bell
             scaleX = zoom
             scaleY = zoom
             translationY = liftY.dp.toPx()
@@ -1192,22 +1289,36 @@ private fun KineticWordWaveSweep(
         Text(
             text = word.text,
             style = wordStyle,
-            color = highlightColor.copy(alpha = 0.34f)
+            color = highlightColor.copy(alpha = 0.30f)
         )
 
         Text(
             text = word.text,
             style = glowStyle,
             color = highlightColor,
-            modifier = Modifier.drawWithContent {
-                val nowMs = currentTimeProvider()
-                val progress = ((nowMs - word.startTimeMs).toFloat() / duration).coerceIn(0f, 1f)
-                if (progress > 0f) {
-                    clipRect(right = size.width * progress) {
-                        this@drawWithContent.drawContent()
+            modifier = Modifier
+                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                .drawWithContent {
+                    val nowMs = currentTimeProvider()
+                    val progress = ((nowMs - word.startTimeMs).toFloat() / duration).coerceIn(0f, 1f)
+                    if (progress >= 0.995f) {
+                        drawContent()
+                    } else if (progress > 0.005f) {
+                        drawContent()
+                        val feather = 0.18f
+                        val edgeEnd = (progress * (1f + feather)).coerceIn(0.01f, 1f)
+                        val edgeStart = (edgeEnd - feather).coerceIn(0f, edgeEnd - 0.005f)
+                        drawRect(
+                            brush = Brush.horizontalGradient(
+                                0f to Color.White,
+                                edgeStart to Color.White,
+                                edgeEnd to Color.Transparent,
+                                1f to Color.Transparent
+                            ),
+                            blendMode = BlendMode.DstIn
+                        )
                     }
                 }
-            }
         )
     }
 }

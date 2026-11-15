@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -70,10 +71,10 @@ import kotlin.math.sin
 
 /**
  * Material 3 Expressive Morphing Play/Pause Button:
- * - Outer container shape morphs seamlessly between a full pill/circle (when paused)
- *   and an expressive rounded squircle (when playing).
- * - Inner glyph continuously morphs between a play triangle and pause bars.
- * - Optional buffering indicator arc for online streams.
+ * - Outer container shape morphs seamlessly between a full pill/oval (paused or buffering)
+ *   and an expressive rounded squircle (playing).
+ * - During `isBuffering`, expands smoothly into an oval capsule and draws a crisp sinusoidal
+ *   wave running around its entire oval perimeter (`PathMeasure` with zero per-frame allocations).
  */
 @Composable
 fun MorphingPlayPauseButton(
@@ -89,11 +90,17 @@ fun MorphingPlayPauseButton(
     contentColor: Color = MaterialTheme.colorScheme.onPrimary,
     isBuffering: Boolean = false
 ) {
-    val finalWidth = size ?: width
+    val baseWidth = size ?: width
     val finalHeight = size ?: height
+    val targetWidth = if (isBuffering) maxOf(baseWidth + 18.dp, finalHeight * 1.62f) else baseWidth
 
+    val animatedWidth by animateDpAsState(
+        targetValue = targetWidth,
+        animationSpec = SpringTokens.spatialDefault(),
+        label = "play_pause_oval_width"
+    )
     val animatedCorner by animateDpAsState(
-        targetValue = if (isPlaying) cornerRadius else (finalHeight / 2f),
+        targetValue = if (isBuffering || !isPlaying) (finalHeight / 2f) else cornerRadius,
         animationSpec = SpringTokens.spatialDefault(),
         label = "play_pause_container_morph"
     )
@@ -106,16 +113,16 @@ fun MorphingPlayPauseButton(
         label = "play_pause_geometric_morph"
     )
 
-    val bufferingRotation = if (isBuffering) {
-        val transition = rememberInfiniteTransition(label = "btn_buffering")
+    val wavePhase = if (isBuffering) {
+        val transition = rememberInfiniteTransition(label = "oval_wave_ring")
         transition.animateFloat(
             initialValue = 0f,
-            targetValue = 360f,
+            targetValue = (2f * PI.toFloat()),
             animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 900, easing = LinearEasing),
+                animation = tween(durationMillis = 1250, easing = LinearEasing),
                 repeatMode = RepeatMode.Restart
             ),
-            label = "buf_arc"
+            label = "buf_wave_phase"
         ).value
     } else 0f
 
@@ -123,102 +130,148 @@ fun MorphingPlayPauseButton(
     val playTrianglePath = remember { Path() }
     val morphLeftPath = remember { Path() }
     val morphRightPath = remember { Path() }
+    val ovalWavePath = remember { Path() }
+    val pathMeasure = remember { android.graphics.PathMeasure() }
+    val androidPath = remember { android.graphics.Path() }
+    val posArr = remember { FloatArray(2) }
+    val tanArr = remember { FloatArray(2) }
 
-    Surface(
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = modifier
-            .size(width = finalWidth, height = finalHeight)
-            .let {
-                if (profile.isPotato) it
-                else it.shadow(elevation = 8.dp, shape = shape, spotColor = containerColor.copy(alpha = 0.45f))
-            }
-            .fluidPress(
-                scaleDown = 0.93f,
-                hapticType = HapticType.MEDIUM,
-                onClick = onClick
-            ),
-        shape = shape,
-        color = containerColor,
-        contentColor = contentColor
     ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier.testTag(if (isPlaying) "pause_button" else "play_button")
-        ) {
-            if (isBuffering) {
-                Canvas(modifier = Modifier.size(iconSize + 14.dp)) {
-                    drawArc(
-                        color = contentColor.copy(alpha = 0.72f),
-                        startAngle = bufferingRotation,
-                        sweepAngle = 220f,
-                        useCenter = false,
-                        style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
-                    )
+        Surface(
+            modifier = Modifier
+                .size(width = animatedWidth, height = finalHeight)
+                .let {
+                    if (profile.isPotato) it
+                    else it.shadow(elevation = 8.dp, shape = shape, spotColor = containerColor.copy(alpha = 0.45f))
                 }
-            }
+                .fluidPress(
+                    scaleDown = 0.93f,
+                    hapticType = HapticType.MEDIUM,
+                    onClick = onClick
+                ),
+            shape = shape,
+            color = containerColor,
+            contentColor = contentColor
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag(if (isPlaying) "pause_button" else "play_button")
+            ) {
+                if (isBuffering) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val inset = 4.5.dp.toPx()
+                        val w = (this.size.width - inset * 2f).coerceAtLeast(12f)
+                        val h = (this.size.height - inset * 2f).coerceAtLeast(12f)
+                        val r = h * 0.5f
 
-            Canvas(modifier = Modifier.size(iconSize)) {
-                val w = this.size.width
-                val h = this.size.height
-                val t = progress
+                        androidPath.reset()
+                        androidPath.addRoundRect(
+                            inset,
+                            inset,
+                            inset + w,
+                            inset + h,
+                            r,
+                            r,
+                            android.graphics.Path.Direction.CW
+                        )
+                        pathMeasure.setPath(androidPath, true)
+                        val totalLen = pathMeasure.length.coerceAtLeast(1f)
+                        val steps = if (profile.isPotato) 48 else 96
+                        val amp = 1.9.dp.toPx()
+                        val cycles = 10f
 
-                if (t <= 0.04f) {
-                    playTrianglePath.reset()
-                    playTrianglePath.moveTo(0.24f * w, 0.16f * h)
-                    playTrianglePath.lineTo(0.84f * w, 0.50f * h)
-                    playTrianglePath.lineTo(0.24f * w, 0.84f * h)
-                    playTrianglePath.close()
-                    drawPath(playTrianglePath, color = contentColor, style = Fill)
-                } else if (t >= 0.96f) {
-                    val barCorner = CornerRadius(2.5.dp.toPx(), 2.5.dp.toPx())
-                    drawRoundRect(
-                        color = contentColor,
-                        topLeft = Offset(0.20f * w, 0.15f * h),
-                        size = Size(0.20f * w, 0.70f * h),
-                        cornerRadius = barCorner
-                    )
-                    drawRoundRect(
-                        color = contentColor,
-                        topLeft = Offset(0.60f * w, 0.15f * h),
-                        size = Size(0.20f * w, 0.70f * h),
-                        cornerRadius = barCorner
-                    )
-                } else {
-                    val overlap = (1f - t) * 0.02f * w
+                        ovalWavePath.reset()
+                        for (i in 0..steps) {
+                            val frac = i.toFloat() / steps.toFloat()
+                            val dist = frac * totalLen
+                            pathMeasure.getPosTan(dist, posArr, tanArr)
+                            // Outward perpendicular normal from clockwise stadium tangent: (tanY, -tanX)
+                            val nx = tanArr[1]
+                            val ny = -tanArr[0]
+                            val waveOffset = kotlin.math.sin(frac * 2f * PI.toFloat() * cycles - wavePhase) * amp
+                            val px = posArr[0] + nx * waveOffset
+                            val py = posArr[1] + ny * waveOffset
+                            if (i == 0) ovalWavePath.moveTo(px, py) else ovalWavePath.lineTo(px, py)
+                        }
+                        ovalWavePath.close()
 
-                    val leftP1x = lerp(0.24f, 0.20f, t) * w
-                    val leftP1y = lerp(0.16f, 0.15f, t) * h
-                    val leftP2x = lerp(0.54f, 0.40f, t) * w + overlap
-                    val leftP2y = lerp(0.33f, 0.15f, t) * h
-                    val leftP3x = lerp(0.54f, 0.40f, t) * w + overlap
-                    val leftP3y = lerp(0.67f, 0.85f, t) * h
-                    val leftP4x = lerp(0.24f, 0.20f, t) * w
-                    val leftP4y = lerp(0.84f, 0.85f, t) * h
+                        drawPath(
+                            path = ovalWavePath,
+                            color = contentColor.copy(alpha = 0.88f),
+                            style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                        )
+                    }
+                }
 
-                    morphLeftPath.reset()
-                    morphLeftPath.moveTo(leftP1x, leftP1y)
-                    morphLeftPath.lineTo(leftP2x, leftP2y)
-                    morphLeftPath.lineTo(leftP3x, leftP3y)
-                    morphLeftPath.lineTo(leftP4x, leftP4y)
-                    morphLeftPath.close()
+                Canvas(modifier = Modifier.size(iconSize)) {
+                    val w = this.size.width
+                    val h = this.size.height
+                    val t = progress
 
-                    val rightP1x = lerp(0.54f, 0.60f, t) * w - overlap
-                    val rightP1y = lerp(0.33f, 0.15f, t) * h
-                    val rightP2x = lerp(0.84f, 0.80f, t) * w
-                    val rightP2y = lerp(0.50f, 0.15f, t) * h
-                    val rightP3x = lerp(0.84f, 0.80f, t) * w
-                    val rightP3y = lerp(0.50f, 0.85f, t) * h
-                    val rightP4x = lerp(0.54f, 0.60f, t) * w - overlap
-                    val rightP4y = lerp(0.67f, 0.85f, t) * h
+                    if (t <= 0.04f) {
+                        playTrianglePath.reset()
+                        playTrianglePath.moveTo(0.24f * w, 0.16f * h)
+                        playTrianglePath.lineTo(0.84f * w, 0.50f * h)
+                        playTrianglePath.lineTo(0.24f * w, 0.84f * h)
+                        playTrianglePath.close()
+                        drawPath(playTrianglePath, color = contentColor, style = Fill)
+                    } else if (t >= 0.96f) {
+                        val barCorner = CornerRadius(2.5.dp.toPx(), 2.5.dp.toPx())
+                        drawRoundRect(
+                            color = contentColor,
+                            topLeft = Offset(0.20f * w, 0.15f * h),
+                            size = Size(0.20f * w, 0.70f * h),
+                            cornerRadius = barCorner
+                        )
+                        drawRoundRect(
+                            color = contentColor,
+                            topLeft = Offset(0.60f * w, 0.15f * h),
+                            size = Size(0.20f * w, 0.70f * h),
+                            cornerRadius = barCorner
+                        )
+                    } else {
+                        val overlap = (1f - t) * 0.02f * w
 
-                    morphRightPath.reset()
-                    morphRightPath.moveTo(rightP1x, rightP1y)
-                    morphRightPath.lineTo(rightP2x, rightP2y)
-                    morphRightPath.lineTo(rightP3x, rightP3y)
-                    morphRightPath.lineTo(rightP4x, rightP4y)
-                    morphRightPath.close()
+                        val leftP1x = lerp(0.24f, 0.20f, t) * w
+                        val leftP1y = lerp(0.16f, 0.15f, t) * h
+                        val leftP2x = lerp(0.54f, 0.40f, t) * w + overlap
+                        val leftP2y = lerp(0.33f, 0.15f, t) * h
+                        val leftP3x = lerp(0.54f, 0.40f, t) * w + overlap
+                        val leftP3y = lerp(0.67f, 0.85f, t) * h
+                        val leftP4x = lerp(0.24f, 0.20f, t) * w
+                        val leftP4y = lerp(0.84f, 0.85f, t) * h
 
-                    drawPath(morphLeftPath, color = contentColor, style = Fill)
-                    drawPath(morphRightPath, color = contentColor, style = Fill)
+                        morphLeftPath.reset()
+                        morphLeftPath.moveTo(leftP1x, leftP1y)
+                        morphLeftPath.lineTo(leftP2x, leftP2y)
+                        morphLeftPath.lineTo(leftP3x, leftP3y)
+                        morphLeftPath.lineTo(leftP4x, leftP4y)
+                        morphLeftPath.close()
+
+                        val rightP1x = lerp(0.54f, 0.60f, t) * w - overlap
+                        val rightP1y = lerp(0.33f, 0.15f, t) * h
+                        val rightP2x = lerp(0.84f, 0.80f, t) * w
+                        val rightP2y = lerp(0.50f, 0.15f, t) * h
+                        val rightP3x = lerp(0.84f, 0.80f, t) * w
+                        val rightP3y = lerp(0.50f, 0.85f, t) * h
+                        val rightP4x = lerp(0.54f, 0.60f, t) * w - overlap
+                        val rightP4y = lerp(0.67f, 0.85f, t) * h
+
+                        morphRightPath.reset()
+                        morphRightPath.moveTo(rightP1x, rightP1y)
+                        morphRightPath.lineTo(rightP2x, rightP2y)
+                        morphRightPath.lineTo(rightP3x, rightP3y)
+                        morphRightPath.lineTo(rightP4x, rightP4y)
+                        morphRightPath.close()
+
+                        drawPath(morphLeftPath, color = contentColor, style = Fill)
+                        drawPath(morphRightPath, color = contentColor, style = Fill)
+                    }
                 }
             }
         }
