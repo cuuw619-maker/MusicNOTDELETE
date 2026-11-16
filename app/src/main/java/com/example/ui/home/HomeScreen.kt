@@ -66,6 +66,7 @@ import com.example.ui.components.LinearWavyProgressIndicator
 import com.example.ui.components.SongListItem
 import com.example.ui.components.groupedItemShape
 import com.example.ui.components.morphPolygonShape
+import com.example.ui.components.rememberContinuousMorphShape
 import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.viewmodel.MusicViewModel
 
@@ -238,7 +239,11 @@ fun HomeScreen(
                                 else viewModel.playSong(heroSong, recentlyPlayed.ifEmpty { allSongs })
                             },
                             modifier = Modifier.size(50.dp),
-                            shape = morphPolygonShape(3),
+                            shape = rememberContinuousMorphShape(
+                                startIndex = 3,
+                                cycleDurationMs = 9000,
+                                rotate = playbackState.isPlaying
+                            ),
                             colors = IconButtonDefaults.filledIconButtonColors(
                                 containerColor = MaterialTheme.colorScheme.primary,
                                 contentColor = MaterialTheme.colorScheme.onPrimary
@@ -495,18 +500,24 @@ private fun QuickActionCard(
                 .padding(14.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            ExpressiveMorphShapeSurface(
-                shapeIndex = shapeIndex,
-                containerColor = tint.copy(alpha = 0.16f),
+            Surface(
+                shape = rememberContinuousMorphShape(
+                    startIndex = shapeIndex,
+                    cycleDurationMs = 9600 + shapeIndex * 350,
+                    rotate = false
+                ),
+                color = tint.copy(alpha = 0.16f),
                 contentColor = tint,
-                modifier = Modifier.size(38.dp)
+                modifier = Modifier.size(40.dp)
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = tint,
-                    modifier = Modifier.size(20.dp)
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
             Column {
                 Text(
@@ -585,7 +596,11 @@ private fun RecentSongCard(
 
                 FilledIconButton(
                     onClick = onClick,
-                    shape = morphPolygonShape(2),
+                    shape = rememberContinuousMorphShape(
+                        startIndex = 2,
+                        cycleDurationMs = 10000,
+                        rotate = isCurrent
+                    ),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(6.dp)

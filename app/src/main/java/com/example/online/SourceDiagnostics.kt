@@ -12,7 +12,10 @@ enum class SourceAttemptStatus {
     RELEVANCE_REJECTED,
     TIMEOUT,
     NETWORK_ERROR,
-    PLAYABILITY_BLOCKED
+    PLAYABILITY_BLOCKED,
+    SABR_ONLY,
+    CIPHER_FAILED,
+    NO_AUDIO_FORMATS
 }
 
 @Immutable
@@ -24,7 +27,8 @@ data class SourceAttemptLog(
     val httpCode: Int? = null,
     val detail: String,
     val latencyMs: Long = 0L,
-    val timestampMs: Long = System.currentTimeMillis()
+    val timestampMs: Long = System.currentTimeMillis(),
+    val seqId: Long = SourceDiagnosticsLog.nextSeqId()
 )
 
 @Immutable
@@ -53,6 +57,11 @@ data class PlaybackDiagnosticReport(
 object SourceDiagnosticsLog {
     private const val MAX_ENTRIES = 64
     private val ringBuffer = ConcurrentLinkedDeque<SourceAttemptLog>()
+    private val seqCounter = java.util.concurrent.atomic.AtomicLong(0L)
+
+    fun nextSeqId(): Long = seqCounter.incrementAndGet()
+
+    fun latestSeqId(): Long = seqCounter.get()
 
     fun record(entry: SourceAttemptLog) {
         ringBuffer.addFirst(entry)
@@ -63,6 +72,43 @@ object SourceDiagnosticsLog {
 
     fun recent(limit: Int = 24): List<SourceAttemptLog> =
         ringBuffer.take(limit)
+
+    fun recentSince(sinceSeqId: Long, limit: Int = 20): List<SourceAttemptLog> =
+        ringBuffer.asSequence()
+            .filter { it.seqId > sinceSeqId }
+            .take(limit)
+            .toList()
+
+    /**
+     * Resolves an accurate failure label from current-attempt diagnostics without EVER falsely blaming "HTTP 200"
+     * (e.g. from search calls or HTTP 200 player JSON payloads that carried a block/SABR/cipher failure).
+     */
+    fun resolveDiagnosticErrorCode(attempts: List<SourceAttemptLog>): String {
+        val failures = attempts.filter { it.status != SourceAttemptStatus.SUCCESS }
+        if (failures.isEmpty()) return "NO_WORKING_STREAM"
+
+        // Prefer explicit structural/CDN failure reasons in priority order
+        val realHttpError = failures.firstOrNull {
+            it.status == SourceAttemptStatus.HTTP_ERROR && it.httpCode != null && it.httpCode != 200
+        }
+        val sabrOnly = failures.firstOrNull { it.status == SourceAttemptStatus.SABR_ONLY }
+        val cipherFailed = failures.firstOrNull { it.status == SourceAttemptStatus.CIPHER_FAILED }
+        val blocked = failures.firstOrNull { it.status == SourceAttemptStatus.PLAYABILITY_BLOCKED }
+        val noAudio = failures.firstOrNull { it.status == SourceAttemptStatus.NO_AUDIO_FORMATS }
+        val timeout = failures.firstOrNull { it.status == SourceAttemptStatus.TIMEOUT }
+        val networkErr = failures.firstOrNull { it.status == SourceAttemptStatus.NETWORK_ERROR }
+
+        return when {
+            realHttpError != null -> "HTTP ${realHttpError.httpCode}"
+            sabrOnly != null -> "SABR_ONLY"
+            cipherFailed != null -> "CIPHER_FAILED"
+            blocked != null -> "PLAYABILITY_BLOCKED"
+            noAudio != null -> "NO_AUDIO_FORMATS"
+            timeout != null -> "TIMEOUT"
+            networkErr != null -> "NETWORK_ERROR"
+            else -> failures.first().status.name
+        }
+    }
 
     fun clear() {
         ringBuffer.clear()
@@ -76,7 +122,8 @@ object SourceDiagnosticsLog {
         sb.appendLine("Причина: ${report.summary}")
         sb.appendLine("--- Попытки источников ---")
         report.attempts.forEach { a ->
-            val codePart = a.httpCode?.let { "HTTP $it" } ?: a.status.name
+            val codePart = a.httpCode?.takeIf { it != 200 || a.status == SourceAttemptStatus.SUCCESS }
+                ?.let { "HTTP $it" } ?: a.status.name
             sb.appendLine("[${a.displayName} • ${a.stage}] $codePart (${a.latencyMs} ms): ${a.detail}")
         }
         return sb.toString().trim()

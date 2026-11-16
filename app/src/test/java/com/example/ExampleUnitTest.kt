@@ -189,8 +189,11 @@ class ExampleUnitTest {
         assertTrue(sourceIds.containsAll(setOf("all", "youtube", "audius", "saavn", "archive", "deezer")))
 
         val engineIds = YouTubeStreamManager.DELIVERY_ENGINES.map { it.id }.toSet()
-        assertTrue(engineIds.containsAll(setOf("auto", "innertube_android_vr", "piped", "invidious", "cobalt")))
-        assertEquals("Cobalt Tunnel", YouTubeStreamManager.formatEngineDisplay("cobalt"))
+        assertEquals(setOf("auto", "innertube_tv_remix", "yt_web_rhino"), engineIds)
+        assertEquals("YT TV/Remix Spoof", YouTubeStreamManager.formatEngineDisplay("innertube_tv_remix"))
+        assertEquals("YT Web Rhino", YouTubeStreamManager.formatEngineDisplay("yt_web_rhino"))
+        assertEquals("YT TV/Remix Spoof", YouTubeStreamManager.formatEngineDisplay("innertube_android_vr"))
+        assertEquals("YT Web Rhino", YouTubeStreamManager.formatEngineDisplay("newpipe"))
         assertEquals("Archive.org", YouTubeStreamManager.formatEngineDisplay("archive"))
     }
 
@@ -309,8 +312,10 @@ class ExampleUnitTest {
         assertTrue(itunesFilter.label.contains("30"))
 
         val engineIds = YouTubeStreamManager.DELIVERY_ENGINES.map { it.id }.toSet()
-        assertTrue(engineIds.contains("innertube_ios"))
-        assertTrue(engineIds.contains("innertube_android_music"))
+        assertEquals(3, engineIds.size)
+        assertTrue(engineIds.contains("auto"))
+        assertTrue(engineIds.contains("innertube_tv_remix"))
+        assertTrue(engineIds.contains("yt_web_rhino"))
     }
 
     @Test
@@ -363,8 +368,8 @@ class ExampleUnitTest {
         assertEquals("Bilibili", com.example.online.displayNameForSource("bilibili"))
 
         val engineIds = YouTubeStreamManager.DELIVERY_ENGINES.map { it.id }.toSet()
-        assertTrue(engineIds.contains("webview_decipher"))
-        assertEquals("YouTube • WebView JS", YouTubeStreamManager.formatEngineDisplay("webview_decipher"))
+        assertTrue(engineIds.contains("yt_web_rhino"))
+        assertEquals("YT Web Rhino", YouTubeStreamManager.formatEngineDisplay("yt_web_rhino"))
 
         val mixin = com.example.online.FreeCatalogProviders.computeBilibiliMixinKey(
             "7cd084941338484aae1ad9425b84077c",
@@ -381,14 +386,231 @@ class ExampleUnitTest {
     }
 
     @Test
-    fun webViewYouTubeHelper_extractsSignatureCipherSnippetFromPlayerJs() {
+    fun rhinoYouTubeDecipher_extractsAndEvaluatesSignatureCipherWithoutWebView() {
         val fakePlayerJs = """
             var Qv={sp:function(a,b){a.splice(0,b)},rv:function(a){a.reverse()}};
             dec=function(a){a=a.split("");Qv.rv(a,1);Qv.sp(a,2);return a.join("")};
         """.trimIndent()
-        val snippet = com.example.online.WebViewYouTubeHelper.extractSignatureDecipherSnippet(fakePlayerJs, "ABCDEF")
+        val snippet = com.example.online.RhinoYouTubeDecipher.extractSignatureDecipherSnippet(fakePlayerJs, "ABCDEF")
         assertTrue(snippet != null)
         assertTrue(snippet!!.contains("Qv"))
-        assertTrue(snippet.contains("ABCDEF"))
+        val deciphered = com.example.online.RhinoYouTubeDecipher.evalInRhino(snippet)
+        assertEquals("DCBA", deciphered)
+    }
+
+    @Test
+    fun continuousWaveMath_wrapsCyclicMarqueeAndPulseContinuously() {
+        val twoPi = (2.0 * Math.PI).toFloat()
+        val atZero = com.example.ui.components.ContinuousWaveMath.cyclicMarqueeSegments(0f, widthFrac = 0.34f)
+        assertEquals(1, atZero.size)
+        assertEquals(0f, atZero[0].first, 0.001f)
+        assertEquals(0.34f, atZero[0].second, 0.001f)
+
+        // Approaching 2*PI should wrap around [0.85..1.0] + [0.0..0.19], seamlessly joining 0
+        val nearEnd = com.example.ui.components.ContinuousWaveMath.cyclicMarqueeSegments(twoPi * 0.85f, widthFrac = 0.34f)
+        assertEquals(2, nearEnd.size)
+        assertEquals(0.85f, nearEnd[0].first, 0.001f)
+        assertEquals(1.0f, nearEnd[0].second, 0.001f)
+        assertEquals(0f, nearEnd[1].first, 0.001f)
+        assertEquals(0.19f, nearEnd[1].second, 0.002f)
+
+        // Pulse weight at x = 0.0 and x = 0.999 when center is 0.02 should match seamlessly across loop wrap
+        val wLeft = com.example.ui.components.ContinuousWaveMath.cyclicPulseWeight(0.0f, 0.02f)
+        val wRight = com.example.ui.components.ContinuousWaveMath.cyclicPulseWeight(0.999f, 0.02f)
+        assertEquals(wLeft, wRight, 0.02f)
+    }
+
+    @Test
+    fun youTubeStubDetector_rejectsDeprecationMessagesAndSwappedStubStreams() {
+        assertTrue(YouTubeStreamManager.isDeprecationOrAppBlockMessage("YouTube doesn't support this application or device"))
+        assertTrue(YouTubeStreamManager.isDeprecationOrAppBlockMessage("The following content is not available on this app. Watch on the latest version of YouTube."))
+        assertTrue(YouTubeStreamManager.isDeprecationOrAppBlockMessage("Sign in to confirm you're not a bot"))
+        assertFalse(YouTubeStreamManager.isDeprecationOrAppBlockMessage("MORGENSHTERN - ДОМ (Лондон, Прага, Ницца)"))
+
+        // Swapped videoId stub rejected
+        assertTrue(
+            YouTubeStreamManager.isSuspiciousStubStream(
+                requestedVideoId = "realTrack123",
+                returnedVideoId = "stubError999",
+                returnedTitle = "Normal Title",
+                returnedDurationSec = 180L,
+                expectedDurationMs = 180_000L
+            )
+        )
+        // Short 38s error audio stub rejected for a 3-minute song
+        assertTrue(
+            YouTubeStreamManager.isSuspiciousStubStream(
+                requestedVideoId = "realTrack123",
+                returnedVideoId = "realTrack123",
+                returnedTitle = "Track Title",
+                returnedDurationSec = 38L,
+                expectedDurationMs = 185_000L
+            )
+        )
+        // Legitimate matching track passes
+        assertFalse(
+            YouTubeStreamManager.isSuspiciousStubStream(
+                requestedVideoId = "realTrack123",
+                returnedVideoId = "realTrack123",
+                returnedTitle = "ДОМ (Лондон, Прага, Ницца)",
+                returnedDurationSec = 179L,
+                expectedDurationMs = 180_000L
+            )
+        )
+    }
+
+    @Test
+    fun rhinoYouTubeDecipher_extractsAndEvaluatesNTransformInProcess() {
+        val fakePlayerJs = """
+            var xN=function(a){return a.split("").reverse().join("")+"_ok"};
+            var nArr=[xN];
+            if((b=c.get("n"))&&(b=nArr[0](b),c.set("n",b)))console.log(b);
+        """.trimIndent()
+        val snippet = com.example.online.RhinoYouTubeDecipher.extractNTransformSnippet(fakePlayerJs, "abc123")
+        assertTrue(snippet != null)
+        val out = com.example.online.RhinoYouTubeDecipher.evalInRhino(snippet!!)
+        assertEquals("321cba_ok", out)
+    }
+
+    @Test
+    fun rhinoYouTubeDecipher_extractsMultiHelperNTransformChain() {
+        val fakePlayerJs = """
+            var hlpA={rev:function(s){return s.split("").reverse().join("")}};
+            function wrapN(a){return hlpA.rev(a)+"_2"}
+            var nList=[wrapN];
+            if((b=c.get("n"))&&(b=nList[0](b),c.set("n",b)))console.log(b);
+        """.trimIndent()
+        val snippet = com.example.online.RhinoYouTubeDecipher.extractNTransformSnippet(fakePlayerJs, "xyz789")
+        assertTrue(snippet != null)
+        val out = com.example.online.RhinoYouTubeDecipher.evalInRhino(snippet!!)
+        assertEquals("987zyx_2", out)
+    }
+
+    @Test
+    fun sourceDiagnosticsLog_neverBlamesHttp200OnFailedStreams() {
+        com.example.online.SourceDiagnosticsLog.clear()
+        val sabrEntry = com.example.online.SourceAttemptLog(
+            sourceId = "youtube",
+            displayName = "YouTube",
+            stage = "innertube_TVHTML5",
+            status = com.example.online.SourceAttemptStatus.SABR_ONLY,
+            httpCode = 200,
+            detail = "Only serverAbrStreamingUrl returned",
+            latencyMs = 95L
+        )
+        assertEquals(
+            "SABR_ONLY",
+            com.example.online.SourceDiagnosticsLog.resolveDiagnosticErrorCode(listOf(sabrEntry))
+        )
+
+        val blockedWith200 = com.example.online.SourceAttemptLog(
+            sourceId = "youtube",
+            displayName = "YouTube",
+            stage = "innertube_IOS",
+            status = com.example.online.SourceAttemptStatus.PLAYABILITY_BLOCKED,
+            httpCode = 200,
+            detail = "Client blocked",
+            latencyMs = 80L
+        )
+        assertEquals(
+            "PLAYABILITY_BLOCKED",
+            com.example.online.SourceDiagnosticsLog.resolveDiagnosticErrorCode(listOf(blockedWith200))
+        )
+
+        val report = com.example.online.PlaybackDiagnosticReport(
+            trackTitle = "Test Track",
+            trackArtist = "Test Artist",
+            errorCodeLabel = com.example.online.SourceDiagnosticsLog.resolveDiagnosticErrorCode(listOf(sabrEntry)),
+            summary = "SABR stream only",
+            attempts = listOf(sabrEntry)
+        )
+        val formatted = com.example.online.SourceDiagnosticsLog.formatCopyableReport(report)
+        assertFalse(formatted.contains("HTTP 200"))
+        assertTrue(formatted.contains("SABR_ONLY"))
+    }
+
+    @Test
+    fun playbackTransitionPolicy_stopsInfiniteEofLoopsAndRespectsShufflePreresolve() {
+        assertEquals(
+            0L,
+            com.example.playback.PlaybackTransitionPolicy.effectiveTransitionDurationMs(androidx.media3.common.C.TIME_UNSET)
+        )
+        assertEquals(
+            210_000L,
+            com.example.playback.PlaybackTransitionPolicy.effectiveTransitionDurationMs(210_000L)
+        )
+
+        // First early-EOF on long online track allows 1 recovery; second is blocked to avoid endless replay
+        assertTrue(
+            com.example.playback.PlaybackTransitionPolicy.shouldAttemptEarlyEofRecovery(
+                isOnline = true,
+                playerDurationMs = 200_000L,
+                positionMs = 95_000L,
+                earlyEofCount = 0
+            )
+        )
+        assertFalse(
+            com.example.playback.PlaybackTransitionPolicy.shouldAttemptEarlyEofRecovery(
+                isOnline = true,
+                playerDurationMs = 200_000L,
+                positionMs = 95_000L,
+                earlyEofCount = 1
+            )
+        )
+        // Normal end of song does not trigger early-EOF recovery
+        assertFalse(
+            com.example.playback.PlaybackTransitionPolicy.shouldAttemptEarlyEofRecovery(
+                isOnline = true,
+                playerDurationMs = 200_000L,
+                positionMs = 198_000L,
+                earlyEofCount = 0
+            )
+        )
+
+        // Queue advancement rules
+        assertTrue(
+            com.example.playback.PlaybackTransitionPolicy.shouldAdvanceQueueAfterFailure(
+                repeatMode = androidx.media3.common.Player.REPEAT_MODE_OFF,
+                hasNextMediaItem = true,
+                queueSize = 4
+            )
+        )
+        assertFalse(
+            com.example.playback.PlaybackTransitionPolicy.shouldAdvanceQueueAfterFailure(
+                repeatMode = androidx.media3.common.Player.REPEAT_MODE_ONE,
+                hasNextMediaItem = true,
+                queueSize = 4
+            )
+        )
+
+        // Shuffle nextMediaItemIndex prioritized ahead of linear fallback
+        val indices = com.example.playback.PlaybackTransitionPolicy.computePreresolveIndices(
+            currentIndex = 1,
+            nextMediaItemIndex = 7,
+            queueSize = 10
+        )
+        assertEquals(listOf(7, 2, 3), indices)
+    }
+
+    @Test
+    fun lyricsManager_preprocessParallelLinesPlacesBackingVocalsBelowMainLine() {
+        val manager = LyricsManager()
+        val lrc = """
+            [00:10.00] Hold on tight (yeah, ooh)
+            [00:14.50] Shining in the night
+            [00:14.50] bg: Keep on shining
+        """.trimIndent()
+
+        val lines = manager.parseLrc(lrc).filter { !it.isInstrumental }
+        assertEquals(2, lines.size)
+
+        assertEquals("Hold on tight", lines[0].primaryText)
+        assertEquals(1, lines[0].parallelLines.size)
+        assertEquals("yeah, ooh", lines[0].parallelLines[0].text)
+        assertTrue(lines[0].parallelLines[0].words.isNotEmpty())
+
+        assertEquals("Shining in the night", lines[1].primaryText)
+        assertEquals(1, lines[1].parallelLines.size)
+        assertEquals("Keep on shining", lines[1].parallelLines[0].text)
     }
 }

@@ -57,8 +57,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.components.agslGlassRim
 import com.example.ui.components.morphPolygonShape
+import com.example.ui.components.rememberContinuousMorphShape
 import com.example.ui.util.HapticFeedbackType
 import com.example.ui.util.rememberHapticHelper
 import kotlinx.coroutines.launch
@@ -119,19 +119,18 @@ fun ExpressiveFloatingNavigationBar(
             modifier = Modifier
                 .weight(1f)
                 .shadow(
-                    elevation = 8.dp,
+                    elevation = 6.dp,
                     shape = CircleShape,
-                    spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                    ambientColor = Color.Black.copy(alpha = 0.12f)
-                )
-                .agslGlassRim(
-                    cornerRadiusDp = 999.dp,
-                    primaryColor = MaterialTheme.colorScheme.primary,
-                    tertiaryColor = MaterialTheme.colorScheme.tertiary
+                    spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    ambientColor = Color.Black.copy(alpha = 0.10f)
                 )
                 .testTag("floating_navigation_bar"),
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             tonalElevation = 3.dp,
+            border = androidx.compose.foundation.BorderStroke(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)
+            ),
             shape = CircleShape
         ) {
             BoxWithConstraints(
@@ -471,8 +470,11 @@ fun ExpressiveFloatingNavigationBar(
             label = "detached_search_fg"
         )
 
-        val searchActiveShape = remember { morphPolygonShape(3) }
-        val searchShape = if (isSearchSelected) searchActiveShape else CircleShape
+        val searchShape = rememberContinuousMorphShape(
+            startIndex = if (isSearchSelected) 4 else 3,
+            cycleDurationMs = 9000,
+            rotate = isSearchSelected
+        )
         Surface(
             onClick = {
                 haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
@@ -482,13 +484,13 @@ fun ExpressiveFloatingNavigationBar(
             shape = searchShape,
             color = searchBg,
             contentColor = searchFg,
-            tonalElevation = if (isSearchSelected) 6.dp else 3.dp,
+            tonalElevation = if (isSearchSelected) 5.dp else 3.dp,
             border = androidx.compose.foundation.BorderStroke(
                 width = if (isSearchSelected) 1.5.dp else 1.dp,
                 color = if (isSearchSelected) {
                     MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
                 } else {
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.24f)
                 }
             ),
             modifier = Modifier
@@ -497,23 +499,6 @@ fun ExpressiveFloatingNavigationBar(
                     scaleX = searchScale
                     scaleY = searchScale
                 }
-                .then(
-                    if (!isSearchSelected) {
-                        Modifier
-                            .shadow(
-                                elevation = 8.dp,
-                                shape = CircleShape,
-                                spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-                            )
-                            .agslGlassRim(
-                                cornerRadiusDp = 999.dp,
-                                primaryColor = MaterialTheme.colorScheme.primary,
-                                tertiaryColor = MaterialTheme.colorScheme.tertiary
-                            )
-                    } else {
-                        Modifier
-                    }
-                )
                 .testTag("nav_${NavDestination.SEARCH.route}")
         ) {
             Box(contentAlignment = Alignment.Center) {

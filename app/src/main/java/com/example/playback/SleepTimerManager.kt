@@ -1,7 +1,9 @@
 package com.example.playback
 
+import android.util.Log
 import com.example.model.SleepTimerOption
 import com.example.model.SleepTimerState
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,7 +18,10 @@ import kotlinx.coroutines.launch
 class SleepTimerManager(
     private val onTimeExpired: () -> Unit
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e("SleepTimerManager", "Unhandled coroutine error", throwable)
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + exceptionHandler)
     private var timerJob: Job? = null
 
     private val _state = MutableStateFlow(SleepTimerState())

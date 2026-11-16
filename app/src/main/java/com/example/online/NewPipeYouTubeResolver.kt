@@ -96,20 +96,51 @@ object NewPipeYouTubeResolver {
                 builder.header("Range", "bytes=0-63")
             }
             NetworkClient.fastProbeClient.newCall(builder.build()).execute().use { resp ->
-                resp.code in listOf(200, 206, 302, 303, 307)
+                if (resp.code !in listOf(200, 206, 302, 303, 307)) return false
+                val contentType = resp.header("Content-Type")?.lowercase()?.trim().orEmpty()
+                if (contentType.startsWith("text/html") ||
+                    contentType.startsWith("text/plain") ||
+                    contentType.startsWith("application/json")
+                ) {
+                    return false
+                }
+                true
             }
         } catch (_: Exception) {
             false
         }
     }
 
-    fun resolveAudioStream(videoId: String): ResolvedStream? {
+    fun resolveAudioStream(videoId: String, expectedDurationMs: Long = 0L): ResolvedStream? {
         if (videoId.isBlank()) return null
         val t0 = System.currentTimeMillis()
         return try {
             ensureInitialized()
             val watchUrl = "https://www.youtube.com/watch?v=$videoId"
             val info = StreamInfo.getInfo(ServiceList.YouTube, watchUrl)
+
+            if (YouTubeStreamManager.isSuspiciousStubStream(
+                    requestedVideoId = videoId,
+                    returnedVideoId = info.id,
+                    returnedTitle = info.name,
+                    returnedDurationSec = info.duration,
+                    expectedDurationMs = expectedDurationMs
+                )
+            ) {
+                SourceDiagnosticsLog.record(
+                    SourceAttemptLog(
+                        sourceId = "yt_web_rhino",
+                        displayName = "YT Web Rhino • NewPipe",
+                        stage = "stub_filter",
+                        status = SourceAttemptStatus.PLAYABILITY_BLOCKED,
+                        httpCode = 200,
+                        detail = "Отфильтрована заглушка YouTube (${info.name.take(48)}, ${info.duration}с)",
+                        latencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                    )
+                )
+                return null
+            }
+
             val audioCandidates = info.audioStreams
                 .filter { it.content.startsWith("http") }
                 .sortedByDescending { stream ->
@@ -122,8 +153,8 @@ object NewPipeYouTubeResolver {
                 if (probeNewPipeStream(bestAudio.content, isHls = false)) {
                     SourceDiagnosticsLog.record(
                         SourceAttemptLog(
-                            sourceId = "newpipe",
-                            displayName = "YouTube • NewPipe",
+                            sourceId = "yt_web_rhino",
+                            displayName = "YT Web Rhino • NewPipe",
                             stage = "decipher",
                             status = SourceAttemptStatus.SUCCESS,
                             httpCode = 200,
@@ -135,7 +166,7 @@ object NewPipeYouTubeResolver {
                         url = bestAudio.content,
                         userAgent = NetworkClient.BROWSER_UA,
                         expiresAtMs = System.currentTimeMillis() + 4 * 3600_000L,
-                        engine = "newpipe"
+                        engine = "yt_web_rhino"
                     )
                 }
             }
@@ -144,8 +175,8 @@ object NewPipeYouTubeResolver {
             if (!hls.isNullOrBlank() && probeNewPipeStream(hls, isHls = true)) {
                 SourceDiagnosticsLog.record(
                     SourceAttemptLog(
-                        sourceId = "newpipe",
-                        displayName = "YouTube • NewPipe",
+                        sourceId = "yt_web_rhino",
+                        displayName = "YT Web Rhino • NewPipe",
                         stage = "hls",
                         status = SourceAttemptStatus.SUCCESS,
                         httpCode = 200,
@@ -157,40 +188,48 @@ object NewPipeYouTubeResolver {
                     url = hls,
                     userAgent = NetworkClient.BROWSER_UA,
                     expiresAtMs = System.currentTimeMillis() + 4 * 3600_000L,
-                    engine = "newpipe"
+                    engine = "yt_web_rhino"
                 )
             }
 
             val hadAny = audioCandidates.isNotEmpty() || !hls.isNullOrBlank()
             SourceDiagnosticsLog.record(
                 SourceAttemptLog(
-                    sourceId = "newpipe",
-                    displayName = "YouTube • NewPipe",
+                    sourceId = "yt_web_rhino",
+                    displayName = "YT Web Rhino • NewPipe",
                     stage = if (hadAny) "cdn_probe" else "decipher",
                     status = if (hadAny) SourceAttemptStatus.HTTP_ERROR else SourceAttemptStatus.EMPTY_RESULT,
                     httpCode = if (hadAny) 403 else null,
-                    detail = if (hadAny) "CDN отклонил извлечённые потоки NewPipe (403)" else "Список аудиопотоков пуст",
+                    detail = if (hadAny) "CDN отклонил извлечённые потоки NewPipe" else "Список аудиопотоков пуст",
                     latencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
                 )
             )
             null
         } catch (e: Throwable) {
             Log.w(TAG, "NewPipe resolve failed for $videoId: ${e.message}")
-            val status = if (e.message?.contains("403") == true) {
-                SourceAttemptStatus.HTTP_ERROR
-            } else if (e.message?.contains("Sign in", true) == true || e.message?.contains("bot", true) == true) {
-                SourceAttemptStatus.PLAYABILITY_BLOCKED
+            val rawMsg = e.message ?: ""
+            val isBlock = YouTubeStreamManager.isDeprecationOrAppBlockMessage(rawMsg) ||
+                rawMsg.contains("Sign in", true) ||
+                rawMsg.contains("bot", true) ||
+                rawMsg.contains("unavailable", true)
+            val status = when {
+                isBlock -> SourceAttemptStatus.PLAYABILITY_BLOCKED
+                rawMsg.contains("403") -> SourceAttemptStatus.HTTP_ERROR
+                else -> SourceAttemptStatus.NETWORK_ERROR
+            }
+            val detail = if (isBlock) {
+                YouTubeStreamManager.translatePlayabilityReason("UNPLAYABLE", rawMsg)
             } else {
-                SourceAttemptStatus.NETWORK_ERROR
+                rawMsg.take(140).ifBlank { "Сбой дешифрации" }
             }
             SourceDiagnosticsLog.record(
                 SourceAttemptLog(
-                    sourceId = "newpipe",
-                    displayName = "YouTube • NewPipe",
+                    sourceId = "yt_web_rhino",
+                    displayName = "YT Web Rhino • NewPipe",
                     stage = "decipher",
                     status = status,
-                    httpCode = if (e.message?.contains("403") == true) 403 else null,
-                    detail = e.message?.take(140) ?: "Сбой дешифрации",
+                    httpCode = if (rawMsg.contains("403")) 403 else null,
+                    detail = detail,
                     latencyMs = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
                 )
             )

@@ -188,8 +188,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     // Multi-Source Online Streaming & Track/Source Switcher
     val youTubeStreamManager = app.youTubeStreamManager
-    private val _onlineSourceFilter = MutableStateFlow("all")
-    val onlineSourceFilter: StateFlow<String> = _onlineSourceFilter.asStateFlow()
+    val onlineSourceFilter: StateFlow<String> = preferencesManager.onlineSourceFilter
 
     private val _onlineSearchResults = MutableStateFlow<List<OnlineTrack>>(emptyList())
     val onlineSearchResults: StateFlow<List<OnlineTrack>> = _onlineSearchResults.asStateFlow()
@@ -215,8 +214,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val _isAlternativeLoading = MutableStateFlow(false)
     val isAlternativeLoading: StateFlow<Boolean> = _isAlternativeLoading.asStateFlow()
 
-    private val _selectedDeliveryEngine = MutableStateFlow("auto")
-    val selectedDeliveryEngine: StateFlow<String> = _selectedDeliveryEngine.asStateFlow()
+    val selectedDeliveryEngine: StateFlow<String> = preferencesManager.preferredDeliveryEngine
 
     private val _sourceHealthStatuses = MutableStateFlow<List<com.example.online.SourceHealthStatus>>(emptyList())
     val sourceHealthStatuses: StateFlow<List<com.example.online.SourceHealthStatus>> = _sourceHealthStatuses.asStateFlow()
@@ -689,8 +687,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // ONLINE STREAMING SEARCH, MULTI-SOURCE & VERSION SWITCHER
     // ==========================================
     fun setOnlineSourceFilter(sourceId: String) {
-        if (_onlineSourceFilter.value == sourceId) return
-        _onlineSourceFilter.value = sourceId
+        if (onlineSourceFilter.value == sourceId) return
+        preferencesManager.setOnlineSourceFilter(sourceId)
         val q = _searchQuery.value.trim()
         if (_searchMode.value == 1 && q.length >= 2) {
             searchOnline(q, immediate = true)
@@ -705,7 +703,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _isOnlineSearchLoading.value = false
             return
         }
-        val activeFilter = _onlineSourceFilter.value
+        val activeFilter = onlineSourceFilter.value
         onlineSearchJob?.cancel()
         onlineSearchJob = viewModelScope.launch {
             if (!immediate) {
@@ -714,7 +712,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             _isOnlineSearchLoading.value = true
             try {
                 val results = youTubeStreamManager.search(trimmed, activeFilter)
-                if (_searchQuery.value.trim() == trimmed && _onlineSourceFilter.value == activeFilter) {
+                if (_searchQuery.value.trim() == trimmed && onlineSourceFilter.value == activeFilter) {
                     _onlineSearchResults.value = results
                     _isOnlineSearchLoading.value = false
                     if (results.isNotEmpty()) {
@@ -753,7 +751,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _sourceSwitcherTitle.value = song.title
         _sourceSwitcherQuery.value = initialQ
         _alternativeSourceFilter.value = "all"
-        _selectedDeliveryEngine.value = "auto"
         _isSourceSwitcherVisible.value = true
         loadAlternativeCandidates()
     }
@@ -764,7 +761,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _sourceSwitcherTitle.value = track.title
         _sourceSwitcherQuery.value = initialQ
         _alternativeSourceFilter.value = "all"
-        _selectedDeliveryEngine.value = "auto"
         _isSourceSwitcherVisible.value = true
         loadAlternativeCandidates()
     }
@@ -817,8 +813,16 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun switchDeliveryEngine(engineId: String) {
-        _selectedDeliveryEngine.value = engineId
-        controllerManager.switchDeliveryEngineForCurrent(engineId)
+        preferencesManager.setPreferredDeliveryEngine(engineId)
+        val current = playbackState.value.currentSong
+        val isOnlineCurrent = current != null && (
+            current.contentUriString.startsWith("online://") ||
+                current.contentUriString.startsWith("http") ||
+                controllerManager.getYouTubeVideoIdForSong(current.id) != null
+            )
+        if (isOnlineCurrent) {
+            controllerManager.switchDeliveryEngineForCurrent(engineId)
+        }
     }
 
     fun retryPlayback() {
@@ -828,7 +832,6 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearPlaybackError() {
         controllerManager.clearError()
-        controllerManager.dismissDiagnosticReport()
     }
 
     fun dismissDiagnosticReport() {

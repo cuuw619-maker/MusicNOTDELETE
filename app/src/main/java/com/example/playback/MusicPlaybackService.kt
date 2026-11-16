@@ -37,11 +37,14 @@ import com.example.R
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import android.util.Log
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class MusicPlaybackService : MediaSessionService() {
@@ -60,7 +63,10 @@ class MusicPlaybackService : MediaSessionService() {
         private set
 
     private var crossfadeJob: Job? = null
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val serviceExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e("MusicPlaybackService", "Unhandled service coroutine error", throwable)
+    }
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main + serviceExceptionHandler)
     @OptIn(UnstableApi::class)
     private var simpleCache: SimpleCache? = null
 
@@ -111,7 +117,7 @@ class MusicPlaybackService : MediaSessionService() {
             .setUserAgent(com.example.network.NetworkClient.BROWSER_UA)
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(20_000)
+            .setReadTimeoutMs(30_000)
 
         val headerAwareDataSourceFactory = DataSource.Factory {
             val delegate = DefaultDataSource.Factory(this, httpBaseFactory).createDataSource()
@@ -163,6 +169,7 @@ class MusicPlaybackService : MediaSessionService() {
         }
 
         val mediaSourceFactory = DefaultMediaSourceFactory(cacheDataSourceFactory)
+            .setLoadErrorHandlingPolicy(androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy(5))
 
         player = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
@@ -336,68 +343,88 @@ class MusicPlaybackService : MediaSessionService() {
     fun crossfadeTo(targetIndex: Int, crossfadeMs: Long) {
         if (targetIndex !in 0 until player.mediaItemCount) return
         val currentItem = player.currentMediaItem
+        val targetItem = player.getMediaItemAt(targetIndex)
+        val targetScheme = targetItem.localConfiguration?.uri?.scheme
         val secPlayer = crossfadePlayer
+        val savedPrimaryVol = player.volume.coerceIn(0.05f, 1.0f)
 
         crossfadeJob?.cancel()
 
-        if (secPlayer == null || currentItem == null || crossfadeMs <= 0 || !player.isPlaying) {
-            player.volume = 1.0f
+        // Skip secondary player crossfade for unresolved online:// placeholders or when player isn't actively playing
+        if (secPlayer == null || currentItem == null || crossfadeMs <= 0L || !player.isPlaying || targetScheme == "online") {
+            player.volume = savedPrimaryVol
             player.seekTo(targetIndex, 0L)
             player.play()
             return
         }
 
         crossfadeJob = serviceScope.launch {
-            // Target item to crossfade INTO
-            val targetItem = if (targetIndex in 0 until player.mediaItemCount) player.getMediaItemAt(targetIndex) else null
-            if (targetItem == null) {
-                player.seekTo(targetIndex, 0L)
-                player.play()
-                return@launch
+            try {
+                secPlayer.stop()
+                secPlayer.clearMediaItems()
+                secPlayer.setMediaItem(targetItem, 0L)
+                secPlayer.volume = 0f
+                secPlayer.prepare()
+
+                // Wait until secondary player is buffered & ready (bail cleanly if it errors or times out)
+                var waitCount = 0
+                while (isActive && secPlayer.playbackState == Player.STATE_BUFFERING && waitCount < 45) {
+                    delay(15L)
+                    waitCount++
+                }
+
+                if (!isActive || secPlayer.playbackState != Player.STATE_READY) {
+                    secPlayer.stop()
+                    secPlayer.clearMediaItems()
+                    if (targetIndex in 0 until player.mediaItemCount) {
+                        player.volume = savedPrimaryVol
+                        player.seekTo(targetIndex, 0L)
+                        player.play()
+                    }
+                    return@launch
+                }
+
+                secPlayer.play()
+
+                val steps = 30
+                val stepDelay = (crossfadeMs / steps).coerceAtLeast(10L)
+
+                for (i in 1..steps) {
+                    if (!isActive) break
+                    val fraction = i / steps.toFloat()
+                    val outVol = (kotlin.math.cos(fraction * (Math.PI / 2.0)).toFloat().coerceIn(0f, 1f)) * savedPrimaryVol
+                    val inVol = kotlin.math.sin(fraction * (Math.PI / 2.0)).toFloat().coerceIn(0f, 1f) * savedPrimaryVol
+
+                    player.volume = outVol
+                    secPlayer.volume = inVol
+                    delay(stepDelay)
+                }
+
+                if (isActive && targetIndex in 0 until player.mediaItemCount) {
+                    val handoffPos = secPlayer.currentPosition.coerceAtLeast(0L)
+                    player.seekTo(targetIndex, handoffPos)
+                    player.volume = savedPrimaryVol
+                    player.play()
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.w("MusicPlaybackService", "Crossfade fallback to direct seek", t)
+                if (targetIndex in 0 until player.mediaItemCount) {
+                    player.volume = savedPrimaryVol
+                    player.seekTo(targetIndex, 0L)
+                    player.play()
+                }
+            } finally {
+                runCatching {
+                    secPlayer.stop()
+                    secPlayer.clearMediaItems()
+                }
+                if (player.volume < 0.05f) {
+                    player.volume = savedPrimaryVol
+                }
+                crossfadeJob = null
             }
-
-            // 1. Prepare secondary player with incoming target track at volume 0f while PRIMARY player continues playing uninterrupted
-            secPlayer.stop()
-            secPlayer.clearMediaItems()
-            secPlayer.setMediaItem(targetItem, 0L)
-            secPlayer.volume = 0f
-            secPlayer.prepare()
-
-            // 2. Wait until secondary player is buffered and ready
-            var waitCount = 0
-            while (secPlayer.playbackState == Player.STATE_BUFFERING && waitCount < 30) {
-                delay(10L)
-                waitCount++
-            }
-
-            // 3. Start secondary player simultaneously with outgoing track still playing!
-            secPlayer.play()
-
-            // 4. Simultaneous Parallel Crossfade: primary player fades OUT while secondary player fades IN!
-            val initialPrimaryVol = player.volume.coerceAtLeast(0.1f)
-            val steps = 30
-            val stepDelay = (crossfadeMs / steps).coerceAtLeast(10L)
-
-            for (i in 1..steps) {
-                val fraction = i / steps.toFloat()
-                // True equal-power parallel transition curve
-                val outVol = (kotlin.math.cos(fraction * (Math.PI / 2.0)).toFloat().coerceIn(0f, 1f)) * initialPrimaryVol
-                val inVol = kotlin.math.sin(fraction * (Math.PI / 2.0)).toFloat().coerceIn(0f, 1f)
-
-                player.volume = outVol
-                secPlayer.volume = inVol
-                delay(stepDelay)
-            }
-
-            // 5. Seamlessly hand off playback to primary player at the exact current position of secondary player
-            val handoffPos = secPlayer.currentPosition.coerceAtLeast(0L)
-            player.seekTo(targetIndex, handoffPos)
-            player.volume = initialPrimaryVol
-            player.play()
-
-            secPlayer.stop()
-            secPlayer.clearMediaItems()
-            crossfadeJob = null
         }
     }
 

@@ -187,9 +187,9 @@ fun MainApp(
 
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(playbackState.errorMessage) {
+    LaunchedEffect(playbackState.errorMessage, diagnosticReport) {
         val err = playbackState.errorMessage
-        if (!err.isNullOrEmpty()) {
+        if (!err.isNullOrEmpty() && diagnosticReport == null) {
             val result = snackbarHostState.showSnackbar(
                 message = err,
                 actionLabel = "Повторить",
@@ -200,6 +200,8 @@ fun MainApp(
             } else {
                 viewModel.clearPlaybackError()
             }
+        } else if (diagnosticReport != null) {
+            snackbarHostState.currentSnackbarData?.dismiss()
         }
     }
 
@@ -222,9 +224,11 @@ fun MainApp(
         color = MaterialTheme.colorScheme.background
     ) {
     Box(modifier = Modifier.fillMaxSize()) {
-        com.example.ui.components.AmbientGeometricShapesOverlay(
+        com.example.ui.components.AmbientGlowCanvas(
             isPlaying = playbackState.isPlaying,
+            showFloatingGeometry = true,
             reducedMotion = reducedMotion,
+            baseIntensity = if (playbackState.isPlaying) 0.34f else 0.20f,
             modifier = Modifier.fillMaxSize()
         )
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -260,16 +264,6 @@ fun MainApp(
                                 )
                             }
                         }
-
-                        SnackbarHost(
-                            hostState = snackbarHostState,
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(
-                                    horizontal = 16.dp,
-                                    vertical = if (playbackState.currentSong != null && !isNowPlayingExpanded) 96.dp else 16.dp
-                                )
-                        )
 
                         if (playbackState.currentSong != null && !isNowPlayingExpanded) {
                             Box(
@@ -318,17 +312,6 @@ fun MainApp(
                         }
                     }
 
-                    SnackbarHost(
-                        hostState = snackbarHostState,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(
-                                start = 14.dp,
-                                end = 14.dp,
-                                bottom = if (playbackState.currentSong != null && !isNowPlayingExpanded) 160.dp else 88.dp
-                            )
-                    )
-
                     // Bottom Navigation + Mini Player stacked cleanly
                     Column(
                         modifier = Modifier
@@ -361,6 +344,17 @@ fun MainApp(
                 }
             }
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp,
+                    bottom = if (playbackState.currentSong != null && !isNowPlayingExpanded) 160.dp else 88.dp
+                )
+        )
 
         // Full Now Playing Screen (Slides up smoothly over everything on phone & tablet)
         androidx.compose.animation.AnimatedVisibility(

@@ -44,7 +44,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +56,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
@@ -68,8 +71,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -163,6 +168,34 @@ object MorphShapeLut {
 }
 
 /**
+ * Seamless cyclic wave helpers so indeterminate marquees & amplitude pulses wrap smoothly around [0, 1]
+ * without any end-of-cycle jump (`1(--___) ... 4(___--) 5(--___)`).
+ */
+object ContinuousWaveMath {
+    fun cyclicMarqueeSegments(phaseRad: Float, widthFrac: Float = 0.34f): List<Pair<Float, Float>> {
+        val twoPi = 2f * PI.toFloat()
+        val norm = (((phaseRad / twoPi) % 1f) + 1f) % 1f
+        val width = widthFrac.coerceIn(0.05f, 0.95f)
+        val rawEnd = norm + width
+        return if (rawEnd <= 1f) {
+            listOf(norm to rawEnd)
+        } else {
+            listOf(norm to 1f, 0f to (rawEnd - 1f))
+        }
+    }
+
+    fun cyclicPulseWeight(xFrac: Float, centerFrac: Float, halfWidth: Float = 0.24f): Float {
+        val x = ((xFrac % 1f) + 1f) % 1f
+        val c = ((centerFrac % 1f) + 1f) % 1f
+        val diff = abs(x - c)
+        val dist = min(diff, 1f - diff)
+        val t = (1f - (dist / halfWidth.coerceAtLeast(0.05f))).coerceIn(0f, 1f)
+        val smooth = t * t * (3f - 2f * t)
+        return 0.65f + 0.65f * smooth
+    }
+}
+
+/**
  * Generates a Material 3 Expressive organic polygon [Shape] indexed into [MorphShapeLut].
  */
 fun morphPolygonShape(shapeIndex: Int): Shape = GenericShape { size, _ ->
@@ -179,6 +212,101 @@ fun morphPolygonShape(shapeIndex: Int): Shape = GenericShape { size, _ ->
         if (i == 0) moveTo(x, y) else lineTo(x, y)
     }
     close()
+}
+
+/**
+ * Dynamic M3 Expressive [Shape] backed by animated [State] values, morphing through [MorphShapeLut]
+ * with zero per-frame composable recomposition (reads state inside [createOutline] only).
+ */
+class LiveMorphPolygonShape(
+    private val cycleProgressState: State<Float>,
+    private val rotationDegState: State<Float>
+) : Shape {
+    private val outlinePath = Path()
+
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        if (size.width <= 0f || size.height <= 0f) {
+            return Outline.Generic(Path())
+        }
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val maxR = min(cx, cy) * 1.08f
+
+        val cycle = cycleProgressState.value
+        val wrapped = ((cycle % MorphShapeLut.SHAPE_COUNT) + MorphShapeLut.SHAPE_COUNT) % MorphShapeLut.SHAPE_COUNT
+        val idxA = wrapped.toInt().coerceIn(0, MorphShapeLut.SHAPE_COUNT - 1)
+        val idxB = (idxA + 1) % MorphShapeLut.SHAPE_COUNT
+        val rawFrac = wrapped - idxA
+        val glideT = if (rawFrac < 0.30f) 0f else MorphShapeLut.smoothStep((rawFrac - 0.30f) / 0.70f)
+
+        val shapeA = MorphShapeLut.radii[idxA]
+        val shapeB = MorphShapeLut.radii[idxB]
+
+        val rotRad = (rotationDegState.value * PI / 180.0).toFloat()
+        val cosRot = cos(rotRad)
+        val sinRot = sin(rotRad)
+
+        outlinePath.reset()
+        for (i in 0 until MorphShapeLut.STEPS) {
+            val rNorm = shapeA[i] + (shapeB[i] - shapeA[i]) * glideT
+            val r = maxR * rNorm
+            val c0 = MorphShapeLut.cosTable[i]
+            val s0 = MorphShapeLut.sinTable[i]
+            val rx = c0 * cosRot - s0 * sinRot
+            val ry = s0 * cosRot + c0 * sinRot
+            val x = cx + r * rx
+            val y = cy + r * ry
+            if (i == 0) outlinePath.moveTo(x, y) else outlinePath.lineTo(x, y)
+        }
+        outlinePath.close()
+        return Outline.Generic(outlinePath)
+    }
+}
+
+/**
+ * Remembers a continuously morphing M3 Expressive button/container [Shape] cycling smoothly across all 10 polygons.
+ * Automatically falls back to static [morphPolygonShape] on `POTATO` devices or when [paused] is true.
+ */
+@Composable
+fun rememberContinuousMorphShape(
+    startIndex: Int = 0,
+    cycleDurationMs: Int = 9200,
+    rotate: Boolean = true,
+    paused: Boolean = false
+): Shape {
+    val profile = LocalPerformanceProfile.current
+    if (paused || profile.isPotato) {
+        return remember(startIndex) { morphPolygonShape(startIndex) }
+    }
+    val transition = rememberInfiniteTransition(label = "continuous_morph_shape_$startIndex")
+    val startF = (((startIndex % MorphShapeLut.SHAPE_COUNT) + MorphShapeLut.SHAPE_COUNT) % MorphShapeLut.SHAPE_COUNT).toFloat()
+    val cycleState = transition.animateFloat(
+        initialValue = startF,
+        targetValue = startF + MorphShapeLut.SHAPE_COUNT.toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = cycleDurationMs.coerceAtLeast(3000), easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "morph_cycle"
+    )
+    val rotState = if (rotate) {
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = (cycleDurationMs * 1.4f).toInt().coerceAtLeast(4500), easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "morph_rot"
+        )
+    } else {
+        remember { mutableFloatStateOf(0f) }
+    }
+    return remember(cycleState, rotState) { LiveMorphPolygonShape(cycleState, rotState) }
 }
 
 /**
@@ -345,15 +473,10 @@ fun LinearWavyProgressIndicator(
         val amp = amplitudeDp.toPx() * ampFactor
         val wavelength = wavelengthDp.toPx().coerceAtLeast(10f)
 
-        val startFrac: Float
-        val endFrac: Float
-        if (progress != null) {
-            startFrac = 0f
-            endFrac = progress().coerceIn(0f, 1f)
+        val segments: List<Pair<Float, Float>> = if (progress != null) {
+            listOf(0f to progress().coerceIn(0f, 1f))
         } else {
-            val norm = (phase / (2f * PI.toFloat())).coerceIn(0f, 1f)
-            startFrac = (norm - 0.18f).coerceIn(0f, 0.82f)
-            endFrac = (startFrac + 0.36f).coerceAtMost(1f)
+            ContinuousWaveMath.cyclicMarqueeSegments(phase, widthFrac = 0.34f)
         }
 
         // Background track
@@ -365,9 +488,12 @@ fun LinearWavyProgressIndicator(
             cap = StrokeCap.Round
         )
 
-        val activeStart = w * startFrac
-        val activeEnd = w * endFrac
-        if (activeEnd - activeStart > 2f) {
+        val twoPi = 2f * PI.toFloat()
+        for ((startFrac, endFrac) in segments) {
+            val activeStart = w * startFrac
+            val activeEnd = w * endFrac
+            if (activeEnd - activeStart <= 2f) continue
+
             if (amp < 0.25f) {
                 drawLine(
                     color = color,
@@ -379,14 +505,18 @@ fun LinearWavyProgressIndicator(
             } else {
                 path.reset()
                 var x = activeStart
-                path.moveTo(x, cy + sin((x / wavelength) * (2f * PI.toFloat()) - phase) * amp)
+                val startTaper = minOf(
+                    (x - activeStart) / (wavelength * 0.35f),
+                    (activeEnd - x) / (wavelength * 0.35f)
+                ).coerceIn(0f, 1f)
+                path.moveTo(x, cy + sin((x / wavelength) * twoPi - phase) * amp * startTaper)
                 while (x < activeEnd) {
                     x = (x + stepPx).coerceAtMost(activeEnd)
                     val taper = minOf(
                         (x - activeStart) / (wavelength * 0.35f),
                         (activeEnd - x) / (wavelength * 0.35f)
                     ).coerceIn(0f, 1f)
-                    val y = cy + sin((x / wavelength) * (2f * PI.toFloat()) - phase) * amp * taper
+                    val y = cy + sin((x / wavelength) * twoPi - phase) * amp * taper
                     path.lineTo(x, y)
                 }
                 drawPath(
@@ -401,7 +531,7 @@ fun LinearWavyProgressIndicator(
 
 /**
  * Material 3 Expressive Circular Wavy Progress Indicator.
- * Zero per-frame Path allocations. Supports indeterminate spinner or determinate radial progress.
+ * Zero per-frame Path allocations and integer-locked harmonic phase for seamless rotation.
  */
 @Composable
 fun CircularWavyProgressIndicator(
@@ -418,20 +548,13 @@ fun CircularWavyProgressIndicator(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1500, easing = LinearEasing),
+            animation = tween(durationMillis = 1600, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "circ_spin"
     )
-    val wavePhase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2f * PI.toFloat()),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "circ_wave"
-    )
+    // Exact 2:1 integer harmonic locked to spin so 360 -> 0 wraps with zero discontinuity
+    val wavePhase = (spin / 360f) * (4f * PI.toFloat())
     val path = remember { Path() }
     val segments = if (profile.isPotato) 48 else 72
 
@@ -1477,17 +1600,18 @@ fun CapsuleWavyLoadingIndicator(
         )
 
         val sweepCenter = (phase / (2f * PI.toFloat()))
-        val segStart = (pad + usableW * ((sweepCenter - 0.28f).coerceAtLeast(0f)))
-        val segEnd = (pad + usableW * ((sweepCenter + 0.28f).coerceAtMost(1f)))
+        val twoPi = 2f * PI.toFloat()
 
         path.reset()
         var x = pad
-        path.moveTo(x, cy + sin((x / wavelength) * (2f * PI.toFloat()) - phase) * amp)
+        val firstWeight = ContinuousWaveMath.cyclicPulseWeight(0f, sweepCenter)
+        path.moveTo(x, cy + sin((x / wavelength) * twoPi - phase) * amp * firstWeight * 0.25f)
         while (x < pad + usableW) {
             x = (x + stepPx).coerceAtMost(pad + usableW)
+            val xFrac = ((x - pad) / usableW).coerceIn(0f, 1f)
             val edgeTaper = minOf((x - pad) / 14f, (pad + usableW - x) / 14f).coerceIn(0f, 1f)
-            val pulseBoost = if (x in segStart..segEnd) 1.25f else 0.65f
-            val y = cy + sin((x / wavelength) * (2f * PI.toFloat()) - phase) * amp * edgeTaper * pulseBoost
+            val pulseBoost = ContinuousWaveMath.cyclicPulseWeight(xFrac, sweepCenter)
+            val y = cy + sin((x / wavelength) * twoPi - phase) * amp * edgeTaper * pulseBoost
             path.lineTo(x, y)
         }
         drawPath(

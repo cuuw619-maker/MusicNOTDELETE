@@ -613,8 +613,12 @@ fun NowPlayingScreen(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Shuffle -> 4-Point Spark / Diamond badge when enabled
-                    val shuffleShape = remember { com.example.ui.components.morphPolygonShape(4) }
+                    // Shuffle -> Continuously morphing M3 geometric badge with tonal border
+                    val shuffleShape = com.example.ui.components.rememberContinuousMorphShape(
+                        startIndex = 4,
+                        cycleDurationMs = 9600,
+                        rotate = playbackState.shuffleModeEnabled
+                    )
                     Surface(
                         onClick = {
                             performHapticFeedback(view, HapticType.LIGHT)
@@ -624,8 +628,16 @@ fun NowPlayingScreen(
                         color = if (playbackState.shuffleModeEnabled) {
                             MaterialTheme.colorScheme.secondaryContainer
                         } else {
-                            Color.Transparent
+                            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f)
                         },
+                        border = BorderStroke(
+                            1.dp,
+                            if (playbackState.shuffleModeEnabled) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)
+                            }
+                        ),
                         modifier = Modifier
                             .size(48.dp)
                             .testTag("now_playing_shuffle")
@@ -637,69 +649,85 @@ fun NowPlayingScreen(
                                 tint = if (playbackState.shuffleModeEnabled) {
                                     MaterialTheme.colorScheme.onSecondaryContainer
                                 } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.70f)
                                 }
                             )
                         }
                     }
 
-                    // Previous -> Soft Arch / Shield geometric container
-                    val prevShape = remember { com.example.ui.components.morphPolygonShape(7) }
-                    Box(
+                    // Previous -> Continuously morphing geometric container with crisp tonal rim
+                    val prevShape = com.example.ui.components.rememberContinuousMorphShape(
+                        startIndex = 7,
+                        cycleDurationMs = 10400,
+                        rotate = false
+                    )
+                    Surface(
+                        shape = prevShape,
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.80f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f)),
                         modifier = Modifier
                             .size(56.dp)
-                            .clip(prevShape)
-                            .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.72f))
                             .fluidPress(
                                 scaleDown = 0.90f,
                                 hapticType = HapticType.LIGHT,
                                 onClick = onSkipPrevious
-                            ),
-                        contentAlignment = Alignment.Center
+                            )
                     ) {
-                        Icon(
-                            imageVector = AppIcons.Previous,
-                            contentDescription = "Предыдущий",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(30.dp)
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = AppIcons.Previous,
+                                contentDescription = "Предыдущий",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
                     }
 
                     MorphingPlayPauseButton(
                         isPlaying = playbackState.isPlaying,
                         isBuffering = playbackState.isBuffering,
                         onClick = onPlayPause,
-                        width = 88.dp,
-                        height = 64.dp,
+                        width = 90.dp,
+                        height = 66.dp,
                         iconSize = 32.dp,
-                        cornerRadius = 20.dp,
+                        cornerRadius = 22.dp,
                         modifier = Modifier.testTag("now_playing_play_pause")
                     )
 
-                    // Next -> 8-Wave Cookie geometric container
-                    val nextShape = remember { com.example.ui.components.morphPolygonShape(3) }
-                    Box(
+                    // Next -> Continuously morphing geometric container with crisp tonal rim
+                    val nextShape = com.example.ui.components.rememberContinuousMorphShape(
+                        startIndex = 3,
+                        cycleDurationMs = 10400,
+                        rotate = false
+                    )
+                    Surface(
+                        shape = nextShape,
+                        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.80f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f)),
                         modifier = Modifier
                             .size(56.dp)
-                            .clip(nextShape)
-                            .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.72f))
                             .fluidPress(
                                 scaleDown = 0.90f,
                                 hapticType = HapticType.LIGHT,
                                 onClick = onSkipNext
-                            ),
-                        contentAlignment = Alignment.Center
+                            )
                     ) {
-                        Icon(
-                            imageVector = AppIcons.Next,
-                            contentDescription = "Следующий",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(30.dp)
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = AppIcons.Next,
+                                contentDescription = "Следующий",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
                     }
 
-                    // Repeat -> 6-Lobe Clover badge when active
-                    val repeatShape = remember { com.example.ui.components.morphPolygonShape(2) }
+                    // Repeat -> Continuously morphing Clover badge with tonal border
+                    val repeatShape = com.example.ui.components.rememberContinuousMorphShape(
+                        startIndex = 2,
+                        cycleDurationMs = 9600,
+                        rotate = playbackState.repeatMode != RepeatMode.OFF
+                    )
                     Surface(
                         onClick = {
                             performHapticFeedback(view, HapticType.LIGHT)
@@ -709,8 +737,16 @@ fun NowPlayingScreen(
                         color = if (playbackState.repeatMode != RepeatMode.OFF) {
                             MaterialTheme.colorScheme.secondaryContainer
                         } else {
-                            Color.Transparent
+                            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f)
                         },
+                        border = BorderStroke(
+                            1.dp,
+                            if (playbackState.repeatMode != RepeatMode.OFF) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)
+                            }
+                        ),
                         modifier = Modifier
                             .size(48.dp)
                             .testTag("now_playing_repeat")
@@ -721,7 +757,7 @@ fun NowPlayingScreen(
                                 else -> AppIcons.Repeat
                             }
                             val repeatTint = when (playbackState.repeatMode) {
-                                RepeatMode.OFF -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                                RepeatMode.OFF -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.70f)
                                 else -> MaterialTheme.colorScheme.onSecondaryContainer
                             }
                             Icon(
@@ -771,26 +807,33 @@ fun NowPlayingScreen(
                     ),
                     style = FloatingToolbarStyle.STANDARD,
                     trailingFab = {
-                        val lyricsShape = remember { com.example.ui.components.morphPolygonShape(5) }
-                        FloatingActionButton(
+                        val lyricsShape = com.example.ui.components.rememberContinuousMorphShape(
+                            startIndex = 5,
+                            cycleDurationMs = 8800,
+                            rotate = true
+                        )
+                        Surface(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
                                 onOpenLyrics()
                             },
                             shape = lyricsShape,
-                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            color = MaterialTheme.colorScheme.primaryContainer,
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            elevation = FloatingActionButtonDefaults.elevation(
-                                defaultElevation = if (profile.isPotato) 1.dp else 6.dp
-                            ),
+                            tonalElevation = if (profile.isPotato) 1.dp else 6.dp,
+                            shadowElevation = if (profile.isPotato) 1.dp else 8.dp,
+                            border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
                             modifier = Modifier
-                                .size(56.dp)
+                                .size(58.dp)
                                 .testTag("now_playing_lyrics_fab")
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Lyrics,
-                                contentDescription = "Текст песни"
-                            )
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Lyrics,
+                                    contentDescription = "Текст песни",
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
                         }
                     },
                     modifier = Modifier.padding(horizontal = 16.dp)

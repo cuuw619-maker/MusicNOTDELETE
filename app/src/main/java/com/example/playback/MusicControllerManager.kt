@@ -22,6 +22,8 @@ import com.example.model.Song
 import com.example.plugin.PluginManager
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,8 +35,52 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.pow
-import kotlin.random.Random
+
+internal object PlaybackTransitionPolicy {
+    fun effectiveTransitionDurationMs(playerDurationMs: Long): Long =
+        if (playerDurationMs > 0L && playerDurationMs != C.TIME_UNSET) playerDurationMs else 0L
+
+    fun shouldAttemptEarlyEofRecovery(
+        isOnline: Boolean,
+        playerDurationMs: Long,
+        positionMs: Long,
+        earlyEofCount: Int
+    ): Boolean =
+        isOnline &&
+            playerDurationMs > 75_000L &&
+            positionMs in 12_000L..(playerDurationMs - 25_000L) &&
+            earlyEofCount < 1
+
+    fun shouldAdvanceQueueAfterFailure(
+        repeatMode: Int,
+        hasNextMediaItem: Boolean,
+        queueSize: Int
+    ): Boolean =
+        queueSize > 1 &&
+            repeatMode != Player.REPEAT_MODE_ONE &&
+            (hasNextMediaItem || repeatMode == Player.REPEAT_MODE_ALL)
+
+    fun computePreresolveIndices(
+        currentIndex: Int,
+        nextMediaItemIndex: Int,
+        queueSize: Int
+    ): List<Int> {
+        if (queueSize <= 0) return emptyList()
+        val ordered = LinkedHashSet<Int>(3)
+        if (nextMediaItemIndex in 0 until queueSize && nextMediaItemIndex != currentIndex) {
+            ordered.add(nextMediaItemIndex)
+        }
+        for (offset in 1..2) {
+            val candidate = currentIndex + offset
+            if (candidate in 0 until queueSize && candidate != currentIndex) {
+                ordered.add(candidate)
+            }
+        }
+        return ordered.toList()
+    }
+}
 
 class MusicControllerManager(
     private val context: Context,
@@ -42,7 +88,10 @@ class MusicControllerManager(
     val equalizerManager: EqualizerManager,
     private val onSongPlayed: (Long) -> Unit
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e("MusicControllerManager", "Unhandled coroutine exception", throwable)
+    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + exceptionHandler)
     private var controllerFuture: ListenableFuture<MediaController>? = null
     var mediaController: MediaController? = null
         private set
@@ -71,6 +120,7 @@ class MusicControllerManager(
         _diagnosticReport.value = null
     }
 
+    private val queueLock = Any()
     private var originalQueue = mutableListOf<Song>()
     private var currentQueueSongs = mutableListOf<Song>()
     private var positionUpdateJob: Job? = null
@@ -78,7 +128,13 @@ class MusicControllerManager(
     private var isCrossfading = false
     @Volatile
     private var isResolvingOnline = false
-    private val onlineSourceBySongId = java.util.concurrent.ConcurrentHashMap<Long, String>()
+    @Volatile
+    private var resolvingKey: Pair<Int, Long>? = null
+    private var lastActiveSongId: Long? = null
+    private val onlineSourceBySongId = ConcurrentHashMap<Long, String>()
+    private val onlineRetryCounts = ConcurrentHashMap<Long, Int>()
+    private val earlyEofRecoveryCounts = ConcurrentHashMap<Long, Int>()
+    private val failedVideoIdsBySongId = ConcurrentHashMap<Long, MutableSet<String>>()
     private var pendingRestore: Triple<Song, List<Song>, Long>? = null
     var playbackService: MusicPlaybackService? = null
         private set
@@ -144,20 +200,22 @@ class MusicControllerManager(
                 if (state == Player.STATE_ENDED) {
                     val cur = _playbackState.value.currentSong
                     val pos = controller.currentPosition.coerceAtLeast(0L)
-                    val knownDur = cur?.durationMs ?: 0L
+                    // Use ONLY true ExoPlayer stream duration so truncated search metadata never triggers false early-EOF recovery
+                    val actualDur = PlaybackTransitionPolicy.effectiveTransitionDurationMs(controller.duration)
                     val isOnline = cur != null && (
                         cur.contentUriString.startsWith("http") ||
                             cur.id < 0L ||
                             onlineSourceBySongId.containsKey(cur.id)
                         )
-                    // Anti-30s YouTube cutoff detection: recover cleanly if stream drops prematurely mid-song
-                    if (cur != null && isOnline && knownDur > 75_000L && pos in 12_000L..(knownDur - 25_000L) && (onlineRetryCounts[cur.id] ?: 0) < 2) {
+                    val eofCount = if (cur != null) (earlyEofRecoveryCounts[cur.id] ?: 0) else 0
+                    if (cur != null && PlaybackTransitionPolicy.shouldAttemptEarlyEofRecovery(isOnline, actualDur, pos, eofCount)) {
+                        earlyEofRecoveryCounts[cur.id] = eofCount + 1
                         val idx = controller.currentMediaItemIndex
                         recoverOnlineStreamError(
                             index = idx,
                             song = cur,
-                            lastErrorCode = "EARLY_EOF_30S",
-                            lastErrorSummary = "Поток прервался на ${pos / 1000}с — переключение клиента InnerTubeX",
+                            lastErrorCode = "EARLY_EOF",
+                            lastErrorSummary = "Поток прервался на ${pos / 1000}с — переключение на зеркало",
                             resumeAtMs = pos
                         )
                         return
@@ -167,15 +225,25 @@ class MusicControllerManager(
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                getService()?.cancelCrossfade()
+                isCrossfading = false
+                controller.volume = preferencesManager.playerVolume.value
                 updatePlaybackState()
                 val currentSong = _playbackState.value.currentSong
                 if (currentSong != null) {
+                    if (lastActiveSongId != currentSong.id) {
+                        lastActiveSongId = currentSong.id
+                        _abPointA.value = null
+                        _abPointB.value = null
+                    }
                     onSongPlayed(currentSong.id)
                     preferencesManager.setLastPlayedSong(currentSong.id, 0L)
                     pluginManager?.dispatchTrackChanged(currentSong)
                     val idx = controller.currentMediaItemIndex
                     if (currentSong.contentUriString.startsWith("online://")) {
-                        resolveAndPlayIndex(idx, currentSong)
+                        if (!(isResolvingOnline && resolvingKey == (idx to currentSong.id))) {
+                            resolveAndPlayIndex(idx, currentSong)
+                        }
                     } else {
                         if (!onlineSourceBySongId.containsKey(currentSong.id) && !currentSong.contentUriString.startsWith("http")) {
                             _activeStreamEngine.value = "local"
@@ -187,6 +255,10 @@ class MusicControllerManager(
 
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
                 updatePlaybackState()
+                val curIdx = controller.currentMediaItemIndex
+                if (curIdx in 0 until controller.mediaItemCount) {
+                    preresolveUpcomingQueue(curIdx)
+                }
             }
 
             override fun onRepeatModeChanged(repeatMode: Int) {
@@ -195,6 +267,11 @@ class MusicControllerManager(
 
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("MusicControllerManager", "Player error: ${error.errorCodeName} ${error.message}", error)
+                val cur = _playbackState.value.currentSong
+                // Suppress placeholder online:// player errors while online URL resolution is already running
+                if (isResolvingOnline && cur?.contentUriString?.startsWith("online://") == true) {
+                    return
+                }
                 val (codeLabel, reasonText) = extractPlayerErrorDetails(error)
                 com.example.online.SourceDiagnosticsLog.record(
                     com.example.online.SourceAttemptLog(
@@ -206,7 +283,6 @@ class MusicControllerManager(
                         detail = "$codeLabel: $reasonText"
                     )
                 )
-                val cur = _playbackState.value.currentSong
                 val idx = controller.currentMediaItemIndex
                 if (cur != null && (cur.contentUriString.startsWith("online://") || cur.id < 0L || onlineSourceBySongId.containsKey(cur.id))) {
                     recoverOnlineStreamError(idx, cur, lastErrorCode = codeLabel, lastErrorSummary = reasonText)
@@ -284,10 +360,11 @@ class MusicControllerManager(
 
     private fun updatePlaybackState() {
         val controller = mediaController ?: return
+        val queueSnapshot = synchronized(queueLock) { currentQueueSongs.toList() }
         val currentMediaItem = controller.currentMediaItem
         val currentSong = currentMediaItem?.let { item ->
             val id = item.mediaId.toLongOrNull() ?: -1L
-            currentQueueSongs.find { it.id == id } ?: songFromMediaItem(item)
+            queueSnapshot.find { it.id == id } ?: songFromMediaItem(item)
         } ?: _playbackState.value.currentSong
 
         val repeat = when (controller.repeatMode) {
@@ -316,12 +393,31 @@ class MusicControllerManager(
             bufferedPositionMs = controller.bufferedPosition,
             shuffleModeEnabled = controller.shuffleModeEnabled,
             repeatMode = repeat,
-            queue = currentQueueSongs.toList(),
+            queue = queueSnapshot,
             currentQueueIndex = controller.currentMediaItemIndex,
             errorMessage = keepError
         )
         _playbackState.value = newState
         pluginManager?.dispatchPlaybackStateChanged(newState)
+    }
+
+    private fun safeReplaceMediaItem(controller: MediaController, index: Int, item: MediaItem): Boolean {
+        if (index !in 0 until controller.mediaItemCount) return false
+        return runCatching {
+            controller.replaceMediaItem(index, item)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun safeSeekAndPlay(controller: MediaController, index: Int, posMs: Long = 0L): Boolean {
+        if (index !in 0 until controller.mediaItemCount) return false
+        return runCatching {
+            controller.seekTo(index, posMs.coerceAtLeast(0L))
+            controller.prepare()
+            controller.volume = preferencesManager.playerVolume.value
+            controller.play()
+            true
+        }.getOrDefault(false)
     }
 
     fun clearError() {
@@ -345,6 +441,7 @@ class MusicControllerManager(
     }
 
     fun switchDeliveryEngineForCurrent(preferredEngine: String) {
+        preferencesManager.setPreferredDeliveryEngine(preferredEngine)
         val controller = mediaController ?: return
         val current = _playbackState.value.currentSong ?: return
         val sourceUri = onlineSourceBySongId[current.id] ?: current.contentUriString
@@ -374,7 +471,8 @@ class MusicControllerManager(
                     streamManager.resolveStreamResult(
                         videoId = path,
                         excludedEngines = emptySet(),
-                        preferredEngine = preferredEngine
+                        preferredEngine = preferredEngine,
+                        expectedDurationMs = current.durationMs
                     )
                 } else {
                     val matched = streamManager.resolveTrackStreamForMetadata(
@@ -394,16 +492,22 @@ class MusicControllerManager(
                 }
 
                 isResolvingOnline = false
-                if (resolvedResult != null && idx in currentQueueSongs.indices) {
+                val updatedQueueSnapshot = synchronized(queueLock) {
+                    if (resolvedResult != null && idx in currentQueueSongs.indices) {
+                        val updated = current.copy(contentUriString = resolvedResult.url)
+                        currentQueueSongs[idx] = updated
+                        val oIdx = originalQueue.indexOfFirst { it.id == current.id }
+                        if (oIdx in originalQueue.indices) originalQueue[oIdx] = updated
+                        updated
+                    } else {
+                        null
+                    }
+                }
+                if (resolvedResult != null && updatedQueueSnapshot != null) {
                     _activeStreamEngine.value = resolvedResult.engine
-                    val updated = current.copy(contentUriString = resolvedResult.url)
-                    currentQueueSongs[idx] = updated
-                    val oIdx = originalQueue.indexOfFirst { it.id == current.id }
-                    if (oIdx in originalQueue.indices) originalQueue[oIdx] = updated
-                    controller.replaceMediaItem(idx, songToMediaItem(updated))
-                    controller.seekTo(idx, resumePos)
-                    controller.prepare()
-                    controller.play()
+                    if (safeReplaceMediaItem(controller, idx, songToMediaItem(updatedQueueSnapshot))) {
+                        safeSeekAndPlay(controller, idx, resumePos)
+                    }
                     updatePlaybackState()
                 } else {
                     _playbackState.value = _playbackState.value.copy(
@@ -411,10 +515,10 @@ class MusicControllerManager(
                         errorMessage = "Движок ${com.example.online.YouTubeStreamManager.formatEngineDisplay(preferredEngine)} не ответил для этого трека"
                     )
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
+            } catch (e: CancellationException) {
                 isResolvingOnline = false
                 throw e
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 isResolvingOnline = false
                 _playbackState.value = _playbackState.value.copy(
                     isBuffering = false,
@@ -429,7 +533,9 @@ class MusicControllerManager(
         val newSong = track.toSong()
         onlineSourceBySongId[newSong.id] = track.buildOnlineUri()
         val controller = mediaController
-        val activeIdx = controller?.currentMediaItemIndex?.takeIf { it in currentQueueSongs.indices } ?: -1
+        val activeIdx = synchronized(queueLock) {
+            controller?.currentMediaItemIndex?.takeIf { it in currentQueueSongs.indices } ?: -1
+        }
 
         if (controller != null && activeIdx >= 0) {
             getService()?.cancelCrossfade()
@@ -437,18 +543,25 @@ class MusicControllerManager(
             preResolveJob?.cancel()
             isCrossfading = false
             onlineRetryCounts[newSong.id] = 0
+            earlyEofRecoveryCounts[newSong.id] = 0
+            _abPointA.value = null
+            _abPointB.value = null
 
-            val oldSong = currentQueueSongs[activeIdx]
-            currentQueueSongs[activeIdx] = newSong
-            val origIdx = originalQueue.indexOfFirst { it.id == oldSong.id }
-            if (origIdx in originalQueue.indices) originalQueue[origIdx] = newSong
+            val snapshot = synchronized(queueLock) {
+                if (activeIdx in currentQueueSongs.indices) {
+                    val oldSong = currentQueueSongs[activeIdx]
+                    currentQueueSongs[activeIdx] = newSong
+                    val origIdx = originalQueue.indexOfFirst { it.id == oldSong.id }
+                    if (origIdx in originalQueue.indices) originalQueue[origIdx] = newSong
+                }
+                currentQueueSongs.toList()
+            }
 
             if (newSong.contentUriString.startsWith("http")) {
                 _activeStreamEngine.value = track.sourceEngine
-                controller.replaceMediaItem(activeIdx, songToMediaItem(newSong))
-                controller.seekTo(activeIdx, 0L)
-                controller.prepare()
-                controller.play()
+                if (safeReplaceMediaItem(controller, activeIdx, songToMediaItem(newSong))) {
+                    safeSeekAndPlay(controller, activeIdx, 0L)
+                }
                 updatePlaybackState()
             } else {
                 _playbackState.value = _playbackState.value.copy(
@@ -456,7 +569,7 @@ class MusicControllerManager(
                     isBuffering = true,
                     currentPositionMs = 0L,
                     durationMs = newSong.durationMs,
-                    queue = currentQueueSongs.toList(),
+                    queue = snapshot,
                     currentQueueIndex = activeIdx,
                     errorMessage = null
                 )
@@ -472,80 +585,90 @@ class MusicControllerManager(
         positionUpdateJob = scope.launch {
             var tickCount = 0
             while (isActive) {
-                val controller = mediaController
-                if (controller != null && controller.isPlaying) {
-                    val pos = controller.currentPosition.coerceAtLeast(0L)
-                    _playbackPositionMs.value = pos
+                try {
+                    val controller = mediaController
+                    if (controller != null && controller.isPlaying) {
+                        val pos = controller.currentPosition.coerceAtLeast(0L)
+                        _playbackPositionMs.value = pos
 
-                    // Throttle full PlaybackState emission (~160ms) to cut unnecessary UI recompositions
-                    if (tickCount % 4 == 0) {
-                        val dur = if (controller.duration > 0) controller.duration else (_playbackState.value.currentSong?.durationMs ?: 0L)
-                        _playbackState.value = _playbackState.value.copy(
-                            currentPositionMs = pos,
-                            durationMs = dur,
-                            bufferedPositionMs = controller.bufferedPosition
-                        )
-                    }
-                    tickCount++
+                        // Genuine stream duration from ExoPlayer (never metadata fallback for cutoffs/crossfade)
+                        val actualDur = PlaybackTransitionPolicy.effectiveTransitionDurationMs(controller.duration)
+                        val uiDur = if (actualDur > 0L) actualDur else (_playbackState.value.currentSong?.durationMs ?: 0L)
 
-                    val dur = if (controller.duration > 0) controller.duration else (_playbackState.value.currentSong?.durationMs ?: 0L)
+                        // Throttle full PlaybackState emission (~160ms) to cut unnecessary UI recompositions
+                        if (tickCount % 4 == 0) {
+                            _playbackState.value = _playbackState.value.copy(
+                                currentPositionMs = pos,
+                                durationMs = uiDur,
+                                bufferedPositionMs = controller.bufferedPosition
+                            )
+                        }
+                        tickCount++
 
-                    // A-B Repeat Loop Check
-                    val pA = _abPointA.value
-                    val pB = _abPointB.value
-                    if (pA != null && pB != null && pB > pA && pos >= pB) {
-                        controller.seekTo(pA)
-                    }
+                        // A-B Repeat Loop Check
+                        val pA = _abPointA.value
+                        val pB = _abPointB.value
+                        if (pA != null && pB != null && pB > pA && pos >= pB) {
+                            controller.seekTo(pA)
+                        }
 
-                    // Auto-crossfade nearing track end
-                    val crossfadeEnabled = preferencesManager.crossfadeEnabled.value
-                    val crossfadeDurationSec = preferencesManager.crossfadeDuration.value
-                    val crossfadeMs = (crossfadeDurationSec * 1000).toLong()
+                        // Auto-crossfade nearing track end (strictly on confirmed actualDur, and never onto unresolved online:// items)
+                        val crossfadeEnabled = preferencesManager.crossfadeEnabled.value
+                        val crossfadeDurationSec = preferencesManager.crossfadeDuration.value
+                        val crossfadeMs = (crossfadeDurationSec * 1000).toLong()
+                        val repeatOne = controller.repeatMode == Player.REPEAT_MODE_ONE
 
-                    if (crossfadeEnabled && crossfadeMs > 0 && dur > crossfadeMs * 2) {
-                        val remaining = dur - pos
-                        if (remaining in 1..(crossfadeMs + 100L) && !isCrossfading) {
-                            val nextIndex = controller.nextMediaItemIndex
-                            val targetIdx = if (nextIndex != C.INDEX_UNSET) {
-                                nextIndex
-                            } else if (controller.repeatMode == Player.REPEAT_MODE_ALL && controller.mediaItemCount > 0) {
-                                0
-                            } else {
-                                C.INDEX_UNSET
-                            }
-
-                            if (targetIdx != C.INDEX_UNSET) {
-                                isCrossfading = true
-                                val service = getService()
-                                if (service != null) {
-                                    service.crossfadeTo(targetIdx, crossfadeMs)
+                        if (!repeatOne && crossfadeEnabled && crossfadeMs > 0L && actualDur > crossfadeMs * 2) {
+                            val remaining = actualDur - pos
+                            if (remaining in 1..(crossfadeMs + 100L) && !isCrossfading) {
+                                val nextIndex = controller.nextMediaItemIndex
+                                val targetIdx = if (nextIndex != C.INDEX_UNSET) {
+                                    nextIndex
+                                } else if (controller.repeatMode == Player.REPEAT_MODE_ALL && controller.mediaItemCount > 1) {
+                                    0
                                 } else {
-                                    performCrossfadeNext(crossfadeMs)
+                                    C.INDEX_UNSET
                                 }
-                                scope.launch {
-                                    delay(crossfadeMs + 200L)
-                                    isCrossfading = false
+                                val targetSong = synchronized(queueLock) { currentQueueSongs.getOrNull(targetIdx) }
+                                val targetReady = targetIdx != C.INDEX_UNSET &&
+                                    targetIdx != controller.currentMediaItemIndex &&
+                                    targetSong?.contentUriString?.startsWith("online://") != true
+
+                                if (targetReady) {
+                                    isCrossfading = true
+                                    val service = getService()
+                                    if (service != null) {
+                                        service.crossfadeTo(targetIdx, crossfadeMs)
+                                    } else {
+                                        performCrossfadeNext(crossfadeMs)
+                                    }
+                                    scope.launch {
+                                        delay(crossfadeMs + 250L)
+                                        isCrossfading = false
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // Track End Fade Out Check (smooth fade to silence at track completion)
-                    val trackEndFadeEnabled = preferencesManager.trackEndFadeOutEnabled.value
-                    val trackEndFadeDurationSec = preferencesManager.trackEndFadeOutDuration.value
-                    val trackEndFadeMs = (trackEndFadeDurationSec * 1000).toLong()
-                    if (trackEndFadeEnabled && !isCrossfading && dur > trackEndFadeMs * 2) {
-                        val remaining = dur - pos
-                        val nextIdx = controller.nextMediaItemIndex
-                        val isLastTrack = nextIdx == C.INDEX_UNSET && controller.repeatMode != Player.REPEAT_MODE_ALL
-                        if (isLastTrack || !crossfadeEnabled) {
-                            if (remaining in 1..trackEndFadeMs) {
+                        // Track End Fade Out Check (strictly using true ExoPlayer duration so under-reported metadata never silences songs mid-way)
+                        val trackEndFadeEnabled = preferencesManager.trackEndFadeOutEnabled.value
+                        val trackEndFadeDurationSec = preferencesManager.trackEndFadeOutDuration.value
+                        val trackEndFadeMs = (trackEndFadeDurationSec * 1000).toLong()
+                        if (!repeatOne && trackEndFadeEnabled && !isCrossfading && actualDur > trackEndFadeMs * 2) {
+                            val remaining = actualDur - pos
+                            val nextIdx = controller.nextMediaItemIndex
+                            val isLastTrack = nextIdx == C.INDEX_UNSET && controller.repeatMode != Player.REPEAT_MODE_ALL
+                            if ((isLastTrack || !crossfadeEnabled) && remaining in 1..trackEndFadeMs) {
                                 val fraction = (remaining.toFloat() / trackEndFadeMs.toFloat()).coerceIn(0f, 1f)
                                 val baseVol = preferencesManager.playerVolume.value
                                 controller.volume = fraction * baseVol
                             }
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    Log.w("MusicControllerManager", "Position update tick error", t)
                 }
                 delay(40)
             }
@@ -604,26 +727,29 @@ class MusicControllerManager(
             return
         }
         if (controller.currentMediaItem != null) return
-        originalQueue = queue.toMutableList()
-        currentQueueSongs.clear()
-        currentQueueSongs.addAll(queue)
+        val restoredQueue = synchronized(queueLock) {
+            originalQueue = queue.toMutableList()
+            currentQueueSongs.clear()
+            currentQueueSongs.addAll(queue)
+            currentQueueSongs.toList()
+        }
 
-        val mediaItems = queue.map { songToMediaItem(it) }
+        val mediaItems = restoredQueue.map { songToMediaItem(it) }
 
         controller.setMediaItems(mediaItems, startIndex, positionMs.coerceAtLeast(0L))
         controller.prepare()
-        pluginManager?.dispatchQueueChanged(currentQueueSongs)
+        pluginManager?.dispatchQueueChanged(restoredQueue)
     }
 
     private var resolveJob: Job? = null
     private var preResolveJob: Job? = null
-    private val onlineRetryCounts = mutableMapOf<Long, Int>()
-    private val failedVideoIdsBySongId = mutableMapOf<Long, MutableSet<String>>()
 
     suspend fun resolveOnlineUriIfNeeded(
         song: Song,
         preferredEngine: String? = null
     ): Song = withContext(Dispatchers.IO) {
+        val effectiveEngine = preferredEngine?.takeIf { it.isNotBlank() }
+            ?: preferencesManager.preferredDeliveryEngine.value
         if (!song.contentUriString.startsWith("online://")) {
             if (!song.contentUriString.startsWith("http")) {
                 _activeStreamEngine.value = "local"
@@ -632,7 +758,7 @@ class MusicControllerManager(
         }
         onlineSourceBySongId[song.id] = song.contentUriString
 
-        val resolved = kotlinx.coroutines.withTimeoutOrNull(14_500L) {
+        val resolved = kotlinx.coroutines.withTimeoutOrNull(24_000L) {
             val uri = Uri.parse(song.contentUriString)
             val host = uri.host // "youtube", "audius", "saavn", "archive", "deezer", "spotify"
             val path = uri.path?.removePrefix("/") ?: ""
@@ -641,7 +767,7 @@ class MusicControllerManager(
             val metaDur = uri.getQueryParameter("dur")?.toLongOrNull() ?: song.durationMs
             val embeddedStream = uri.getQueryParameter("stream")?.takeIf { it.startsWith("http") }
 
-            if (embeddedStream != null && preferredEngine.isNullOrBlank()) {
+            if (embeddedStream != null && (host != "youtube" || effectiveEngine == "auto")) {
                 _activeStreamEngine.value = host ?: "online"
                 return@withTimeoutOrNull song.copy(contentUriString = embeddedStream)
             }
@@ -713,7 +839,8 @@ class MusicControllerManager(
                 val resolvedResult = streamManager.resolveStreamResult(
                     videoId = path,
                     excludedEngines = emptySet(),
-                    preferredEngine = preferredEngine
+                    preferredEngine = effectiveEngine,
+                    expectedDurationMs = metaDur
                 )
                 if (resolvedResult != null) {
                     _activeStreamEngine.value = resolvedResult.engine
@@ -726,7 +853,7 @@ class MusicControllerManager(
                 targetTitle = metaTitle,
                 targetArtist = metaArtist,
                 expectedDurationMs = metaDur,
-                preferredEngine = preferredEngine,
+                preferredEngine = effectiveEngine,
                 allowPreviewFallback = false,
                 excludedVideoIds = excludedIds
             )
@@ -754,13 +881,16 @@ class MusicControllerManager(
             cause = cause.cause
         }
         val codeLabel = if (httpCode != null) "HTTP $httpCode" else error.errorCodeName
-        val detail = when (httpCode) {
-            403 -> "Сервер отклонил доступ (403 Forbidden / подпись ссылки устарела)"
-            404 -> "Аудиофайл не найден на сервере (404 Not Found)"
-            410 -> "Срок действия ссылки на поток истёк (410 Gone)"
-            429 -> "Слишком много запросов к источнику (429 Too Many Requests)"
-            500, 502, 503 -> "Удалённый сервер источника перегружен (HTTP $httpCode)"
-            else -> error.cause?.localizedMessage ?: error.localizedMessage ?: "Сбой сетевого потока"
+        val rawMsg = error.cause?.localizedMessage ?: error.localizedMessage ?: ""
+        val isBlock = com.example.online.YouTubeStreamManager.isDeprecationOrAppBlockMessage(rawMsg)
+        val detail = when {
+            isBlock -> "Клиент YouTube отклонил воспроизведение на этом устройстве — выберите другой движок или источник"
+            httpCode == 403 -> "Сервер отклонил доступ (403 Forbidden / подпись ссылки устарела)"
+            httpCode == 404 -> "Аудиофайл не найден на сервере (404 Not Found)"
+            httpCode == 410 -> "Срок действия ссылки на поток истёк (410 Gone)"
+            httpCode == 429 -> "Слишком много запросов к источнику (429 Too Many Requests)"
+            httpCode in listOf(500, 502, 503) -> "Удалённый сервер источника перегружен (HTTP $httpCode)"
+            else -> rawMsg.ifBlank { "Сбой сетевого потока" }
         }
         return codeLabel to detail
     }
@@ -787,49 +917,68 @@ class MusicControllerManager(
         )
     }
 
-    private fun resolveAndPlayIndex(index: Int, song: Song) {
+    private fun resolveAndPlayIndex(index: Int, song: Song, resetRetryCount: Boolean = true) {
         val controller = mediaController ?: return
         resolveJob?.cancel()
         isResolvingOnline = true
+        resolvingKey = index to song.id
         _playbackState.value = _playbackState.value.copy(isBuffering = true, errorMessage = null)
+        val diagEpoch = com.example.online.SourceDiagnosticsLog.latestSeqId()
         resolveJob = scope.launch {
             try {
                 val resolvedSong = resolveOnlineUriIfNeeded(song)
                 if (resolvedSong.contentUriString.startsWith("online://")) {
                     isResolvingOnline = false
-                    val recentLogs = com.example.online.SourceDiagnosticsLog.recent(10)
-                    val lastCode = recentLogs.firstOrNull { it.httpCode != null }?.httpCode?.let { "HTTP $it" }
-                        ?: "NO_WORKING_STREAM"
+                    resolvingKey = null
+                    val recentSince = com.example.online.SourceDiagnosticsLog.recentSince(diagEpoch)
+                    val lastCode = com.example.online.SourceDiagnosticsLog.resolveDiagnosticErrorCode(recentSince)
                     val summary = "Все зеркала не выдали рабочий поток для «${song.title}». Подберите альтернативу ниже."
-                    _playbackState.value = _playbackState.value.copy(
-                        isPlaying = false,
-                        isBuffering = false,
-                        errorMessage = "$summary ($lastCode)"
-                    )
-                    publishDiagnosticFailure(song, lastCode, summary)
+                    val queueSize = synchronized(queueLock) { currentQueueSongs.size }
+                    if (PlaybackTransitionPolicy.shouldAdvanceQueueAfterFailure(
+                            controller.repeatMode,
+                            controller.hasNextMediaItem(),
+                            queueSize
+                        ) && !resetRetryCount
+                    ) {
+                        advancePastBrokenTrack(controller, song, lastCode, summary)
+                    } else {
+                        _playbackState.value = _playbackState.value.copy(
+                            isPlaying = false,
+                            isBuffering = false,
+                            errorMessage = "$summary ($lastCode)"
+                        )
+                        publishDiagnosticFailure(song, lastCode, summary)
+                    }
                     return@launch
                 }
-                onlineRetryCounts[song.id] = 0
+                if (resetRetryCount) {
+                    onlineRetryCounts[song.id] = 0
+                }
                 isResolvingOnline = false
-                if (index in currentQueueSongs.indices && currentQueueSongs[index].id == song.id) {
-                    currentQueueSongs[index] = resolvedSong
-                    val oIdx = originalQueue.indexOfFirst { it.id == song.id }
-                    if (oIdx in originalQueue.indices) originalQueue[oIdx] = resolvedSong
-
-                    val mediaItem = songToMediaItem(resolvedSong)
-                    controller.replaceMediaItem(index, mediaItem)
-                    controller.seekTo(index, 0L)
-                    controller.prepare()
-                    controller.play()
+                resolvingKey = null
+                val updatedMatch = synchronized(queueLock) {
+                    if (index in currentQueueSongs.indices && currentQueueSongs[index].id == song.id) {
+                        currentQueueSongs[index] = resolvedSong
+                        val oIdx = originalQueue.indexOfFirst { it.id == song.id }
+                        if (oIdx in originalQueue.indices) originalQueue[oIdx] = resolvedSong
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (updatedMatch && safeReplaceMediaItem(controller, index, songToMediaItem(resolvedSong))) {
+                    safeSeekAndPlay(controller, index, 0L)
                     updatePlaybackState()
                     preresolveUpcomingQueue(index)
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
+            } catch (e: CancellationException) {
                 isResolvingOnline = false
+                resolvingKey = null
                 throw e
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
                 isResolvingOnline = false
-                val msg = e.localizedMessage ?: "Сетевая ошибка"
+                resolvingKey = null
+                val msg = t.localizedMessage ?: "Сетевая ошибка"
                 _playbackState.value = _playbackState.value.copy(
                     isPlaying = false,
                     isBuffering = false,
@@ -837,6 +986,41 @@ class MusicControllerManager(
                 )
                 publishDiagnosticFailure(song, "STREAM_EXCEPTION", msg)
             }
+        }
+    }
+
+    private fun advancePastBrokenTrack(
+        controller: MediaController,
+        failedSong: Song,
+        errorCode: String,
+        summary: String
+    ) {
+        val nextIndex = controller.nextMediaItemIndex
+        val targetIdx = if (nextIndex != C.INDEX_UNSET) {
+            nextIndex
+        } else if (controller.repeatMode == Player.REPEAT_MODE_ALL && controller.mediaItemCount > 1) {
+            0
+        } else {
+            C.INDEX_UNSET
+        }
+        if (targetIdx != C.INDEX_UNSET && targetIdx != controller.currentMediaItemIndex) {
+            Log.w("MusicControllerManager", "Advancing past broken track '${failedSong.title}' ($errorCode) to index=$targetIdx")
+            _playbackState.value = _playbackState.value.copy(
+                isBuffering = true,
+                errorMessage = "Пропущен недоступный трек «${failedSong.title}» ($errorCode)"
+            )
+            if (safeSeekAndPlay(controller, targetIdx, 0L)) {
+                updatePlaybackState()
+                return
+            }
+        }
+        _playbackState.value = _playbackState.value.copy(
+            isPlaying = false,
+            isBuffering = false,
+            errorMessage = "Ошибка ($errorCode): $summary"
+        )
+        scope.launch {
+            publishDiagnosticFailure(failedSong, errorCode, summary)
         }
     }
 
@@ -853,6 +1037,17 @@ class MusicControllerManager(
             onlineRetryCounts[song.id] = 0
             failedVideoIdsBySongId.remove(song.id)
             isResolvingOnline = false
+            resolvingKey = null
+            val queueSize = synchronized(queueLock) { currentQueueSongs.size }
+            if (PlaybackTransitionPolicy.shouldAdvanceQueueAfterFailure(
+                    controller.repeatMode,
+                    controller.hasNextMediaItem(),
+                    queueSize
+                )
+            ) {
+                advancePastBrokenTrack(controller, song, lastErrorCode, lastErrorSummary)
+                return
+            }
             _playbackState.value = _playbackState.value.copy(
                 isPlaying = false,
                 isBuffering = false,
@@ -866,11 +1061,12 @@ class MusicControllerManager(
         onlineRetryCounts[song.id] = attempts + 1
         resolveJob?.cancel()
         isResolvingOnline = true
+        resolvingKey = index to song.id
         _playbackState.value = _playbackState.value.copy(isBuffering = true, errorMessage = null)
         resolveJob = scope.launch {
             try {
                 if (song.contentUriString.startsWith("online://")) {
-                    resolveAndPlayIndex(index, song)
+                    resolveAndPlayIndex(index, song, resetRetryCount = false)
                     return@launch
                 }
                 val originalOnlineUri = onlineSourceBySongId[song.id]
@@ -878,7 +1074,9 @@ class MusicControllerManager(
                     val u = Uri.parse(raw)
                     if (u.host == "youtube") u.path?.removePrefix("/") else null
                 }
-                val excludedIds = failedVideoIdsBySongId.getOrPut(song.id) { mutableSetOf() }
+                val excludedIds = failedVideoIdsBySongId.getOrPut(song.id) {
+                    java.util.Collections.synchronizedSet(mutableSetOf())
+                }
                 if (!parsedVideoId.isNullOrBlank() && attempts >= 1) {
                     excludedIds.add(parsedVideoId)
                 }
@@ -894,31 +1092,48 @@ class MusicControllerManager(
                     excludedVideoIds = excludedIds.toSet()
                 )
                 isResolvingOnline = false
-                if (alternate != null && index in currentQueueSongs.indices && currentQueueSongs[index].id == song.id) {
+                resolvingKey = null
+                val updated = synchronized(queueLock) {
+                    if (alternate != null && index in currentQueueSongs.indices && currentQueueSongs[index].id == song.id) {
+                        val nextSong = song.copy(contentUriString = alternate.url)
+                        currentQueueSongs[index] = nextSong
+                        val oIdx = originalQueue.indexOfFirst { it.id == song.id }
+                        if (oIdx in originalQueue.indices) originalQueue[oIdx] = nextSong
+                        nextSong
+                    } else {
+                        null
+                    }
+                }
+                if (alternate != null && updated != null && safeReplaceMediaItem(controller, index, songToMediaItem(updated))) {
                     _activeStreamEngine.value = alternate.engine
-                    val updated = song.copy(contentUriString = alternate.url)
-                    currentQueueSongs[index] = updated
-                    val oIdx = originalQueue.indexOfFirst { it.id == song.id }
-                    if (oIdx in originalQueue.indices) originalQueue[oIdx] = updated
-                    controller.replaceMediaItem(index, songToMediaItem(updated))
-                    controller.seekTo(index, resumeAtMs.coerceAtLeast(0L))
-                    controller.prepare()
-                    controller.play()
+                    safeSeekAndPlay(controller, index, resumeAtMs.coerceAtLeast(0L))
                     updatePlaybackState()
                 } else {
-                    _playbackState.value = _playbackState.value.copy(
-                        isPlaying = false,
-                        isBuffering = false,
-                        errorMessage = "Ошибка ($lastErrorCode): не удалось подобрать зеркало для «${song.title}»"
-                    )
-                    publishDiagnosticFailure(song, lastErrorCode, lastErrorSummary)
+                    val queueSize = synchronized(queueLock) { currentQueueSongs.size }
+                    if (PlaybackTransitionPolicy.shouldAdvanceQueueAfterFailure(
+                            controller.repeatMode,
+                            controller.hasNextMediaItem(),
+                            queueSize
+                        )
+                    ) {
+                        advancePastBrokenTrack(controller, song, lastErrorCode, lastErrorSummary)
+                    } else {
+                        _playbackState.value = _playbackState.value.copy(
+                            isPlaying = false,
+                            isBuffering = false,
+                            errorMessage = "Ошибка ($lastErrorCode): не удалось подобрать зеркало для «${song.title}»"
+                        )
+                        publishDiagnosticFailure(song, lastErrorCode, lastErrorSummary)
+                    }
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
+            } catch (e: CancellationException) {
                 isResolvingOnline = false
+                resolvingKey = null
                 throw e
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
                 isResolvingOnline = false
-                val msg = e.localizedMessage ?: lastErrorSummary
+                resolvingKey = null
+                val msg = t.localizedMessage ?: lastErrorSummary
                 _playbackState.value = _playbackState.value.copy(
                     isPlaying = false,
                     isBuffering = false,
@@ -932,23 +1147,42 @@ class MusicControllerManager(
     private fun preresolveUpcomingQueue(currentIndex: Int) {
         val controller = mediaController ?: return
         preResolveJob?.cancel()
+        val nextShuffleIdx = controller.nextMediaItemIndex
         preResolveJob = scope.launch {
-            val queueCopy = currentQueueSongs.toList()
-            val indicesToCheck = listOf(currentIndex + 1, currentIndex + 2)
-                .filter { it in queueCopy.indices }
+            try {
+                val queueCopy = synchronized(queueLock) { currentQueueSongs.toList() }
+                val indicesToCheck = PlaybackTransitionPolicy.computePreresolveIndices(
+                    currentIndex = currentIndex,
+                    nextMediaItemIndex = nextShuffleIdx,
+                    queueSize = queueCopy.size
+                )
 
-            for (idx in indicesToCheck) {
-                val candidate = queueCopy[idx]
-                if (candidate.contentUriString.startsWith("online://")) {
-                    val resolved = resolveOnlineUriIfNeeded(candidate)
-                    if (!resolved.contentUriString.startsWith("online://") &&
-                        idx in currentQueueSongs.indices &&
-                        currentQueueSongs[idx].id == candidate.id
-                    ) {
-                        currentQueueSongs[idx] = resolved
-                        controller.replaceMediaItem(idx, songToMediaItem(resolved))
+                for (idx in indicesToCheck) {
+                    if (!isActive) break
+                    val candidate = queueCopy[idx]
+                    if (candidate.contentUriString.startsWith("online://")) {
+                        val resolved = resolveOnlineUriIfNeeded(candidate)
+                        if (!resolved.contentUriString.startsWith("online://")) {
+                            val updatedInQueue = synchronized(queueLock) {
+                                if (idx in currentQueueSongs.indices && currentQueueSongs[idx].id == candidate.id) {
+                                    currentQueueSongs[idx] = resolved
+                                    val oIdx = originalQueue.indexOfFirst { it.id == candidate.id }
+                                    if (oIdx in originalQueue.indices) originalQueue[oIdx] = resolved
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            if (updatedInQueue) {
+                                safeReplaceMediaItem(controller, idx, songToMediaItem(resolved))
+                            }
+                        }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.w("MusicControllerManager", "Queue pre-resolve skipped due to error", t)
             }
         }
     }
@@ -959,17 +1193,27 @@ class MusicControllerManager(
         resolveJob?.cancel()
         preResolveJob?.cancel()
         isResolvingOnline = false
+        resolvingKey = null
         isCrossfading = false
-        originalQueue = queue.toMutableList()
-        currentQueueSongs.clear()
-        currentQueueSongs.addAll(queue)
+        _abPointA.value = null
+        _abPointB.value = null
+        lastActiveSongId = song.id
+
+        synchronized(queueLock) {
+            originalQueue = queue.toMutableList()
+            currentQueueSongs.clear()
+            currentQueueSongs.addAll(queue)
+        }
 
         onlineSourceBySongId.remove(song.id)
         failedVideoIdsBySongId.remove(song.id)
+        onlineRetryCounts[song.id] = 0
+        earlyEofRecoveryCounts[song.id] = 0
         if (song.contentUriString.startsWith("online://")) {
             onlineSourceBySongId[song.id] = song.contentUriString
             val idx = queue.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
             isResolvingOnline = true
+            resolvingKey = idx to song.id
             _playbackState.value = _playbackState.value.copy(
                 currentSong = song,
                 isPlaying = false,
@@ -981,15 +1225,16 @@ class MusicControllerManager(
                 errorMessage = null
             )
             _playbackPositionMs.value = 0L
+            val diagEpoch = com.example.online.SourceDiagnosticsLog.latestSeqId()
 
             resolveJob = scope.launch {
                 try {
                     val resolvedSong = resolveOnlineUriIfNeeded(song)
                     if (resolvedSong.contentUriString.startsWith("online://")) {
                         isResolvingOnline = false
-                        val recentLogs = com.example.online.SourceDiagnosticsLog.recent(10)
-                        val lastCode = recentLogs.firstOrNull { it.httpCode != null }?.httpCode?.let { "HTTP $it" }
-                            ?: "NO_WORKING_STREAM"
+                        resolvingKey = null
+                        val recentSince = com.example.online.SourceDiagnosticsLog.recentSince(diagEpoch)
+                        val lastCode = com.example.online.SourceDiagnosticsLog.resolveDiagnosticErrorCode(recentSince)
                         val summary = "Источники не вернули аудиопоток для «${song.title}». Выберите другой источник."
                         _playbackState.value = _playbackState.value.copy(
                             isPlaying = false,
@@ -1001,11 +1246,15 @@ class MusicControllerManager(
                     }
 
                     isResolvingOnline = false
+                    resolvingKey = null
                     onlineRetryCounts[song.id] = 0
-                    val resolvedQueue = queue.map { if (it.id == song.id) resolvedSong else it }
-                    currentQueueSongs.clear()
-                    currentQueueSongs.addAll(resolvedQueue)
-                    originalQueue = resolvedQueue.toMutableList()
+                    val resolvedQueue = synchronized(queueLock) {
+                        val mapped = queue.map { if (it.id == song.id) resolvedSong else it }
+                        currentQueueSongs.clear()
+                        currentQueueSongs.addAll(mapped)
+                        originalQueue = mapped.toMutableList()
+                        mapped
+                    }
 
                     val startIndex = resolvedQueue.indexOfFirst { it.id == resolvedSong.id }.coerceAtLeast(0)
                     val mediaItems = resolvedQueue.map { songToMediaItem(it) }
@@ -1015,14 +1264,16 @@ class MusicControllerManager(
                     controller.volume = preferencesManager.playerVolume.value
                     controller.play()
                     updatePlaybackState()
-                    pluginManager?.dispatchQueueChanged(currentQueueSongs)
+                    pluginManager?.dispatchQueueChanged(resolvedQueue)
                     preresolveUpcomingQueue(startIndex)
-                } catch (e: kotlinx.coroutines.CancellationException) {
+                } catch (e: CancellationException) {
                     isResolvingOnline = false
+                    resolvingKey = null
                     throw e
-                } catch (e: Exception) {
+                } catch (t: Throwable) {
                     isResolvingOnline = false
-                    val msg = e.localizedMessage ?: "Не удалось запустить поток"
+                    resolvingKey = null
+                    val msg = t.localizedMessage ?: "Не удалось запустить поток"
                     _playbackState.value = _playbackState.value.copy(
                         isPlaying = false,
                         isBuffering = false,
@@ -1051,7 +1302,7 @@ class MusicControllerManager(
             controller.play()
         }
         updatePlaybackState()
-        pluginManager?.dispatchQueueChanged(currentQueueSongs)
+        pluginManager?.dispatchQueueChanged(queue)
         preresolveUpcomingQueue(startIndex)
     }
 
@@ -1066,9 +1317,16 @@ class MusicControllerManager(
         val controller = mediaController ?: return
         getService()?.cancelCrossfade()
         isCrossfading = false
-        originalQueue = queue.toMutableList()
-        currentQueueSongs.clear()
-        currentQueueSongs.addAll(queue)
+        _abPointA.value = null
+        _abPointB.value = null
+        lastActiveSongId = firstSong.id
+        earlyEofRecoveryCounts[firstSong.id] = 0
+        onlineRetryCounts[firstSong.id] = 0
+        synchronized(queueLock) {
+            originalQueue = queue.toMutableList()
+            currentQueueSongs.clear()
+            currentQueueSongs.addAll(queue)
+        }
 
         val mediaItems = queue.map { songToMediaItem(it) }
         controller.setMediaItems(mediaItems, safeIdx, 0L)
@@ -1076,7 +1334,7 @@ class MusicControllerManager(
         controller.volume = preferencesManager.playerVolume.value
         controller.play()
         updatePlaybackState()
-        pluginManager?.dispatchQueueChanged(currentQueueSongs)
+        pluginManager?.dispatchQueueChanged(queue)
         preresolveUpcomingQueue(safeIdx)
     }
 
@@ -1165,6 +1423,8 @@ class MusicControllerManager(
 
     fun skipToNext() {
         val controller = mediaController ?: return
+        getService()?.cancelCrossfade()
+        isCrossfading = false
         val crossfadeEnabled = preferencesManager.crossfadeEnabled.value
         val crossfadeDurationSec = preferencesManager.crossfadeDuration.value
         val crossfadeMs = (crossfadeDurationSec * 1000).toLong()
@@ -1178,13 +1438,15 @@ class MusicControllerManager(
             C.INDEX_UNSET
         }
 
-        if (targetIdx != C.INDEX_UNSET) {
+        if (targetIdx != C.INDEX_UNSET && targetIdx in 0 until controller.mediaItemCount) {
+            val targetSong = synchronized(queueLock) { currentQueueSongs.getOrNull(targetIdx) }
             val service = getService()
-            if (crossfadeEnabled && crossfadeMs > 0 && controller.isPlaying && service != null) {
+            if (crossfadeEnabled && crossfadeMs > 0 && controller.isPlaying && service != null &&
+                targetSong?.contentUriString?.startsWith("online://") != true
+            ) {
                 service.crossfadeTo(targetIdx, crossfadeMs)
             } else {
-                controller.seekTo(targetIdx, 0L)
-                controller.play()
+                safeSeekAndPlay(controller, targetIdx, 0L)
             }
         }
         updatePlaybackState()
@@ -1192,6 +1454,8 @@ class MusicControllerManager(
 
     fun skipToPrevious() {
         val controller = mediaController ?: return
+        getService()?.cancelCrossfade()
+        isCrossfading = false
         if (controller.currentPosition > 3000L) {
             controller.seekTo(0L)
         } else {
@@ -1204,16 +1468,18 @@ class MusicControllerManager(
                 C.INDEX_UNSET
             }
 
-            if (targetIdx != C.INDEX_UNSET) {
+            if (targetIdx != C.INDEX_UNSET && targetIdx in 0 until controller.mediaItemCount) {
+                val targetSong = synchronized(queueLock) { currentQueueSongs.getOrNull(targetIdx) }
                 val crossfadeEnabled = preferencesManager.crossfadeEnabled.value
                 val crossfadeDurationSec = preferencesManager.crossfadeDuration.value
                 val crossfadeMs = (crossfadeDurationSec * 1000).toLong()
                 val service = getService()
-                if (crossfadeEnabled && crossfadeMs > 0 && controller.isPlaying && service != null) {
+                if (crossfadeEnabled && crossfadeMs > 0 && controller.isPlaying && service != null &&
+                    targetSong?.contentUriString?.startsWith("online://") != true
+                ) {
                     service.crossfadeTo(targetIdx, crossfadeMs)
                 } else {
-                    controller.seekTo(targetIdx, 0L)
-                    controller.play()
+                    safeSeekAndPlay(controller, targetIdx, 0L)
                 }
             } else {
                 controller.seekTo(0L)
@@ -1272,48 +1538,62 @@ class MusicControllerManager(
         updatePlaybackState()
     }
 
-    fun getQueue(): List<Song> = currentQueueSongs.toList()
+    fun getQueue(): List<Song> = synchronized(queueLock) { currentQueueSongs.toList() }
 
     fun addToQueue(song: Song) {
         val controller = mediaController ?: return
         if (song.contentUriString.startsWith("online://")) {
             scope.launch {
                 val resolved = resolveOnlineUriIfNeeded(song)
-                currentQueueSongs.add(resolved)
-                originalQueue.add(resolved)
+                val snapshot = synchronized(queueLock) {
+                    currentQueueSongs.add(resolved)
+                    originalQueue.add(resolved)
+                    currentQueueSongs.toList()
+                }
                 controller.addMediaItem(songToMediaItem(resolved))
                 updatePlaybackState()
-                pluginManager?.dispatchQueueChanged(currentQueueSongs)
+                pluginManager?.dispatchQueueChanged(snapshot)
             }
             return
         }
-        currentQueueSongs.add(song)
-        originalQueue.add(song)
+        val snapshot = synchronized(queueLock) {
+            currentQueueSongs.add(song)
+            originalQueue.add(song)
+            currentQueueSongs.toList()
+        }
         controller.addMediaItem(songToMediaItem(song))
         updatePlaybackState()
-        pluginManager?.dispatchQueueChanged(currentQueueSongs)
+        pluginManager?.dispatchQueueChanged(snapshot)
     }
 
     fun removeFromQueue(index: Int) {
         val controller = mediaController ?: return
-        if (index in currentQueueSongs.indices) {
+        val snapshot = synchronized(queueLock) {
+            if (index !in currentQueueSongs.indices) return
             val removedSong = currentQueueSongs.removeAt(index)
             originalQueue.removeAll { it.id == removedSong.id }
-            controller.removeMediaItem(index)
-            updatePlaybackState()
-            pluginManager?.dispatchQueueChanged(currentQueueSongs)
+            currentQueueSongs.toList()
         }
+        if (index in 0 until controller.mediaItemCount) {
+            runCatching { controller.removeMediaItem(index) }
+        }
+        updatePlaybackState()
+        pluginManager?.dispatchQueueChanged(snapshot)
     }
 
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
         val controller = mediaController ?: return
-        if (fromIndex in currentQueueSongs.indices && toIndex in currentQueueSongs.indices) {
+        val snapshot = synchronized(queueLock) {
+            if (fromIndex !in currentQueueSongs.indices || toIndex !in currentQueueSongs.indices) return
             val item = currentQueueSongs.removeAt(fromIndex)
             currentQueueSongs.add(toIndex, item)
-            controller.moveMediaItem(fromIndex, toIndex)
-            updatePlaybackState()
-            pluginManager?.dispatchQueueChanged(currentQueueSongs)
+            currentQueueSongs.toList()
         }
+        if (fromIndex in 0 until controller.mediaItemCount && toIndex in 0 until controller.mediaItemCount) {
+            runCatching { controller.moveMediaItem(fromIndex, toIndex) }
+        }
+        updatePlaybackState()
+        pluginManager?.dispatchQueueChanged(snapshot)
     }
 
     fun reorderQueue(fromIndex: Int, toIndex: Int) {
@@ -1322,30 +1602,37 @@ class MusicControllerManager(
 
     fun playQueueIndex(index: Int) {
         val controller = mediaController ?: return
-        if (index in currentQueueSongs.indices) {
-            val targetSong = currentQueueSongs[index]
-            if (targetSong.contentUriString.startsWith("online://")) {
-                _playbackState.value = _playbackState.value.copy(
-                    currentSong = targetSong,
-                    currentQueueIndex = index,
-                    currentPositionMs = 0L,
-                    durationMs = targetSong.durationMs,
-                    errorMessage = null
-                )
-                resolveAndPlayIndex(index, targetSong)
-                return
-            }
-            controller.seekTo(index, 0L)
-            controller.prepare()
-            controller.play()
-            updatePlaybackState()
+        val targetSong = synchronized(queueLock) { currentQueueSongs.getOrNull(index) } ?: return
+        getService()?.cancelCrossfade()
+        isCrossfading = false
+        earlyEofRecoveryCounts[targetSong.id] = 0
+        onlineRetryCounts[targetSong.id] = 0
+        _abPointA.value = null
+        _abPointB.value = null
+        lastActiveSongId = targetSong.id
+        if (targetSong.contentUriString.startsWith("online://")) {
+            _playbackState.value = _playbackState.value.copy(
+                currentSong = targetSong,
+                currentQueueIndex = index,
+                currentPositionMs = 0L,
+                durationMs = targetSong.durationMs,
+                errorMessage = null
+            )
+            resolveAndPlayIndex(index, targetSong)
+            return
         }
+        safeSeekAndPlay(controller, index, 0L)
+        updatePlaybackState()
     }
 
     fun clearQueue() {
         val controller = mediaController ?: return
-        currentQueueSongs.clear()
-        originalQueue.clear()
+        getService()?.cancelCrossfade()
+        isCrossfading = false
+        synchronized(queueLock) {
+            currentQueueSongs.clear()
+            originalQueue.clear()
+        }
         controller.clearMediaItems()
         updatePlaybackState()
         pluginManager?.dispatchQueueChanged(emptyList())

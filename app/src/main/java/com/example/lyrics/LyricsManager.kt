@@ -31,12 +31,22 @@ data class LyricWord(
 )
 
 @Immutable
+data class ParallelLyricLine(
+    val text: String,
+    val timestampMs: Long,
+    val endTimeMs: Long,
+    val words: List<LyricWord> = emptyList(),
+    val speakerLabel: String? = null
+)
+
+@Immutable
 data class DualLyricLine(
     val timestampMs: Long,
     val endTimeMs: Long = timestampMs + 3000L,
     val primaryText: String,
     val secondaryText: String? = null,
     val words: List<LyricWord> = emptyList(),
+    val parallelLines: List<ParallelLyricLine> = emptyList(),
     val isSynced: Boolean = true,
     val hasWordTiming: Boolean = false,
     val isInstrumental: Boolean = false,
@@ -126,7 +136,7 @@ class LyricsManager {
                                 isBackground = sp == LyricSpeaker.BACKGROUND
                             )
                         }
-                        val enriched = insertInstrumentalBreaks(timed)
+                        val enriched = insertInstrumentalBreaks(preprocessParallelLines(timed))
                         val ytmState = LyricsState(
                             title = title,
                             artist = artist,
@@ -141,17 +151,19 @@ class LyricsManager {
                         lyricsCache[cacheKey] = ytmState
                         return@withContext ytmState
                     } else if (ytmNative.plainText.isNotBlank()) {
-                        val plainLines = ytmNative.plainText.lines().filter { it.isNotBlank() }.map { line ->
-                            val (sp, lbl, cleanLine) = extractInlineSpeakerPrefix(line.trim())
-                            DualLyricLine(
-                                timestampMs = -1L,
-                                primaryText = cleanLine,
-                                isSynced = false,
-                                speaker = sp,
-                                speakerLabel = lbl,
-                                isBackground = sp == LyricSpeaker.BACKGROUND
-                            )
-                        }
+                        val plainLines = preprocessParallelLines(
+                            ytmNative.plainText.lines().filter { it.isNotBlank() }.map { line ->
+                                val (sp, lbl, cleanLine) = extractInlineSpeakerPrefix(line.trim())
+                                DualLyricLine(
+                                    timestampMs = -1L,
+                                    primaryText = cleanLine,
+                                    isSynced = false,
+                                    speaker = sp,
+                                    speakerLabel = lbl,
+                                    isBackground = sp == LyricSpeaker.BACKGROUND
+                                )
+                            }
+                        )
                         ytmPlainFallback = LyricsState(
                             title = title,
                             artist = artist,
@@ -261,7 +273,7 @@ class LyricsManager {
                     }
                     if (!ttmlContent.contains("<tt") || !ttmlContent.contains("<p")) return@use
 
-                    val parsed = insertInstrumentalBreaks(parseTtml(ttmlContent))
+                    val parsed = insertInstrumentalBreaks(preprocessParallelLines(parseTtml(ttmlContent)))
                     if (parsed.isNotEmpty()) {
                         return LyricsState(
                             title = title,
@@ -396,7 +408,7 @@ class LyricsManager {
                     }
 
                     if (parsedLines.isNotEmpty()) {
-                        val enriched = insertInstrumentalBreaks(parsedLines)
+                        val enriched = insertInstrumentalBreaks(preprocessParallelLines(parsedLines))
                         return LyricsState(
                             title = title,
                             artist = artist,
@@ -540,17 +552,19 @@ class LyricsManager {
         }
 
         if (plain.isNotBlank()) {
-            val plainLines = plain.lines().filter { it.isNotBlank() }.map { line ->
-                val (sp, lbl, clean) = extractInlineSpeakerPrefix(line.trim())
-                DualLyricLine(
-                    timestampMs = -1L,
-                    primaryText = clean,
-                    isSynced = false,
-                    speaker = sp,
-                    speakerLabel = lbl,
-                    isBackground = sp == LyricSpeaker.BACKGROUND
-                )
-            }
+            val plainLines = preprocessParallelLines(
+                plain.lines().filter { it.isNotBlank() }.map { line ->
+                    val (sp, lbl, clean) = extractInlineSpeakerPrefix(line.trim())
+                    DualLyricLine(
+                        timestampMs = -1L,
+                        primaryText = clean,
+                        isSynced = false,
+                        speaker = sp,
+                        speakerLabel = lbl,
+                        isBackground = sp == LyricSpeaker.BACKGROUND
+                    )
+                }
+            )
             return LyricsState(
                 title = trackName,
                 artist = artistName,
@@ -633,7 +647,7 @@ class LyricsManager {
                     }
                 } else primaryLines
 
-                val enriched = insertInstrumentalBreaks(mergedWithTrans)
+                val enriched = insertInstrumentalBreaks(preprocessParallelLines(mergedWithTrans))
                 return LyricsState(
                     title = targetTitle,
                     artist = "",
@@ -719,17 +733,19 @@ class LyricsManager {
                     val json = JSONObject(response.body?.string() ?: "{}")
                     val lyrics = json.optString("lyrics", "").trim()
                     if (lyrics.isNotBlank()) {
-                        val plainLines = lyrics.lines().filter { it.isNotBlank() }.map { line ->
-                            val (sp, lbl, clean) = extractInlineSpeakerPrefix(line.trim())
-                            DualLyricLine(
-                                timestampMs = -1L,
-                                primaryText = clean,
-                                isSynced = false,
-                                speaker = sp,
-                                speakerLabel = lbl,
-                                isBackground = sp == LyricSpeaker.BACKGROUND
-                            )
-                        }
+                        val plainLines = preprocessParallelLines(
+                            lyrics.lines().filter { it.isNotBlank() }.map { line ->
+                                val (sp, lbl, clean) = extractInlineSpeakerPrefix(line.trim())
+                                DualLyricLine(
+                                    timestampMs = -1L,
+                                    primaryText = clean,
+                                    isSynced = false,
+                                    speaker = sp,
+                                    speakerLabel = lbl,
+                                    isBackground = sp == LyricSpeaker.BACKGROUND
+                                )
+                            }
+                        )
                         return LyricsState(
                             title = title,
                             artist = artist,
@@ -764,7 +780,7 @@ class LyricsManager {
             trimmed.contains("-->") && Regex("\\d{1,2}:\\d{2}:\\d{2}[,.]\\d{2,3}").containsMatchIn(trimmed) -> parseSrt(trimmed)
             else -> parseStandardOrEnhancedLrc(trimmed)
         }
-        return insertInstrumentalBreaks(rawLines)
+        return insertInstrumentalBreaks(preprocessParallelLines(rawLines))
     }
 
     private fun parseStandardOrEnhancedLrc(rawLrc: String): List<DualLyricLine> {
@@ -960,15 +976,41 @@ class LyricsManager {
             val fallbackClean = decodeXmlEntities(body.replace(Regex("<[^>]+>"), "")).replace(Regex("\\s+"), " ").trim()
             val primaryText = mainTextSb.toString().replace(Regex("\\s+"), " ").trim().ifBlank { fallbackClean }
 
+            val bgCleanRaw = bgTextSb.toString().replace(Regex("\\s+"), " ").trim()
+            val bgClean = bgCleanRaw.removeSurrounding("(", ")").trim()
+            val bgStart = bgWords.firstOrNull()?.startTimeMs ?: startMs
+            val bgEnd = bgWords.lastOrNull()?.endTimeMs ?: endMs
+
             if (primaryText.isNotBlank()) {
                 val hasWordTiming = mainWords.isNotEmpty()
+                val attachedParallel = if (bgClean.isNotBlank()) {
+                    val pWords = if (bgWords.isNotEmpty()) {
+                        bgWords.map { w ->
+                            w.copy(text = w.text.removePrefix("(").removeSuffix(")").trim().ifBlank { w.text })
+                        }
+                    } else {
+                        synthesizeNaturalWords(bgClean, bgStart, bgEnd)
+                    }
+                    listOf(
+                        ParallelLyricLine(
+                            text = bgClean,
+                            timestampMs = bgStart,
+                            endTimeMs = bgEnd,
+                            words = pWords,
+                            speakerLabel = "Бэк"
+                        )
+                    )
+                } else {
+                    emptyList()
+                }
                 results.add(
                     DualLyricLine(
                         timestampMs = startMs,
-                        endTimeMs = endMs,
+                        endTimeMs = maxOf(endMs, if (attachedParallel.isNotEmpty()) bgEnd else endMs),
                         primaryText = primaryText,
                         secondaryText = translationText,
                         words = if (hasWordTiming) mainWords else synthesizeNaturalWords(primaryText, startMs, endMs),
+                        parallelLines = attachedParallel,
                         isSynced = true,
                         hasWordTiming = hasWordTiming,
                         speaker = baseSpeaker,
@@ -976,18 +1018,13 @@ class LyricsManager {
                         isBackground = false
                     )
                 )
-            }
-
-            val bgClean = bgTextSb.toString().replace(Regex("\\s+"), " ").trim()
-            if (bgClean.isNotBlank()) {
-                val bgStart = bgWords.firstOrNull()?.startTimeMs ?: startMs
-                val bgEnd = bgWords.lastOrNull()?.endTimeMs ?: endMs
+            } else if (bgCleanRaw.isNotBlank()) {
                 results.add(
                     DualLyricLine(
                         timestampMs = bgStart,
                         endTimeMs = bgEnd,
-                        primaryText = bgClean,
-                        words = if (bgWords.isNotEmpty()) bgWords else synthesizeNaturalWords(bgClean, bgStart, bgEnd),
+                        primaryText = bgCleanRaw,
+                        words = if (bgWords.isNotEmpty()) bgWords else synthesizeNaturalWords(bgCleanRaw, bgStart, bgEnd),
                         isSynced = true,
                         hasWordTiming = bgWords.isNotEmpty(),
                         speaker = LyricSpeaker.BACKGROUND,
@@ -1261,6 +1298,125 @@ class LyricsManager {
             cursor = wEnd
             LyricWord(text = w, startTimeMs = wStart, endTimeMs = wEnd)
         }
+    }
+
+    /**
+     * Pre-display parallel vocal analysis:
+     * 1. Separates inline parenthesized backing/echo segments (e.g. "Hold on (yeah, ooh)") out of the main
+     *    text line into dedicated [ParallelLyricLine] entries rendered underneath in smaller typography.
+     * 2. Merges standalone overlapping backing/ad-lib lines directly underneath their active parent phrase
+     *    while leaving explicit standalone duet voices (v1/v2/both) and non-overlapping `bg:` lines intact.
+     */
+    fun preprocessParallelLines(lines: List<DualLyricLine>): List<DualLyricLine> {
+        if (lines.isEmpty()) return lines
+        val parenRegex = Regex("\\(([^()]{2,64})\\)")
+
+        // Step 1: Extract inline parenthesized backing cues from non-background lines
+        val splitInline = lines.map { line ->
+            if (line.isInstrumental || line.isBackground || line.speaker == LyricSpeaker.BACKGROUND) {
+                return@map line
+            }
+            val matches = parenRegex.findAll(line.primaryText).toList()
+            if (matches.isEmpty()) return@map line
+
+            val strippedMain = parenRegex.replace(line.primaryText, " ")
+                .replace(Regex("\\s+"), " ")
+                .replace(Regex("\\s+([,.;!?])"), "$1")
+                .trim()
+
+            // Only split if meaningful main lyrics remain outside the parentheses
+            if (strippedMain.length < 2) return@map line
+
+            val existingParallel = line.parallelLines.toMutableList()
+            val span = (line.endTimeMs - line.timestampMs).coerceAtLeast(800L)
+            val totalLen = line.primaryText.length.coerceAtLeast(1)
+
+            for (m in matches) {
+                val cueText = m.groupValues[1].trim()
+                if (cueText.isBlank()) continue
+                val startFrac = (m.range.first.toFloat() / totalLen.toFloat()).coerceIn(0f, 0.85f)
+                val endFrac = ((m.range.last + 1).toFloat() / totalLen.toFloat()).coerceIn(startFrac + 0.15f, 1.0f)
+                val pStart = if (line.isSynced && line.timestampMs >= 0L) {
+                    line.timestampMs + (span * startFrac).toLong()
+                } else -1L
+                val pEnd = if (line.isSynced && line.timestampMs >= 0L) {
+                    (line.timestampMs + (span * endFrac).toLong()).coerceAtLeast(pStart + 350L)
+                } else -1L
+                val pWords = if (line.isSynced && pStart >= 0L) {
+                    synthesizeNaturalWords(cueText, pStart, pEnd)
+                } else emptyList()
+                existingParallel.add(
+                    ParallelLyricLine(
+                        text = cueText,
+                        timestampMs = pStart,
+                        endTimeMs = pEnd,
+                        words = pWords,
+                        speakerLabel = "Бэк"
+                    )
+                )
+            }
+
+            // Recompute main words without the extracted parenthesized tokens
+            val mainWords = if (!line.isSynced || line.timestampMs < 0L) {
+                emptyList()
+            } else if (line.hasWordTiming && line.words.isNotEmpty()) {
+                val filteredWords = line.words.filterNot { w ->
+                    val wt = w.text.trim()
+                    (wt.startsWith("(") && wt.endsWith(")")) ||
+                        matches.any { m -> m.groupValues[1].contains(wt.removePrefix("(").removeSuffix(")"), ignoreCase = true) && wt.contains('(') }
+                }
+                filteredWords.ifEmpty { synthesizeNaturalWords(strippedMain, line.timestampMs, line.endTimeMs) }
+            } else {
+                synthesizeNaturalWords(strippedMain, line.timestampMs, line.endTimeMs)
+            }
+
+            line.copy(
+                primaryText = strippedMain,
+                words = mainWords,
+                parallelLines = existingParallel
+            )
+        }
+
+        // Step 2: Fold standalone overlapping backing cues onto the active parent main line
+        val consolidated = mutableListOf<DualLyricLine>()
+        for (line in splitInline) {
+            val prev = consolidated.lastOrNull()
+            val isImplicitOverlapBg = prev != null &&
+                !prev.isInstrumental &&
+                !prev.isBackground &&
+                line.isBackground &&
+                line.isSynced &&
+                prev.isSynced &&
+                line.timestampMs >= prev.timestampMs &&
+                line.timestampMs < (prev.endTimeMs - 180L)
+
+            val isExactSameTimestampBg = prev != null &&
+                !prev.isInstrumental &&
+                !prev.isBackground &&
+                line.isBackground &&
+                line.isSynced &&
+                prev.isSynced &&
+                abs(line.timestampMs - prev.timestampMs) <= 120L
+
+            if (prev != null && (isImplicitOverlapBg || isExactSameTimestampBg)) {
+                val pWords = if (line.words.isNotEmpty()) line.words
+                else synthesizeNaturalWords(line.primaryText, line.timestampMs, line.endTimeMs)
+                val updatedParallel = prev.parallelLines + ParallelLyricLine(
+                    text = line.primaryText,
+                    timestampMs = line.timestampMs,
+                    endTimeMs = line.endTimeMs,
+                    words = pWords,
+                    speakerLabel = line.speakerLabel ?: "Бэк"
+                )
+                consolidated[consolidated.lastIndex] = prev.copy(
+                    endTimeMs = maxOf(prev.endTimeMs, line.endTimeMs),
+                    parallelLines = updatedParallel
+                )
+            } else {
+                consolidated.add(line)
+            }
+        }
+        return consolidated
     }
 
     private fun insertInstrumentalBreaks(lines: List<DualLyricLine>): List<DualLyricLine> {

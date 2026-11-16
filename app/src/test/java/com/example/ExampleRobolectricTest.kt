@@ -71,4 +71,90 @@ class ExampleRobolectricTest {
     org.junit.Assert.assertTrue(formatted.contains("Test search crash"))
     org.junit.Assert.assertTrue(formatted.contains("Стек вызовов"))
   }
+
+  @Test
+  fun `preferencesManager persists selected youtube delivery engine and normalizes legacy ids`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefs1 = com.example.data.preferences.PreferencesManager(context)
+
+    prefs1.setPreferredDeliveryEngine("yt_web_rhino")
+    prefs1.setOnlineSourceFilter("youtube")
+
+    val prefs2 = com.example.data.preferences.PreferencesManager(context)
+    assertEquals("yt_web_rhino", prefs2.preferredDeliveryEngine.value)
+    assertEquals("youtube", prefs2.onlineSourceFilter.value)
+
+    prefs2.setPreferredDeliveryEngine("innertube_tv_remix")
+    val prefs3 = com.example.data.preferences.PreferencesManager(context)
+    assertEquals("innertube_tv_remix", prefs3.preferredDeliveryEngine.value)
+
+    // Legacy 2-engine IDs migrate cleanly onto the upgraded engine IDs
+    prefs3.setPreferredDeliveryEngine("innertube_android_vr")
+    assertEquals("innertube_tv_remix", prefs3.preferredDeliveryEngine.value)
+    prefs3.setPreferredDeliveryEngine("newpipe")
+    assertEquals("yt_web_rhino", prefs3.preferredDeliveryEngine.value)
+
+    // Unrecognized legacy engine IDs must normalize cleanly to auto
+    prefs3.setPreferredDeliveryEngine("piped")
+    assertEquals("auto", prefs3.preferredDeliveryEngine.value)
+  }
+
+  @Test
+  fun `innerTubePayloadBuilder includes sts and html5Preference for TVHTML5 and WEB_REMIX`() {
+    val tvPayload = com.example.online.YouTubeStreamManager.buildInnerTubePlayerPayload(
+      videoId = "abc123XYZ",
+      clientName = "TVHTML5",
+      clientVersion = "7.20250909.18.00",
+      signatureTimestamp = 20123
+    )
+    assertEquals("abc123XYZ", tvPayload.getString("videoId"))
+    org.junit.Assert.assertTrue(tvPayload.getBoolean("contentCheckOk"))
+    val client = tvPayload.getJSONObject("context").getJSONObject("client")
+    assertEquals("TVHTML5", client.getString("clientName"))
+    assertEquals("7.20250909.18.00", client.getString("clientVersion"))
+    val cpc = tvPayload.getJSONObject("playbackContext").getJSONObject("contentPlaybackContext")
+    assertEquals(20123, cpc.getInt("signatureTimestamp"))
+    assertEquals("HTML5_PREF_WANTS", cpc.getString("html5Preference"))
+
+    val remixPayload = com.example.online.YouTubeStreamManager.buildInnerTubePlayerPayload(
+      videoId = "def456UVW",
+      clientName = "WEB_REMIX",
+      clientVersion = "1.20250909.01.00",
+      signatureTimestamp = 20124
+    )
+    val remixClient = remixPayload.getJSONObject("context").getJSONObject("client")
+    assertEquals("WEB_REMIX", remixClient.getString("clientName"))
+    assertEquals(20124, remixPayload.getJSONObject("playbackContext").getJSONObject("contentPlaybackContext").getInt("signatureTimestamp"))
+  }
+
+  @Test
+  fun `youtubeStreamManager diagnoses SabrOnly and PlayabilityBlocked JSON payloads`() {
+    val manager = com.example.online.YouTubeStreamManager()
+    val sabrJson = org.json.JSONObject(
+      """
+      {
+        "playabilityStatus": { "status": "OK" },
+        "streamingData": {
+          "serverAbrStreamingUrl": "https://rr1.googlevideo.com/sabr?id=1",
+          "adaptiveFormats": []
+        }
+      }
+      """.trimIndent()
+    )
+    val sabrDiag = manager.diagnosePlayerJsonFailure(sabrJson)
+    assertEquals(com.example.online.SourceAttemptStatus.SABR_ONLY, sabrDiag?.first)
+
+    val blockedJson = org.json.JSONObject(
+      """
+      {
+        "playabilityStatus": {
+          "status": "UNPLAYABLE",
+          "reason": "The following content is not available on this app."
+        }
+      }
+      """.trimIndent()
+    )
+    val blockedDiag = manager.diagnosePlayerJsonFailure(blockedJson)
+    assertEquals(com.example.online.SourceAttemptStatus.PLAYABILITY_BLOCKED, blockedDiag?.first)
+  }
 }

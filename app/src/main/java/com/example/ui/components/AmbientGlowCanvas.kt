@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.graphics.Paint
 import android.graphics.RuntimeShader
 import android.os.Build
 import androidx.annotation.RequiresApi
@@ -12,26 +13,26 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.theme.SpringTokens
@@ -41,12 +42,13 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Tri-harmonic iridescent fluid silk AGSL plasma shader for Android 13+ Flagship devices.
- * Modulates field turbulence, luminous aurora ribbons, and dynamic energy cleanly via `uEnergy`.
+ * Multi-harmonic iridescent aurora & silk caustic AGSL background shader (Android 13+ Flagship).
+ * Strictly uses integer-harmonic frequencies (1x, 2x, 3x) on `uPhase in [0, 2*PI]` so every loop wraps
+ * with C1 continuity and zero seam jumps. Drawn safely onto `nativeCanvas` without Compose ShaderBrush cache races.
  */
 private const val AMBIENT_MESH_AGSL = """
 uniform float2 uResolution;
-uniform float uTime;
+uniform float uPhase;
 uniform float4 uColorA;
 uniform float4 uColorB;
 uniform float4 uColorC;
@@ -54,150 +56,62 @@ uniform float uIntensity;
 uniform float uEnergy;
 
 half4 main(float2 fragCoord) {
-    float2 uv = fragCoord / max(uResolution, float2(1.0));
-    float t = uTime;
-    float e = clamp(uEnergy, 0.25, 1.35);
+    float2 res = max(uResolution, float2(2.0));
+    float2 uv = fragCoord / res;
+    float t = uPhase;
+    float e = clamp(uEnergy, 0.25, 1.45);
 
-    // Multi-harmonic curl-like domain warp with low ALU cost
+    // Pure integer harmonics over [0, 2*PI] -> 100% seamless loop
     float2 warp1 = float2(
-        0.055 * sin(uv.y * 4.1 + t * 0.62) + 0.024 * cos(uv.x * 7.2 - t * 0.88),
-        0.055 * cos(uv.x * 3.7 - t * 0.54) + 0.024 * sin(uv.y * 6.5 + t * 0.76)
+        0.072 * sin(uv.y * 4.4 + t) + 0.032 * cos(uv.x * 7.2 - 2.0 * t),
+        0.072 * cos(uv.x * 4.0 - t) + 0.032 * sin(uv.y * 6.6 + 2.0 * t)
     ) * e;
     float2 wuv = uv + warp1;
     float2 wuv2 = wuv + float2(
-        0.025 * sin((wuv.x - wuv.y) * 5.6 + t * 0.95),
-        0.025 * cos((wuv.x + wuv.y) * 5.2 - t * 0.82)
+        0.038 * sin((wuv.x - wuv.y) * 5.8 + 2.0 * t),
+        0.038 * cos((wuv.x + wuv.y) * 5.2 - t)
     );
 
-    float2 p1 = float2(0.28 + 0.16 * sin(t * 0.58), 0.26 + 0.13 * cos(t * 0.44));
-    float2 p2 = float2(0.74 + 0.13 * cos(t * 0.51), 0.43 + 0.14 * sin(t * 0.69));
-    float2 p3 = float2(0.45 + 0.17 * sin(t * 0.39 + 1.5), 0.78 + 0.12 * cos(t * 0.49));
+    float2 p1 = float2(0.28 + 0.17 * sin(t), 0.25 + 0.15 * cos(t));
+    float2 p2 = float2(0.75 + 0.15 * cos(t + 1.0), 0.43 + 0.15 * sin(2.0 * t));
+    float2 p3 = float2(0.45 + 0.18 * sin(t + 2.1), 0.78 + 0.13 * cos(t + 0.8));
+    float2 p4 = float2(0.50 + 0.13 * cos(2.0 * t), 0.22 + 0.13 * sin(t + 3.1));
 
-    float d1 = exp(-dot(wuv2 - p1, wuv2 - p1) * 4.2);
-    float d2 = exp(-dot(wuv2 - p2, wuv2 - p2) * 3.8);
-    float d3 = exp(-dot(wuv2 - p3, wuv2 - p3) * 3.3);
+    // Soft floating bokeh orb centers
+    float2 b1 = float2(0.18 + 0.12 * cos(2.0 * t), 0.62 + 0.16 * sin(t + 0.5));
+    float2 b2 = float2(0.82 + 0.10 * sin(t + 1.7), 0.20 + 0.12 * cos(2.0 * t));
 
-    // Soft silk aurora caustic ribbon
-    float ribbon = smoothstep(-0.35, 0.85, sin((wuv2.x * 3.4 - wuv2.y * 2.8) + t * 0.92)) * 0.14 * e;
+    float d1 = exp(-dot(wuv2 - p1, wuv2 - p1) * 3.8);
+    float d2 = exp(-dot(wuv2 - p2, wuv2 - p2) * 3.4);
+    float d3 = exp(-dot(wuv2 - p3, wuv2 - p3) * 3.1);
+    float d4 = exp(-dot(wuv2 - p4, wuv2 - p4) * 4.2);
 
-    float4 accum = uColorA * (d1 * 0.88) + uColorB * (d2 * 0.80) + uColorC * (d3 * 0.72);
-    accum.rgb += mix(uColorA.rgb, uColorC.rgb, 0.5 + 0.5 * sin(t * 0.6)) * ribbon * (d1 + d2 + 0.35);
+    float bokeh1 = smoothstep(0.24, 0.02, length(uv - b1)) * 0.26 * e;
+    float bokeh2 = smoothstep(0.20, 0.02, length(uv - b2)) * 0.22 * e;
 
-    float alpha = clamp((d1 * 0.50 + d2 * 0.44 + d3 * 0.38 + ribbon * 0.4) * uIntensity, 0.0, 0.92);
+    // Flowing aurora caustic ribbons + chromatic prism sheen
+    float ribbonA = smoothstep(-0.28, 0.90, sin((wuv2.x * 3.8 - wuv2.y * 3.1) + t)) * 0.21 * e;
+    float ribbonB = smoothstep(-0.18, 0.92, cos((wuv2.x * 2.6 + wuv2.y * 4.3) - 2.0 * t)) * 0.15 * e;
+    float crest = pow(clamp(sin((wuv2.x * 5.2 + wuv2.y * 3.7) + 2.0 * t), 0.0, 1.0), 3.0) * 0.14 * e;
+
+    float4 accum = uColorA * (d1 * 0.92 + d4 * 0.45) +
+                   uColorB * (d2 * 0.85) +
+                   uColorC * (d3 * 0.78 + d4 * 0.38);
+
+    float shimmerMix = 0.5 + 0.5 * sin(t);
+    accum.rgb += mix(uColorA.rgb, uColorC.rgb, shimmerMix) * ribbonA * (d1 + d2 + 0.40);
+    accum.rgb += mix(uColorB.rgb, uColorA.rgb, 1.0 - shimmerMix) * ribbonB * (d2 + d3 + 0.34);
+    accum.rgb += mix(uColorC.rgb, float3(1.0), 0.35) * (crest + bokeh1 + bokeh2);
+
+    float alpha = clamp((d1 * 0.48 + d2 * 0.42 + d3 * 0.38 + d4 * 0.24 + (ribbonA + ribbonB + crest) * 0.36 + (bokeh1 + bokeh2) * 0.45) * uIntensity, 0.0, 0.94);
     return half4(accum.rgb * alpha, alpha);
 }
 """
 
 /**
- * Capsule / Rounded-rect optical M3 Expressive rim & subtle iridescent top-arc highlight AGSL shader.
- */
-private const val CAPSULE_RIM_AGSL = """
-uniform float2 uResolution;
-uniform float uTime;
-uniform float4 uPrimary;
-uniform float4 uTertiary;
-uniform float uCornerPx;
-
-half4 main(float2 fragCoord) {
-    float2 halfSize = max(uResolution * 0.5, float2(4.0));
-    float2 p = fragCoord - halfSize;
-    float maxR = max(min(halfSize.x, halfSize.y), 2.0);
-    float r = clamp(uCornerPx, 2.0, maxR);
-    float2 q = abs(p) - (halfSize - float2(r));
-    float dist = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
-
-    // Crisp anti-aliased optical rim + subtle specular bloom along top curvature
-    float rimMask = smoothstep(-2.4, -0.35, dist) * (1.0 - smoothstep(-0.2, 0.95, dist));
-    float angle = atan(p.y, p.x);
-    float shimmer = 0.5 + 0.5 * sin(angle * 2.0 + uTime * 1.15);
-    float secondarySweep = 0.5 + 0.5 * cos(angle * 3.0 - uTime * 0.85);
-
-    float4 rimCol = mix(uPrimary, uTertiary, shimmer);
-    float topHighlight = clamp(1.0 - (fragCoord.y / max(uResolution.y * 0.38, 1.0)), 0.0, 1.0) * 0.085;
-    float interiorMask = 1.0 - smoothstep(-1.0, 0.5, dist);
-
-    float alpha = clamp(rimMask * (0.42 + 0.16 * secondarySweep) + topHighlight * interiorMask, 0.0, 0.64);
-    float3 rgb = min(rimCol.rgb * (rimMask * 0.56) + float3(1.0) * (topHighlight * interiorMask), float3(alpha));
-    return half4(rgb, alpha);
-}
-"""
-
-/**
- * Reusable M3 Expressive optical rim sheen modifier:
- * - Flagship Android 13+ (`profile.enableShaders == true`): animated AGSL optical rim/specular sheen.
- * - Balanced / Potato phones: crisp zero-shader tonal gradient border.
- */
-@Composable
-fun Modifier.agslGlassRim(
-    cornerRadiusDp: Dp = 999.dp,
-    primaryColor: Color = MaterialTheme.colorScheme.primary,
-    tertiaryColor: Color = MaterialTheme.colorScheme.tertiary,
-    enabled: Boolean = true
-): Modifier {
-    val profile = LocalPerformanceProfile.current
-    if (!enabled) return this
-
-    if (profile.enableShaders && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        val shader = remember { runCatching { RuntimeShader(CAPSULE_RIM_AGSL) }.getOrNull() }
-        val brush = remember(shader) { shader?.let { runCatching { ShaderBrush(it) }.getOrNull() } }
-        if (shader != null && brush != null) {
-            val transition = rememberInfiniteTransition(label = "capsule_rim_time")
-            val time by transition.animateFloat(
-                initialValue = 0f,
-                targetValue = 62.8318f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 28000, easing = LinearEasing),
-                    repeatMode = RepeatMode.Restart
-                ),
-                label = "rim_t"
-            )
-            return this.drawWithCache {
-                val cornerPx = if (cornerRadiusDp.value >= 900f) {
-                    size.minDimension * 0.5f
-                } else {
-                    cornerRadiusDp.toPx()
-                }
-                onDrawWithContent {
-                    drawContent()
-                    if (size.width > 2f && size.height > 2f) {
-                        val applied = runCatching {
-                            shader.setFloatUniform("uResolution", size.width, size.height)
-                            shader.setFloatUniform("uTime", time)
-                            shader.setFloatUniform("uPrimary", primaryColor.red, primaryColor.green, primaryColor.blue, 1f)
-                            shader.setFloatUniform("uTertiary", tertiaryColor.red, tertiaryColor.green, tertiaryColor.blue, 1f)
-                            shader.setFloatUniform("uCornerPx", cornerPx)
-                            true
-                        }.getOrDefault(false)
-                        if (applied) {
-                            drawRoundRect(
-                                brush = brush,
-                                cornerRadius = CornerRadius(cornerPx, cornerPx)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    val fallbackShape = if (cornerRadiusDp.value >= 900f) CircleShape else RoundedCornerShape(cornerRadiusDp)
-    return this.border(
-        width = 1.dp,
-        brush = Brush.linearGradient(
-            colors = listOf(
-                primaryColor.copy(alpha = 0.26f),
-                tertiaryColor.copy(alpha = 0.14f)
-            )
-        ),
-        shape = fallbackShape
-    )
-}
-
-/**
  * Multi-shape M3 Expressive ambient background overlay:
- * Renders multiple rotating & gently drifting M3 organic shapes (Clover, Cookie, Spark, Flower, Diamond)
- * across the interface backdrop so geometric figures animate smoothly behind the UI.
- * Zero per-frame Path/Array allocations; adapts shape count & motion cleanly for Potato devices.
+ * Renders continuously rotating & drifting M3 organic shapes across all tabs and player screens
+ * using monotonic frame-delta accumulation (`withFrameNanos`) so motion NEVER jumps or snaps on any loop boundary.
  */
 @Composable
 fun AmbientGeometricShapesOverlay(
@@ -211,30 +125,29 @@ fun AmbientGeometricShapesOverlay(
     val profile = LocalPerformanceProfile.current
     val shapeCount = when {
         profile.isPotato -> 3
-        profile.enableShaders -> 6
-        else -> 4
+        profile.enableShaders -> 7
+        else -> 5
     }
 
-    val orbitPhase = if (!reducedMotion) {
-        val transition = rememberInfiniteTransition(label = "ambient_geom_orbit")
-        transition.animateFloat(
-            initialValue = 0f,
-            targetValue = (2f * PI.toFloat()),
-            animationSpec = infiniteRepeatable(
-                animation = tween(
-                    durationMillis = when {
-                        profile.isPotato -> 22000
-                        isPlaying -> 13000
-                        else -> 17000
-                    },
-                    easing = LinearEasing
-                ),
-                repeatMode = RepeatMode.Restart
-            ),
-            label = "orbit_phase"
-        ).value
-    } else {
-        0.85f
+    // Monotonic continuous clock in seconds — zero periodic boundary reset
+    var elapsedSec by remember { mutableFloatStateOf(0.85f) }
+    LaunchedEffect(reducedMotion, profile.isPotato, isPlaying) {
+        if (reducedMotion) return@LaunchedEffect
+        var lastNs = 0L
+        val speedMultiplier = when {
+            profile.isPotato -> 0.52f
+            isPlaying -> 1.15f
+            else -> 0.72f
+        }
+        while (true) {
+            withFrameNanos { frameNs ->
+                if (lastNs != 0L) {
+                    val dtSec = ((frameNs - lastNs) / 1_000_000_000f).coerceIn(0f, 0.05f)
+                    elapsedSec += dtSec * speedMultiplier
+                }
+                lastNs = frameNs
+            }
+        }
     }
 
     val path = remember { Path() }
@@ -245,22 +158,24 @@ fun AmbientGeometricShapesOverlay(
         val minDim = min(w, h)
         if (w <= 8f || h <= 8f) return@Canvas
 
-        // Shape LUT IDs: 2=Clover, 3=Cookie, 4=Spark, 5=Flower, 8=Slanted Diamond, 9=Sunburst
-        val lutIndices = intArrayOf(2, 4, 3, 5, 8, 9)
-        val anchorXs = floatArrayOf(0.14f, 0.86f, 0.80f, 0.18f, 0.52f, 0.56f)
-        val anchorYs = floatArrayOf(0.15f, 0.22f, 0.72f, 0.78f, 0.46f, 0.14f)
-        val sizeScales = floatArrayOf(0.20f, 0.16f, 0.22f, 0.17f, 0.14f, 0.12f)
-        val rotSpeeds = floatArrayOf(1.0f, -1.6f, 0.85f, -1.2f, 1.45f, -1.0f)
-        val driftRadii = floatArrayOf(0.06f, 0.07f, 0.055f, 0.065f, 0.05f, 0.055f)
+        // Shape LUT IDs: 2=Clover, 3=Cookie, 4=Spark, 5=Flower, 7=Shield, 8=Diamond, 9=Sunburst
+        val lutIndices = intArrayOf(2, 4, 3, 5, 8, 9, 7)
+        val anchorXs = floatArrayOf(0.14f, 0.86f, 0.80f, 0.18f, 0.52f, 0.58f, 0.28f)
+        val anchorYs = floatArrayOf(0.16f, 0.22f, 0.72f, 0.78f, 0.46f, 0.13f, 0.50f)
+        val sizeScales = floatArrayOf(0.19f, 0.15f, 0.21f, 0.16f, 0.13f, 0.12f, 0.14f)
+        val rotRadPerSec = floatArrayOf(0.36f, -0.48f, 0.30f, -0.40f, 0.44f, -0.34f, 0.28f)
+        val orbitRadPerSec = floatArrayOf(0.42f, 0.34f, 0.38f, 0.31f, 0.46f, 0.36f, 0.29f)
+        val driftRadii = floatArrayOf(0.06f, 0.07f, 0.055f, 0.065f, 0.05f, 0.055f, 0.048f)
 
         for (sIdx in 0 until shapeCount) {
             val lutId = lutIndices[sIdx]
             val radii = MorphShapeLut.radii[lutId]
             val drift = minDim * driftRadii[sIdx]
-            val cx = w * anchorXs[sIdx] + cos(orbitPhase * (1f + sIdx * 0.2f) + sIdx * 1.3f) * drift
-            val cy = h * anchorYs[sIdx] + sin(orbitPhase * (0.9f + sIdx * 0.15f) + sIdx * 2.1f) * drift
+            val oAngle = elapsedSec * orbitRadPerSec[sIdx] + sIdx * 1.3f
+            val cx = w * anchorXs[sIdx] + cos(oAngle) * drift
+            val cy = h * anchorYs[sIdx] + sin(oAngle * 0.88f + sIdx * 0.9f) * drift
             val radius = minDim * sizeScales[sIdx]
-            val rotRad = orbitPhase * rotSpeeds[sIdx] + sIdx * 0.7f
+            val rotRad = elapsedSec * rotRadPerSec[sIdx] + sIdx * 0.7f
             val cosR = cos(rotRad)
             val sinR = sin(rotRad)
 
@@ -280,8 +195,16 @@ fun AmbientGeometricShapesOverlay(
                 1 -> tertiaryColor
                 else -> secondaryColor
             }
-            val fillAlpha = if (isPlaying) 0.105f else 0.080f
-            val strokeAlpha = if (isPlaying) 0.22f else 0.16f
+            val fillAlpha = when {
+                profile.enableShaders && isPlaying -> 0.125f
+                isPlaying -> 0.105f
+                else -> 0.080f
+            }
+            val strokeAlpha = when {
+                profile.enableShaders && isPlaying -> 0.26f
+                isPlaying -> 0.22f
+                else -> 0.16f
+            }
 
             drawPath(path = path, color = shapeColor.copy(alpha = fillAlpha), style = Fill)
             if (!profile.isPotato) {
@@ -297,9 +220,9 @@ fun AmbientGeometricShapesOverlay(
 
 /**
  * Dual-tier Dynamic Ambient Glow Backdrop + Multi-Shape Geometric Orbit Layer:
- * - Flagship Android 13+ (`profile.enableShaders == true`): runs tri-harmonic AGSL shader + 5 rotating/drifting shapes.
- * - Balanced: zero-alloc radial Canvas glow + 3 rotating shapes.
- * - Potato: ultra-light cached radial Canvas + 2 static shapes with zero live animation overhead.
+ * - Flagship Android 13+ (`profile.enableShaders == true`): runs tri-harmonic aurora AGSL shader + floating shapes.
+ * - Balanced: zero-alloc multi-radial Canvas glow + rotating shapes.
+ * - Potato: ultra-light cached radial Canvas + minimal geometric shapes.
  */
 @Composable
 fun AmbientGlowCanvas(
@@ -308,25 +231,29 @@ fun AmbientGlowCanvas(
     primaryColor: Color = MaterialTheme.colorScheme.primary,
     secondaryColor: Color = MaterialTheme.colorScheme.tertiary,
     accentColor: Color = MaterialTheme.colorScheme.secondary,
-    showFloatingGeometry: Boolean = true
+    showFloatingGeometry: Boolean = true,
+    reducedMotion: Boolean = false,
+    baseIntensity: Float = if (isPlaying) 0.64f else 0.28f
 ) {
     val profile = LocalPerformanceProfile.current
+    val effectivePlaying = isPlaying && !reducedMotion
 
     Box(modifier = modifier.fillMaxSize()) {
         if (profile.enableShaders && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             AgslAmbientGlowCanvas(
-                isPlaying = isPlaying,
+                isPlaying = effectivePlaying,
                 modifier = Modifier.fillMaxSize(),
                 primaryColor = primaryColor,
                 secondaryColor = secondaryColor,
-                accentColor = accentColor
+                accentColor = accentColor,
+                baseIntensity = baseIntensity
             )
         } else if (profile.isPotato) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .drawWithCache {
-                        val intensity = if (isPlaying) 0.24f else 0.11f
+                        val intensity = (baseIntensity * 0.42f).coerceIn(0.08f, 0.30f)
                         val radial = Brush.radialGradient(
                             colors = listOf(
                                 primaryColor.copy(alpha = intensity),
@@ -345,15 +272,16 @@ fun AmbientGlowCanvas(
             val infiniteTransition = rememberInfiniteTransition(label = "ambient_glow_cycle")
             val pulsePhase by infiniteTransition.animateFloat(
                 initialValue = 0f,
-                targetValue = 6.28318f,
+                targetValue = (2f * PI.toFloat()),
                 animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 6800, easing = FastOutSlowInEasing),
+                    animation = tween(durationMillis = 7200, easing = LinearEasing),
                     repeatMode = RepeatMode.Restart
                 ),
                 label = "pulse_phase"
             )
+            val activePhase = if (reducedMotion) 0.6f else pulsePhase
 
-            val intensity = if (isPlaying) 0.34f else 0.12f
+            val intensity = (baseIntensity * 0.52f).coerceIn(0.10f, 0.40f)
             val colors1 = remember(primaryColor, intensity) {
                 listOf(
                     primaryColor.copy(alpha = intensity * 0.85f),
@@ -372,9 +300,9 @@ fun AmbientGlowCanvas(
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val w = size.width
                 val h = size.height
-                val pulse = sin(pulsePhase) * 0.07f + 1.0f
+                val pulse = sin(activePhase) * 0.07f + 1.0f
 
-                val center1 = Offset(w * 0.36f + sin(pulsePhase) * 26f, h * 0.30f)
+                val center1 = Offset(w * 0.36f + sin(activePhase) * 26f, h * 0.30f)
                 val radius1 = (w * 0.56f * pulse).coerceAtLeast(100f)
                 drawCircle(
                     brush = Brush.radialGradient(colors = colors1, center = center1, radius = radius1),
@@ -382,7 +310,7 @@ fun AmbientGlowCanvas(
                     radius = radius1
                 )
 
-                val center2 = Offset(w * 0.64f - cos(pulsePhase) * 22f, h * 0.46f)
+                val center2 = Offset(w * 0.64f - cos(activePhase) * 22f, h * 0.46f)
                 val radius2 = (w * 0.58f * (2f - pulse)).coerceAtLeast(100f)
                 drawCircle(
                     brush = Brush.radialGradient(colors = colors2, center = center2, radius = radius2),
@@ -398,6 +326,7 @@ fun AmbientGlowCanvas(
                 primaryColor = primaryColor,
                 secondaryColor = accentColor,
                 tertiaryColor = secondaryColor,
+                reducedMotion = reducedMotion,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -415,8 +344,9 @@ fun AgslAmbientGlowCanvas(
     baseIntensity: Float = if (isPlaying) 0.64f else 0.28f
 ) {
     val shader = remember { runCatching { RuntimeShader(AMBIENT_MESH_AGSL) }.getOrNull() }
-    val brush = remember(shader) { shader?.let { runCatching { ShaderBrush(it) }.getOrNull() } }
-    if (shader == null || brush == null) {
+    val paint = remember(shader) { shader?.let { Paint().apply { isAntiAlias = true; this.shader = it } } }
+
+    if (shader == null || paint == null) {
         val fallbackRadial = remember(primaryColor, secondaryColor, baseIntensity) {
             Brush.radialGradient(
                 colors = listOf(
@@ -433,35 +363,54 @@ fun AgslAmbientGlowCanvas(
     }
 
     val energy by animateFloatAsState(
-        targetValue = if (isPlaying) 1.05f else 0.45f,
+        targetValue = if (isPlaying) 1.08f else 0.48f,
         animationSpec = SpringTokens.effectsDefault(),
         label = "agsl_energy"
     )
+
+    // Continuous integer-harmonic phase [0..2*PI]
     val transition = rememberInfiniteTransition(label = "agsl_mesh_flow")
-    val uTime by transition.animateFloat(
+    val uPhase by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 62.8318f,
+        targetValue = (2f * PI.toFloat()),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 30000, easing = LinearEasing),
+            animation = tween(durationMillis = 12000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "agsl_time"
+        label = "agsl_phase"
     )
 
     Canvas(modifier = modifier.fillMaxSize()) {
-        if (size.width <= 1f || size.height <= 1f) return@Canvas
-        val ok = runCatching {
-            shader.setFloatUniform("uResolution", size.width, size.height)
-            shader.setFloatUniform("uTime", if (isPlaying) uTime else 0.8f)
-            shader.setFloatUniform("uColorA", primaryColor.red, primaryColor.green, primaryColor.blue, 1f)
-            shader.setFloatUniform("uColorB", secondaryColor.red, secondaryColor.green, secondaryColor.blue, 1f)
-            shader.setFloatUniform("uColorC", accentColor.red, accentColor.green, accentColor.blue, 1f)
-            shader.setFloatUniform("uIntensity", baseIntensity)
-            shader.setFloatUniform("uEnergy", energy)
-            true
-        }.getOrDefault(false)
-        if (ok) {
-            drawRect(brush = brush)
+        if (size.width <= 2f || size.height <= 2f) return@Canvas
+        drawIntoCanvas { canvas ->
+            if (!canvas.nativeCanvas.isHardwareAccelerated) {
+                // Software canvas (e.g., certain fallback layers): draw clean radial fallback without RuntimeShader abort
+                drawCircle(
+                    color = primaryColor.copy(alpha = (baseIntensity * 0.22f).coerceIn(0.05f, 0.35f)),
+                    radius = size.minDimension * 0.55f,
+                    center = Offset(size.width * 0.4f, size.height * 0.35f)
+                )
+                return@drawIntoCanvas
+            }
+            val ok = runCatching {
+                shader.setFloatUniform("uResolution", size.width, size.height)
+                shader.setFloatUniform("uPhase", if (isPlaying) uPhase else 0.8f)
+                shader.setFloatUniform("uColorA", primaryColor.red, primaryColor.green, primaryColor.blue, 1f)
+                shader.setFloatUniform("uColorB", secondaryColor.red, secondaryColor.green, secondaryColor.blue, 1f)
+                shader.setFloatUniform("uColorC", accentColor.red, accentColor.green, accentColor.blue, 1f)
+                shader.setFloatUniform("uIntensity", baseIntensity.coerceIn(0.05f, 1.0f))
+                shader.setFloatUniform("uEnergy", energy)
+                paint.shader = shader
+                canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
+                true
+            }.getOrDefault(false)
+            if (!ok) {
+                drawCircle(
+                    color = primaryColor.copy(alpha = (baseIntensity * 0.22f).coerceIn(0.05f, 0.35f)),
+                    radius = size.minDimension * 0.55f,
+                    center = Offset(size.width * 0.4f, size.height * 0.35f)
+                )
+            }
         }
     }
 }

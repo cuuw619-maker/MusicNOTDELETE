@@ -145,7 +145,7 @@ fun MorphingPlayPauseButton(
                 .size(width = animatedWidth, height = finalHeight)
                 .let {
                     if (profile.isPotato) it
-                    else it.shadow(elevation = 8.dp, shape = shape, spotColor = containerColor.copy(alpha = 0.45f))
+                    else it.shadow(elevation = 10.dp, shape = shape, spotColor = containerColor.copy(alpha = 0.50f))
                 }
                 .fluidPress(
                     scaleDown = 0.93f,
@@ -154,7 +154,11 @@ fun MorphingPlayPauseButton(
                 ),
             shape = shape,
             color = containerColor,
-            contentColor = contentColor
+            contentColor = contentColor,
+            border = androidx.compose.foundation.BorderStroke(
+                width = if (isPlaying) 1.4.dp else 1.dp,
+                color = contentColor.copy(alpha = if (isPlaying) 0.26f else 0.14f)
+            )
         ) {
             Box(
                 contentAlignment = Alignment.Center,
@@ -416,7 +420,8 @@ fun InteractiveProgressBar(
                         val step = if (profile.isPotato) 8f else 4f
                         wavePath.reset()
                         var x = 0f
-                        val startY = centerY + sin(wavePhase) * amp
+                        val startTaper = (activeWidthPx / (wavelengthPx * 0.4f)).coerceIn(0f, 1f)
+                        val startY = centerY + sin(-wavePhase) * amp * startTaper
                         wavePath.moveTo(0f, startY)
                         while (x < activeWidthPx) {
                             x = (x + step).coerceAtMost(activeWidthPx)

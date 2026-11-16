@@ -150,6 +150,14 @@ class PreferencesManager(context: Context) {
     private val _performanceMode = MutableStateFlow(loadPerformanceMode())
     val performanceMode: StateFlow<PerformanceMode> = _performanceMode.asStateFlow()
 
+    // Persistent Online YouTube Delivery Engine ("auto", "innertube_tv_remix", "yt_web_rhino")
+    private val _preferredDeliveryEngine = MutableStateFlow(loadPreferredDeliveryEngine())
+    val preferredDeliveryEngine: StateFlow<String> = _preferredDeliveryEngine.asStateFlow()
+
+    // Persistent Online Search Source Filter ("all", "youtube", "soundcloud", ...)
+    private val _onlineSourceFilter = MutableStateFlow(loadOnlineSourceFilter())
+    val onlineSourceFilter: StateFlow<String> = _onlineSourceFilter.asStateFlow()
+
     private fun loadThemeMode(): ThemeMode {
         val name = prefs.getString(KEY_THEME_MODE, ThemeMode.SYSTEM.name) ?: ThemeMode.SYSTEM.name
         return try {
@@ -198,6 +206,32 @@ class PreferencesManager(context: Context) {
     fun setPerformanceMode(mode: PerformanceMode) {
         prefs.edit().putString(KEY_PERFORMANCE_MODE, mode.name).apply()
         _performanceMode.value = mode
+    }
+
+    private fun loadPreferredDeliveryEngine(): String {
+        val raw = prefs.getString(KEY_PREFERRED_DELIVERY_ENGINE, "auto") ?: "auto"
+        return normalizeDeliveryEngine(raw)
+    }
+
+    fun setPreferredDeliveryEngine(engineId: String) {
+        val normalized = normalizeDeliveryEngine(engineId)
+        prefs.edit().putString(KEY_PREFERRED_DELIVERY_ENGINE, normalized).apply()
+        _preferredDeliveryEngine.value = normalized
+    }
+
+    private fun normalizeDeliveryEngine(engineId: String): String = when (engineId.lowercase().trim()) {
+        "innertube_tv_remix", "innertube_android_vr" -> "innertube_tv_remix"
+        "yt_web_rhino", "newpipe" -> "yt_web_rhino"
+        else -> "auto"
+    }
+
+    private fun loadOnlineSourceFilter(): String =
+        prefs.getString(KEY_ONLINE_SOURCE_FILTER, "all")?.takeIf { it.isNotBlank() } ?: "all"
+
+    fun setOnlineSourceFilter(sourceId: String) {
+        val clean = sourceId.lowercase().trim().ifBlank { "all" }
+        prefs.edit().putString(KEY_ONLINE_SOURCE_FILTER, clean).apply()
+        _onlineSourceFilter.value = clean
     }
 
     fun setThemeMode(mode: ThemeMode) {
@@ -503,5 +537,7 @@ class PreferencesManager(context: Context) {
         private const val KEY_SORT_ORDER = "key_sort_order"
         private const val KEY_SELECTED_DESTINATION = "key_selected_destination"
         private const val KEY_PERFORMANCE_MODE = "key_performance_mode"
+        private const val KEY_PREFERRED_DELIVERY_ENGINE = "key_preferred_delivery_engine"
+        private const val KEY_ONLINE_SOURCE_FILTER = "key_online_source_filter"
     }
 }

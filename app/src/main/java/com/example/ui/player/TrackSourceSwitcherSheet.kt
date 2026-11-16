@@ -134,9 +134,9 @@ fun TrackSourceSwitcherSheet(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // 1. Delivery mirror switcher for current YouTube stream
+            // 1. Delivery spoof switcher for current & future YouTube streams (2 distinct engines + Auto)
             Text(
-                text = "Канал доставки текущего потока",
+                text = "Движок YouTube (сохраняется автоматически)",
                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -148,13 +148,14 @@ fun TrackSourceSwitcherSheet(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 YouTubeStreamManager.DELIVERY_ENGINES.forEach { engine ->
-                    val isSelected = selectedDelivery == engine.id || (selectedDelivery == "auto" && activeEngine == engine.id)
+                    val isSelected = selectedDelivery == engine.id
                     ExpressiveOvalChoiceChip(
                         label = engine.label,
                         selected = isSelected,
                         onClick = { viewModel.switchDeliveryEngine(engine.id) },
-                        minHeight = 36.dp,
-                        fontSizeSp = 11.5f
+                        minHeight = 38.dp,
+                        fontSizeSp = 12f,
+                        modifier = Modifier.testTag("delivery_engine_${engine.id}")
                     )
                 }
             }

@@ -7,6 +7,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -115,6 +116,7 @@ import com.example.ui.util.rememberHapticHelper
 import com.example.ui.viewmodel.MusicViewModel
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.sin
 
 enum class LyricsDisplayMode {
@@ -841,7 +843,7 @@ private fun AdaptiveLyricsBackdrop(
 
         if (!artworkUri.isNullOrBlank()) {
             val blurModifier = if (profile.enableLiveBlur && !profile.isPotato && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                Modifier.blur(54.dp)
+                Modifier.blur(16.dp)
             } else {
                 Modifier
             }
@@ -938,64 +940,66 @@ private fun KineticLyricLineItem(
 
     val targetScale = when {
         isActive && isBg -> 1.0f
-        isActive -> 1.035f
-        distanceFromActive == 1 -> 0.95f
-        else -> 0.90f
+        isActive -> 1.032f
+        distanceFromActive == 1 -> 0.96f
+        else -> 0.91f
     }
     val scale by animateFloatAsState(
         targetValue = targetScale,
-        animationSpec = SpringTokens.spatialDefault(),
+        animationSpec = spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessLow),
         label = "line_scale"
     )
 
     val targetAlpha = when {
-        isActive && isBg -> 0.86f
+        isActive && isBg -> 0.88f
         isActive -> 1f
-        distanceFromActive == 1 -> 0.56f
+        distanceFromActive == 1 -> 0.58f
         distanceFromActive == 2 -> 0.36f
-        else -> 0.22f
+        else -> 0.20f
     }
     val lineAlpha by animateFloatAsState(
         targetValue = targetAlpha,
-        animationSpec = tween(260),
+        animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
         label = "line_alpha"
     )
 
     val activeSlideOffsetDp by animateFloatAsState(
         targetValue = when {
             isActive -> 0f
-            isSecond -> 10f
+            isSecond -> 8f
             isBoth -> 0f
-            else -> -8f
+            else -> -6f
         },
-        animationSpec = spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMediumLow),
+        animationSpec = spring(dampingRatio = 0.86f, stiffness = Spring.StiffnessLow),
         label = "duet_slide_x"
     )
 
-    // Depth blur is strictly disabled on Potato tier to preserve 60fps during scrolls
-    val depthBlurModifier = if (!isActive && profile.enableLiveBlur && !profile.isPotato && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        val radius = when (distanceFromActive) {
-            1 -> 1.2.dp
-            2 -> 2.2.dp
-            else -> 3.4.dp
-        }
-        Modifier.blur(radius)
-    } else {
-        Modifier
-    }
-
     val targetContainerColor = when {
-        !isActive || line.isInstrumental -> Color.Transparent
-        isSecond -> Color(0xFFA8E6FF).copy(alpha = 0.11f)
-        isBoth -> Color(0xFFFFE4A8).copy(alpha = 0.12f)
-        isBg -> Color.White.copy(alpha = 0.06f)
-        else -> Color.White.copy(alpha = 0.10f)
+        isActive && isBg -> Color.White.copy(alpha = 0.08f)
+        isActive -> Color.White.copy(alpha = 0.11f)
+        else -> Color.Transparent
     }
     val containerBg by animateColorAsState(
         targetValue = targetContainerColor,
-        animationSpec = tween(240),
-        label = "line_bg"
+        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+        label = "line_container_bg"
     )
+
+    val targetBlurDp = when {
+        isActive || line.isInstrumental -> 0.dp
+        distanceFromActive == 1 -> 1.2.dp
+        distanceFromActive == 2 -> 2.7.dp
+        else -> 4.4.dp
+    }
+    val blurDp by animateDpAsState(
+        targetValue = targetBlurDp,
+        animationSpec = tween(durationMillis = 320, easing = FastOutSlowInEasing),
+        label = "line_dof_blur"
+    )
+    val useDepthBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        profile.enableLiveBlur &&
+        !profile.isPotato &&
+        blurDp > 0.2.dp
 
     Surface(
         modifier = Modifier
@@ -1006,7 +1010,7 @@ private fun KineticLyricLineItem(
                 alpha = lineAlpha
                 translationX = activeSlideOffsetDp.dp.toPx()
             }
-            .then(depthBlurModifier)
+            .let { if (useDepthBlur) it.blur(blurDp) else it }
             .clip(RoundedCornerShape(22.dp))
             .clickable(onClick = onClick),
         color = containerBg,
@@ -1077,25 +1081,15 @@ private fun KineticLyricLineItem(
                                 horizontalArrangement = Arrangement.Start
                             ) {
                                 group.forEach { word ->
-                                    if (profile.detailedPerCharWave && word.text.length in 1..20) {
-                                        KineticSyllablePerCharWord(
-                                            word = word,
-                                            highlightColor = voiceHighlightColor,
-                                            fontSizeSp = if (isBg) 18 else 25,
-                                            isItalic = isBg,
-                                            enableGlow = profile.enableHeavyShadows,
-                                            currentTimeProvider = currentTimeProvider
-                                        )
-                                    } else {
-                                        KineticWordWaveSweep(
-                                            word = word,
-                                            highlightColor = voiceHighlightColor,
-                                            fontSizeSp = if (isBg) 18 else 25,
-                                            isItalic = isBg,
-                                            enableGlow = profile.enableHeavyShadows,
-                                            currentTimeProvider = currentTimeProvider
-                                        )
-                                    }
+                                    KineticWordWaveSweep(
+                                        word = word,
+                                        highlightColor = voiceHighlightColor,
+                                        fontSizeSp = if (isBg) 18 else 25,
+                                        isItalic = isBg,
+                                        enableGlow = profile.enableHeavyShadows || profile.detailedPerCharWave,
+                                        usePerLetter = !profile.isPotato,
+                                        currentTimeProvider = currentTimeProvider
+                                    )
                                 }
                             }
                         }
@@ -1113,6 +1107,50 @@ private fun KineticLyricLineItem(
                         textAlign = textAlign,
                         modifier = Modifier.fillMaxWidth()
                     )
+                }
+
+                // Parallel vocal / backing sub-lines rendered strictly BELOW main line in smaller typography
+                if (line.parallelLines.isNotEmpty()) {
+                    val parallelColor = if (isSecond) {
+                        Color(0xFFC5F0FF)
+                    } else {
+                        Color(0xFFD5E6FF)
+                    }
+                    line.parallelLines.forEach { pLine ->
+                        Spacer(modifier = Modifier.height(4.dp))
+                        if (isActive && pLine.words.isNotEmpty() && line.isSynced) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(5.dp, flowAlignment),
+                                verticalArrangement = Arrangement.spacedBy(3.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                pLine.words.forEach { pWord ->
+                                    KineticWordWaveSweep(
+                                        word = pWord,
+                                        highlightColor = parallelColor,
+                                        fontSizeSp = 15,
+                                        isItalic = true,
+                                        enableGlow = profile.detailedPerCharWave,
+                                        usePerLetter = !profile.isPotato,
+                                        currentTimeProvider = currentTimeProvider
+                                    )
+                                }
+                            }
+                        } else {
+                            Text(
+                                text = pLine.text,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontStyle = FontStyle.Italic,
+                                    fontSize = if (isActive) 15.sp else 13.5.sp,
+                                    lineHeight = 20.sp
+                                ),
+                                color = if (isActive) parallelColor.copy(alpha = 0.90f) else parallelColor.copy(alpha = 0.50f),
+                                textAlign = textAlign,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
                 }
 
                 if (showSecondary && !line.secondaryText.isNullOrBlank()) {
@@ -1135,96 +1173,161 @@ private fun KineticLyricLineItem(
 }
 
 /**
- * Flagship Fluid BetterLyrics Syllable & Per-Character Renderer:
- * Combines smooth sine-eased lift + spring zoom with a soft-feathered horizontal gradient
- * (`BlendMode.DstIn`) mask instead of sharp clip cuts or shaky rotation jitter.
+ * Per-letter Kinetic Wave & Accent Tremble Renderer:
+ * - On Balanced & Flagship (`usePerLetter = true`): splits word glyphs once into zero-recomposition `Box` slots
+ *   where each letter computes smooth fill mask (`BlendMode.DstIn`), gentle cosine lift, and subtle controlled
+ *   tremble (<= 1.4dp) on sustained or punctuated vocal accents inside `graphicsLayer` + `drawWithContent`.
+ * - On Potato (`usePerLetter = false`): falls back cleanly to single-pass liquid gradient word sweep.
  */
 @Composable
-private fun KineticSyllablePerCharWord(
+private fun KineticWordWaveSweep(
     word: LyricWord,
     highlightColor: Color,
     fontSizeSp: Int,
     isItalic: Boolean,
     enableGlow: Boolean,
+    usePerLetter: Boolean = true,
     currentTimeProvider: () -> Long
 ) {
     val wordStyle = MaterialTheme.typography.headlineSmall.copy(
         fontWeight = if (isItalic) FontWeight.Bold else FontWeight.ExtraBold,
         fontStyle = if (isItalic) FontStyle.Italic else FontStyle.Normal,
         fontSize = fontSizeSp.sp,
-        lineHeight = (fontSizeSp + 9).sp
+        lineHeight = (fontSizeSp + 8).sp
     )
     val glowStyle = if (enableGlow) {
         wordStyle.copy(
             shadow = Shadow(
-                color = highlightColor.copy(alpha = 0.64f),
+                color = highlightColor.copy(alpha = 0.62f),
                 blurRadius = 16f
             )
         )
     } else {
         wordStyle
     }
+    val duration = (word.endTimeMs - word.startTimeMs).coerceAtLeast(80L).toFloat()
+    val hasEmphasisMark = remember(word.text, word.endTimeMs, word.startTimeMs) {
+        val t = word.text
+        t.contains('!') || t.contains('?') || t.contains('—') ||
+            (word.endTimeMs - word.startTimeMs) >= 480L ||
+            t.count { it.isUpperCase() } >= 2
+    }
+    val accentStrength = if (hasEmphasisMark) 1.0f else if (word.text.length >= 6) 0.45f else 0.0f
 
-    val totalDur = (word.endTimeMs - word.startTimeMs).coerceAtLeast(80L).toFloat()
-    val chars = word.text
-    val charCount = chars.length.coerceAtLeast(1)
+    if (!usePerLetter || word.text.length <= 1) {
+        Box(
+            modifier = Modifier.graphicsLayer {
+                val nowMs = currentTimeProvider()
+                val rawProgress = ((nowMs - word.startTimeMs).toFloat() / duration)
+                val progress = rawProgress.coerceIn(0f, 1f)
+                val isCurrentWord = rawProgress in 0f..1.05f
+                val bell = if (isCurrentWord) (0.5f - 0.5f * cos(2f * PI.toFloat() * progress)).coerceIn(0f, 1f) else 0f
+                val zoom = 1.0f + 0.068f * bell
+                scaleX = zoom
+                scaleY = zoom
+                translationY = (-2.6f * bell).dp.toPx()
+            }
+        ) {
+            Text(text = word.text, style = wordStyle, color = highlightColor.copy(alpha = 0.28f))
+            Text(
+                text = word.text,
+                style = glowStyle,
+                color = highlightColor,
+                modifier = Modifier
+                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                    .drawWithContent {
+                        val nowMs = currentTimeProvider()
+                        val linear = ((nowMs - word.startTimeMs).toFloat() / duration).coerceIn(0f, 1f)
+                        val progress = linear * linear * (3f - 2f * linear)
+                        if (linear >= 0.996f) {
+                            drawContent()
+                        } else if (linear > 0.002f) {
+                            drawContent()
+                            val feather = 0.28f
+                            val edgeEnd = (progress * (1f + feather)).coerceIn(0.02f, 1f)
+                            val edgeStart = (edgeEnd - feather).coerceIn(0f, edgeEnd - 0.01f)
+                            drawRect(
+                                brush = Brush.horizontalGradient(
+                                    0f to Color.White,
+                                    edgeStart to Color.White,
+                                    edgeEnd to Color.Transparent,
+                                    1f to Color.Transparent
+                                ),
+                                blendMode = BlendMode.DstIn
+                            )
+                        }
+                    }
+            )
+        }
+        return
+    }
 
+    val charCount = word.text.length
     Row(verticalAlignment = Alignment.CenterVertically) {
-        for (i in 0 until charCount) {
-            val ch = chars[i].toString()
-            val cStart = i.toFloat() / charCount.toFloat()
-            val cEnd = (i + 1).toFloat() / charCount.toFloat()
-            val cMid = (cStart + cEnd) * 0.5f
+        for (charIdx in 0 until charCount) {
+            val chText = word.text[charIdx].toString()
+            // Overlapping per-character windows so the sweep glides fluidly letter by letter
+            val spanPerChar = 1f / charCount.toFloat()
+            val windowWidth = (spanPerChar * 1.45f).coerceAtMost(1f)
+            val charStartFrac = (charIdx.toFloat() / charCount.toFloat()) * (1f - (windowWidth - spanPerChar)).coerceAtLeast(0f)
 
             Box(
                 modifier = Modifier.graphicsLayer {
                     val nowMs = currentTimeProvider()
-                    val rawP = (nowMs - word.startTimeMs).toFloat() / totalDur
-                    // Gentle 90ms anticipation swell before syllable attack
-                    val anticipation = (((nowMs - (word.startTimeMs - 90L)).toFloat() / 90f).coerceIn(0f, 1f)) * 0.18f
-                    val wordProgress = rawP.coerceIn(0f, 1.35f)
-                    val isWordActive = wordProgress in 0f..1.25f
+                    val wordProgress = ((nowMs - word.startTimeMs).toFloat() / duration)
+                    val charProgress = ((wordProgress - charStartFrac) / windowWidth).coerceIn(0f, 1f)
+                    val isCharSinging = wordProgress in charStartFrac..(charStartFrac + windowWidth + 0.12f)
+                    val envelope = if (isCharSinging) sin(PI.toFloat() * charProgress).coerceIn(0f, 1f) else 0f
 
-                    val distFromWave = abs(wordProgress - cMid)
-                    val bell = if (isWordActive && distFromWave < 0.38f) {
-                        val norm = 1f - (distFromWave / 0.38f)
-                        sin(norm * (PI.toFloat() * 0.5f))
-                    } else 0f
-
-                    val crest = maxOf(bell, anticipation * (1f - cMid * 0.5f))
-                    val zoom = 1.0f + 0.11f * crest
+                    val zoom = 1.0f + 0.085f * envelope
                     scaleX = zoom
                     scaleY = zoom
-                    translationY = ((-3.4f * bell) + if (wordProgress >= cEnd) -1.0f else -0.4f * anticipation).dp.toPx()
+
+                    val baseLiftPx = when {
+                        isCharSinging -> (-2.4f * envelope).dp.toPx()
+                        wordProgress > charStartFrac + windowWidth -> (-0.5f).dp.toPx()
+                        else -> 0f
+                    }
+                    if (accentStrength > 0.05f && envelope > 0.08f) {
+                        val tPhase = (nowMs % 60_000L) * 0.048f + charIdx * 1.55f
+                        val ampPx = (1.15f * accentStrength * envelope).dp.toPx()
+                        translationX = sin(tPhase) * ampPx
+                        translationY = baseLiftPx + cos(tPhase * 1.33f) * ampPx * 0.85f
+                    } else {
+                        translationX = 0f
+                        translationY = baseLiftPx
+                    }
                 }
             ) {
                 Text(
-                    text = ch,
+                    text = chText,
                     style = wordStyle,
-                    color = highlightColor.copy(alpha = 0.30f)
+                    color = highlightColor.copy(alpha = 0.28f)
                 )
                 Text(
-                    text = ch,
+                    text = chText,
                     style = glowStyle,
                     color = highlightColor,
                     modifier = Modifier
                         .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
                         .drawWithContent {
                             val nowMs = currentTimeProvider()
-                            val rawProgress = ((nowMs - word.startTimeMs).toFloat() / totalDur).coerceIn(0f, 1f)
-                            val span = (cEnd - cStart).coerceAtLeast(0.01f)
-                            val fill = ((rawProgress - cStart) / span).coerceIn(0f, 1f)
-                            if (fill >= 0.995f) {
+                            val wordProgress = ((nowMs - word.startTimeMs).toFloat() / duration)
+                            val linearChar = ((wordProgress - charStartFrac) / windowWidth).coerceIn(0f, 1f)
+                            val eased = linearChar * linearChar * (3f - 2f * linearChar)
+                            if (linearChar >= 0.995f) {
                                 drawContent()
-                            } else if (fill > 0.005f) {
+                            } else if (linearChar > 0.005f) {
                                 drawContent()
-                                val feather = 0.28f
-                                val edgeEnd = (fill * (1f + feather)).coerceIn(0.01f, 1f)
-                                val edgeStart = (edgeEnd - feather).coerceIn(0f, edgeEnd - 0.005f)
+                                val feather = 0.32f
+                                val edgeEnd = (eased * (1f + feather)).coerceIn(0.02f, 1f)
+                                val edgeStart = (edgeEnd - feather).coerceIn(0f, edgeEnd - 0.01f)
+                                val mid = (edgeStart + edgeEnd) * 0.5f
                                 drawRect(
                                     brush = Brush.horizontalGradient(
                                         0f to Color.White,
                                         edgeStart to Color.White,
+                                        mid to Color.White.copy(alpha = 0.58f),
                                         edgeEnd to Color.Transparent,
                                         1f to Color.Transparent
                                     ),
@@ -1235,91 +1338,6 @@ private fun KineticSyllablePerCharWord(
                 )
             }
         }
-    }
-}
-
-/**
- * Low-End / Long-Word Optimized Fluid Glow Wave Renderer:
- * Smooth feathered gradient wipe (`BlendMode.DstIn`) + damped spring lift using only 2 Text nodes total.
- */
-@Composable
-private fun KineticWordWaveSweep(
-    word: LyricWord,
-    highlightColor: Color,
-    fontSizeSp: Int,
-    isItalic: Boolean,
-    enableGlow: Boolean,
-    currentTimeProvider: () -> Long
-) {
-    val wordStyle = MaterialTheme.typography.headlineSmall.copy(
-        fontWeight = if (isItalic) FontWeight.Bold else FontWeight.ExtraBold,
-        fontStyle = if (isItalic) FontStyle.Italic else FontStyle.Normal,
-        fontSize = fontSizeSp.sp,
-        lineHeight = (fontSizeSp + 9).sp
-    )
-    val glowStyle = if (enableGlow) {
-        wordStyle.copy(
-            shadow = Shadow(
-                color = highlightColor.copy(alpha = 0.56f),
-                blurRadius = 14f
-            )
-        )
-    } else {
-        wordStyle
-    }
-    val duration = (word.endTimeMs - word.startTimeMs).coerceAtLeast(60L).toFloat()
-
-    Box(
-        modifier = Modifier.graphicsLayer {
-            val nowMs = currentTimeProvider()
-            val progress = ((nowMs - word.startTimeMs).toFloat() / duration).coerceIn(0f, 1f)
-            val isCurrentWord = nowMs in word.startTimeMs..word.endTimeMs
-            val bell = if (isCurrentWord) sin(progress * PI.toFloat()).coerceIn(0f, 1f) else 0f
-            val liftY = when {
-                isCurrentWord -> -3.0f * bell
-                progress >= 1f -> -0.9f
-                else -> 0f
-            }
-            val zoom = 1.0f + 0.075f * bell
-            scaleX = zoom
-            scaleY = zoom
-            translationY = liftY.dp.toPx()
-        }
-    ) {
-        Text(
-            text = word.text,
-            style = wordStyle,
-            color = highlightColor.copy(alpha = 0.30f)
-        )
-
-        Text(
-            text = word.text,
-            style = glowStyle,
-            color = highlightColor,
-            modifier = Modifier
-                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                .drawWithContent {
-                    val nowMs = currentTimeProvider()
-                    val progress = ((nowMs - word.startTimeMs).toFloat() / duration).coerceIn(0f, 1f)
-                    if (progress >= 0.995f) {
-                        drawContent()
-                    } else if (progress > 0.005f) {
-                        drawContent()
-                        val feather = 0.18f
-                        val edgeEnd = (progress * (1f + feather)).coerceIn(0.01f, 1f)
-                        val edgeStart = (edgeEnd - feather).coerceIn(0f, edgeEnd - 0.005f)
-                        drawRect(
-                            brush = Brush.horizontalGradient(
-                                0f to Color.White,
-                                edgeStart to Color.White,
-                                edgeEnd to Color.Transparent,
-                                1f to Color.Transparent
-                            ),
-                            blendMode = BlendMode.DstIn
-                        )
-                    }
-                }
-        )
     }
 }
 

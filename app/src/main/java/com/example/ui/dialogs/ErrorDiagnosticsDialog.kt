@@ -215,15 +215,17 @@ fun ErrorDiagnosticsDialog(
 
                                 TextButton(
                                     onClick = {
-                                        performHapticFeedback(view, HapticType.LIGHT)
-                                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        cm.setPrimaryClip(
-                                            ClipData.newPlainText(
-                                                "imux diagnostics",
-                                                SourceDiagnosticsLog.formatCopyableReport(report)
+                                        runCatching { performHapticFeedback(view, HapticType.LIGHT) }
+                                        runCatching {
+                                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                            cm?.setPrimaryClip(
+                                                ClipData.newPlainText(
+                                                    "imux diagnostics",
+                                                    SourceDiagnosticsLog.formatCopyableReport(report)
+                                                )
                                             )
-                                        )
-                                        Toast.makeText(context, "Лог скопирован", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Лог скопирован", Toast.LENGTH_SHORT).show()
+                                        }
                                     },
                                     modifier = Modifier.testTag("diagnostics_copy_log_btn")
                                 ) {
@@ -435,30 +437,27 @@ fun ErrorDiagnosticsDialog(
                                 shape = RoundedCornerShape(16.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainerLowest,
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 175.dp)
+                                modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
-                                    modifier = Modifier
-                                        .padding(10.dp)
-                                        .verticalScroll(rememberScrollState()),
+                                    modifier = Modifier.padding(10.dp),
                                     verticalArrangement = Arrangement.spacedBy(5.dp)
                                 ) {
-                                    report.attempts.forEach { attempt ->
+                                    report.attempts.take(16).forEach { attempt ->
                                         val badgeColor = when (attempt.status) {
                                             SourceAttemptStatus.SUCCESS -> MaterialTheme.colorScheme.primary
                                             SourceAttemptStatus.RELEVANCE_REJECTED -> MaterialTheme.colorScheme.tertiary
                                             else -> MaterialTheme.colorScheme.error
                                         }
-                                        val codeText = attempt.httpCode?.let { "HTTP $it" } ?: attempt.status.name
+                                        val codePart = attempt.httpCode?.takeIf { it != 200 || attempt.status == SourceAttemptStatus.SUCCESS }
+                                            ?.let { "HTTP $it" } ?: attempt.status.name
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.Top,
                                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
                                             Text(
-                                                text = "[$codeText]",
+                                                text = "[$codePart]",
                                                 style = MaterialTheme.typography.labelSmall.copy(
                                                     fontFamily = MonoFontFamily,
                                                     fontWeight = FontWeight.Bold,
