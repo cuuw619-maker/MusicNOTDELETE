@@ -136,10 +136,10 @@ object ShaderSafetyGuard {
 }
 
 /**
- * Zero-stall Hardware GPU Shader Aurora & Harmonic Beat Halo.
- * Uses Skia's native hardware RadialGradient & SweepGradient GPU shaders (pre-compiled in Skia)
- * instead of RuntimeShader pipeline compilation, ensuring 0ms freeze when opening the player
- * on all real devices and streaming/emulated GPUs while delivering vibrant audio-reactive motion.
+ * Zero-Allocation Audio-Reactive Beat Halo & Ambient Energy Layer.
+ * Draws layered audio-reactive energy halos and harmonic beat rings driven by [AudioEnergyEngine]
+ * with ZERO RuntimeShader compilation and ZERO per-frame Brush allocations, eliminating freezes
+ * and GPU driver crashes on all devices while remaining responsive to music & touch gestures.
  */
 @Composable
 fun AudioReactiveShaderLayer(
@@ -167,20 +167,15 @@ fun AudioReactiveShaderLayer(
     )
 
     if (profile.isPotato || reducedMotion) {
-        val alpha = (intensity * 0.24f).coerceIn(0.04f, 0.26f)
-        val radial = remember(primaryColor, secondaryColor, alpha) {
-            Brush.radialGradient(
-                colors = listOf(
-                    primaryColor.copy(alpha = alpha),
-                    secondaryColor.copy(alpha = alpha * 0.45f),
-                    Color.Transparent
-                )
+        val alpha = (intensity * 0.20f).coerceIn(0.04f, 0.22f)
+        Canvas(modifier = modifier.fillMaxSize()) {
+            val minDim = size.minDimension
+            if (minDim <= 8f) return@Canvas
+            drawCircle(
+                color = primaryColor.copy(alpha = alpha * revealAlphaState.value),
+                radius = minDim * 0.42f,
+                center = Offset(size.width * 0.5f, size.height * 0.34f)
             )
-        }
-        Box(modifier = modifier.fillMaxSize()) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawRect(brush = radial, alpha = revealAlphaState.value)
-            }
         }
         return
     }
@@ -191,7 +186,7 @@ fun AudioReactiveShaderLayer(
             initialValue = 0f,
             targetValue = (2f * PI.toFloat()),
             animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 8800, easing = LinearEasing),
+                animation = tween(durationMillis = 10_000, easing = LinearEasing),
                 repeatMode = RepeatMode.Restart
             ),
             label = "aurora_phase"
@@ -200,18 +195,7 @@ fun AudioReactiveShaderLayer(
         null
     }
 
-    val sweepBrush = remember(primaryColor, secondaryColor, accentColor) {
-        Brush.sweepGradient(
-            colors = listOf(
-                primaryColor.copy(alpha = 0.36f),
-                secondaryColor.copy(alpha = 0.28f),
-                accentColor.copy(alpha = 0.16f),
-                primaryColor.copy(alpha = 0.36f)
-            )
-        )
-    }
-
-    val baseAlpha = (intensity * 0.42f).coerceIn(0.08f, 0.46f)
+    val baseAlpha = (intensity * 0.32f).coerceIn(0.06f, 0.34f)
     Canvas(modifier = modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
@@ -228,60 +212,51 @@ fun AudioReactiveShaderLayer(
             shimmerPhase = phase / (2f * PI.toFloat())
         )
 
-        val focusX = (touchOffset.x * w * 0.09f)
+        val focusX = touchOffset.x * w * 0.08f
+        val minDim = size.minDimension
 
-        // Lobe 1: sub-bass reactive warm radial shader
-        val r1 = (size.minDimension * (0.56f + 0.14f * snap.beatPulse)).coerceAtLeast(40f)
-        val c1 = Offset(w * (0.30f + 0.10f * sin(phase)) + focusX, h * (0.26f + 0.08f * cos(phase)))
+        // Soft ambient energy washes (pure solid-color feathered circles, zero Brush alloc)
+        val c1 = Offset(w * (0.30f + 0.08f * sin(phase)) + focusX, h * (0.26f + 0.06f * cos(phase)))
+        val r1 = minDim * (0.44f + 0.08f * snap.subBass)
         drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    primaryColor.copy(alpha = (baseAlpha * (0.72f + 0.55f * snap.subBass) * reveal).coerceIn(0.04f, 0.48f)),
-                    primaryColor.copy(alpha = (baseAlpha * 0.24f * reveal).coerceIn(0.01f, 0.18f)),
-                    Color.Transparent
-                ),
-                center = c1,
-                radius = r1
-            ),
-            center = c1,
-            radius = r1
+            color = primaryColor.copy(alpha = (baseAlpha * 0.42f * reveal).coerceIn(0.02f, 0.20f)),
+            radius = r1,
+            center = c1
+        )
+        drawCircle(
+            color = primaryColor.copy(alpha = (baseAlpha * 0.28f * snap.beatPulse * reveal).coerceIn(0.02f, 0.16f)),
+            radius = r1 * 0.64f,
+            center = c1
         )
 
-        // Lobe 2: mid-vocal reactive contrasting radial shader
-        val r2 = (size.minDimension * (0.52f + 0.11f * snap.midVocal)).coerceAtLeast(40f)
-        val c2 = Offset(w * (0.72f - 0.10f * cos(phase)) - focusX * 0.7f, h * (0.54f - 0.08f * sin(phase)))
+        val c2 = Offset(w * (0.72f - 0.08f * cos(phase)) - focusX * 0.65f, h * (0.50f - 0.07f * sin(phase)))
+        val r2 = minDim * (0.40f + 0.07f * snap.midVocal)
         drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    secondaryColor.copy(alpha = (baseAlpha * (0.68f + 0.48f * snap.midVocal) * reveal).coerceIn(0.04f, 0.44f)),
-                    secondaryColor.copy(alpha = (baseAlpha * 0.20f * reveal).coerceIn(0.01f, 0.16f)),
-                    Color.Transparent
-                ),
-                center = c2,
-                radius = r2
-            ),
-            center = c2,
-            radius = r2
+            color = secondaryColor.copy(alpha = (baseAlpha * 0.38f * reveal).coerceIn(0.02f, 0.18f)),
+            radius = r2,
+            center = c2
         )
 
-        // Lobe 3: rotating sweep-shader beat halo ring centered behind the artwork
-        val haloCenter = Offset(w * 0.5f + focusX * 0.65f, h * 0.34f)
-        val haloRadius = (size.minDimension * (0.35f + 0.055f * snap.beatPulse)).coerceAtLeast(36f)
-        val angleDeg = (phase * (180f / PI.toFloat()))
-        rotate(degrees = angleDeg, pivot = haloCenter) {
-            drawCircle(
-                brush = sweepBrush,
-                radius = haloRadius,
-                center = haloCenter,
-                alpha = (0.35f + 0.55f * snap.beatPulse) * reveal,
-                style = Stroke(width = (4.dp.toPx() + 5.dp.toPx() * snap.beatPulse))
-            )
-        }
+        // Concentric harmonic beat halo rings behind artwork stage
+        val haloCenter = Offset(w * 0.5f + focusX * 0.55f, h * 0.33f)
+        val haloRadius = (minDim * (0.36f + 0.05f * snap.beatPulse)).coerceAtLeast(36f)
+        drawCircle(
+            color = primaryColor.copy(alpha = (0.14f + 0.22f * snap.beatPulse) * reveal),
+            radius = haloRadius,
+            center = haloCenter,
+            style = Stroke(width = (2.5.dp.toPx() + 3.dp.toPx() * snap.beatPulse))
+        )
+        drawCircle(
+            color = accentColor.copy(alpha = (0.10f + 0.16f * snap.highAir) * reveal),
+            radius = haloRadius * (1.14f + 0.04f * sin(phase * 2f)),
+            center = haloCenter,
+            style = Stroke(width = 1.6.dp.toPx())
+        )
     }
 }
 
 /**
- * Ultra-fast hardware gradient reactive aura for the collapsed Mini-Player capsule.
+ * Ultra-fast zero-allocation reactive energy aura for the collapsed Mini-Player capsule.
  */
 @Composable
 fun MiniPlayerReactiveAura(
@@ -322,20 +297,17 @@ fun MiniPlayerReactiveAura(
             songId = songId,
             shimmerPhase = phase / (2f * PI.toFloat())
         )
-        val cx = w * (0.28f + 0.14f * sin(phase))
-        val radius = (w * 0.52f).coerceAtLeast(48f)
+        val cx1 = w * (0.24f + 0.16f * sin(phase))
+        val cx2 = w * (0.76f - 0.14f * cos(phase))
         drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    primaryColor.copy(alpha = (0.14f + 0.14f * snap.beatPulse).coerceIn(0.06f, 0.30f)),
-                    secondaryColor.copy(alpha = (0.06f + 0.08f * snap.midVocal).coerceIn(0.02f, 0.18f)),
-                    Color.Transparent
-                ),
-                center = Offset(cx, h * 0.5f),
-                radius = radius
-            ),
-            center = Offset(cx, h * 0.5f),
-            radius = radius
+            color = primaryColor.copy(alpha = (0.09f + 0.11f * snap.beatPulse).coerceIn(0.04f, 0.22f)),
+            center = Offset(cx1, h * 0.5f),
+            radius = (w * 0.30f).coerceAtLeast(36f)
+        )
+        drawCircle(
+            color = secondaryColor.copy(alpha = (0.07f + 0.08f * snap.midVocal).coerceIn(0.03f, 0.16f)),
+            center = Offset(cx2, h * 0.5f),
+            radius = (w * 0.26f).coerceAtLeast(30f)
         )
     }
 }

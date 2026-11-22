@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -186,9 +187,9 @@ fun ExpandingPlayerContainer(
                 expansionAnim.animateTo(
                     targetValue = target,
                     animationSpec = if (isExpanded) {
-                        tween(durationMillis = 320, easing = FastOutSlowInEasing)
+                        tween(durationMillis = 360, easing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f))
                     } else {
-                        tween(durationMillis = 250, easing = FastOutSlowInEasing)
+                        tween(durationMillis = 260, easing = CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f))
                     }
                 )
             }
@@ -210,7 +211,7 @@ fun ExpandingPlayerContainer(
         derivedStateOf { !isExpanded || expansionAnim.value < 0.92f }
     }
     val isTransitioning by remember {
-        derivedStateOf { expansionAnim.value > 0.01f && expansionAnim.value < 0.96f }
+        derivedStateOf { expansionAnim.value > 0.005f && expansionAnim.value < 0.97f }
     }
 
     var showMiniMenu by remember { mutableStateOf(false) }
@@ -255,15 +256,16 @@ fun ExpandingPlayerContainer(
                     .fillMaxSize()
                     .graphicsLayer {
                         val f = expansionAnim.value.coerceIn(0f, 1f)
-                        transformOrigin = TransformOrigin(0.5f, 0.90f)
-                        val s = lerp(0.90f, 1.0f, f)
-                        scaleX = s
-                        scaleY = s
-                        translationY = (1f - f) * (totalHeightPx * 0.16f)
-                        alpha = (f * 1.38f).coerceIn(0f, 1f)
-                        if (f < 0.995f) {
+                        transformOrigin = TransformOrigin(0.5f, 0.88f)
+                        scaleX = lerp(0.92f, 1.0f, f)
+                        scaleY = lerp(0.84f, 1.0f, f)
+                        translationY = (1f - f) * (totalHeightPx * 0.18f)
+                        alpha = (f * 1.6f).coerceIn(0f, 1f)
+                        if (f < 0.992f) {
                             clip = true
                             shape = expandingSheetClipShape
+                        } else {
+                            clip = false
                         }
                     }
                     .testTag("now_playing_container")
@@ -372,11 +374,10 @@ fun ExpandingPlayerContainer(
                     .height(76.dp)
                     .graphicsLayer {
                         val f = expansionAnim.value.coerceIn(0f, 1f)
-                        alpha = (1f - f * 2.2f).coerceIn(0f, 1f)
-                        translationY = -f * 48f
-                        val s = 1f + f * 0.04f
-                        scaleX = s
-                        scaleY = s
+                        alpha = (1f - f * 2.4f).coerceIn(0f, 1f)
+                        translationY = -f * 72f
+                        scaleX = 1f + f * 0.05f
+                        scaleY = 1f + f * 0.10f
                     }
             ) {
                 // Directional swipe preview pill hovering above mini-player during horizontal drag

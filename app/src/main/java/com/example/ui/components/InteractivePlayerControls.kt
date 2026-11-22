@@ -113,7 +113,7 @@ fun MorphingPlayPauseButton(
         label = "play_pause_geometric_morph"
     )
 
-    val wavePhase = if (isBuffering) {
+    val wavePhaseState = if (isBuffering) {
         val transition = rememberInfiniteTransition(label = "oval_wave_ring")
         transition.animateFloat(
             initialValue = 0f,
@@ -123,8 +123,8 @@ fun MorphingPlayPauseButton(
                 repeatMode = RepeatMode.Restart
             ),
             label = "buf_wave_phase"
-        ).value
-    } else 0f
+        )
+    } else null
 
     val profile = LocalPerformanceProfile.current
     val playTrianglePath = remember { Path() }
@@ -189,6 +189,7 @@ fun MorphingPlayPauseButton(
                         val amp = 1.9.dp.toPx()
                         val cycles = 10f
 
+                        val wavePhase = wavePhaseState?.value ?: 0f
                         ovalWavePath.reset()
                         for (i in 0..steps) {
                             val frac = i.toFloat() / steps.toFloat()
@@ -318,7 +319,7 @@ fun InteractiveProgressBar(
         label = "wave_amplitude"
     )
 
-    val wavePhase = if (isPlaying && !isDragging) {
+    val wavePhaseState = if (isPlaying && !isDragging) {
         val infinite = rememberInfiniteTransition(label = "squiggly_progress_phase")
         infinite.animateFloat(
             initialValue = 0f,
@@ -328,8 +329,8 @@ fun InteractiveProgressBar(
                 repeatMode = RepeatMode.Restart
             ),
             label = "wave_phase"
-        ).value
-    } else 0f
+        )
+    } else null
 
     val barThicknessDp by animateDpAsState(
         targetValue = if (isDragging) 6.dp else 4.dp,
@@ -417,6 +418,7 @@ fun InteractiveProgressBar(
                             cap = StrokeCap.Round
                         )
                     } else {
+                        val wavePhase = wavePhaseState?.value ?: 0f
                         val step = if (profile.isPotato) 8f else 4f
                         wavePath.reset()
                         var x = 0f

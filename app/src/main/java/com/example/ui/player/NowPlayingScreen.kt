@@ -94,6 +94,7 @@ import com.example.ui.animation.HapticType
 import com.example.ui.animation.calculateRubberBandOffset
 import com.example.ui.animation.fluidPress
 import com.example.ui.animation.performHapticFeedback
+import com.example.ui.components.AmbientGeometricShapesOverlay
 import com.example.ui.components.AppIcons
 import com.example.ui.components.AudioReactiveShaderLayer
 import com.example.ui.components.AudioVisualizer
@@ -225,12 +226,21 @@ fun NowPlayingScreen(
                 blurRadius = 14.dp,
                 allowLiveBlur = !isTransitioning,
                 artworkAlpha = 0.52f,
-                scrimTopColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f),
-                scrimMidColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
-                scrimBottomColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
+                scrimTopColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.66f),
+                scrimMidColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.54f),
+                scrimBottomColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
                 fallbackBaseColor = MaterialTheme.colorScheme.surface,
                 modifier = Modifier.fillMaxSize()
             )
+
+            if (!reducedMotion) {
+                AmbientGeometricShapesOverlay(
+                    isPlaying = playbackState.isPlaying,
+                    reducedMotion = reducedMotion || isTransitioning,
+                    alphaMultiplier = 1.25f,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
 
             if (audioReactiveShadersEnabled && !reducedMotion) {
                 AudioReactiveShaderLayer(
@@ -964,9 +974,9 @@ fun NowPlayingScreen(
                             shape = lyricsShape,
                             color = MaterialTheme.colorScheme.primaryContainer,
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                            tonalElevation = if (profile.isPotato) 1.dp else 6.dp,
-                            shadowElevation = if (profile.isPotato) 1.dp else 8.dp,
-                            border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                            tonalElevation = if (profile.isPotato) 1.dp else 4.dp,
+                            shadowElevation = 0.dp,
+                            border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.42f)),
                             modifier = Modifier
                                 .size(58.dp)
                                 .testTag("now_playing_lyrics_fab")

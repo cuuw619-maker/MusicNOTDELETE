@@ -220,6 +220,19 @@ fun MainApp(
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val isWideScreen = maxWidth >= 600.dp
 
+            if (!reducedMotion && playerExpansionFraction < 0.96f) {
+                com.example.ui.components.AmbientGeometricShapesOverlay(
+                    isPlaying = playbackState.isPlaying,
+                    reducedMotion = reducedMotion,
+                    alphaMultiplier = 0.72f,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            alpha = (1f - playerExpansionFraction * 1.5f).coerceIn(0f, 1f)
+                        }
+                )
+            }
+
             if (isWideScreen) {
                 Row(modifier = Modifier.fillMaxSize()) {
                     com.example.ui.navigation.ExpressiveNavigationRail(

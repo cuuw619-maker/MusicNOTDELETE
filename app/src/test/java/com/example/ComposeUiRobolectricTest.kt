@@ -3,6 +3,9 @@ package com.example
 import android.app.Application
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -269,5 +272,86 @@ class ComposeUiRobolectricTest {
             .performClick()
         composeTestRule.waitForIdle()
         assertTrue("Clicking Auto-DJ chip should invoke callback", autoDjToggled)
+    }
+
+    @Test
+    fun expandingPlayerContainer_expandsToNowPlayingAndRendersAmbientGeometryWithoutHang() {
+        val sampleSong = com.example.model.Song(
+            id = 303L,
+            title = "Veridis Quo",
+            artist = "Daft Punk",
+            album = "Discovery",
+            albumId = 3003L,
+            durationMs = 345_000L,
+            contentUriString = ""
+        )
+        val state = com.example.model.PlaybackState(
+            currentSong = sampleSong,
+            isPlaying = true,
+            currentPositionMs = 42_000L,
+            durationMs = 345_000L,
+            queue = listOf(sampleSong),
+            currentQueueIndex = 0
+        )
+
+        var expanded by androidx.compose.runtime.mutableStateOf(false)
+
+        composeTestRule.setContent {
+            MaterialTheme {
+                androidx.compose.foundation.layout.Box(
+                    modifier = androidx.compose.ui.Modifier.size(
+                        width = androidx.compose.ui.unit.Dp(412f),
+                        height = androidx.compose.ui.unit.Dp(915f)
+                    )
+                ) {
+                    com.example.ui.components.AmbientGeometricShapesOverlay(
+                        isPlaying = true,
+                        reducedMotion = false,
+                        alphaMultiplier = 0.8f
+                    )
+                    com.example.ui.player.ExpandingPlayerContainer(
+                        isExpanded = expanded,
+                        onExpandedChange = { expanded = it },
+                        playbackState = state,
+                        onPlayPause = {},
+                        onSkipNext = {},
+                        onSkipPrevious = {},
+                        onSeekTo = {},
+                        onRewind10 = {},
+                        onForward10 = {},
+                        onToggleShuffle = {},
+                        onCycleRepeatMode = {},
+                        onToggleFavorite = {},
+                        onOpenQueue = {},
+                        onOpenEqualizer = {},
+                        onAddToPlaylist = {},
+                        onOpenSleepTimer = {},
+                        audioReactiveShadersEnabled = true,
+                        miniSpectrumMode = "BARS"
+                    )
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+        assertTrue(
+            "Collapsed mini_player should initially be visible",
+            composeTestRule.onAllNodes(hasTestTag("mini_player")).fetchSemanticsNodes().isNotEmpty()
+        )
+
+        composeTestRule.onNode(hasTestTag("mini_player")).performClick()
+        composeTestRule.waitForIdle()
+
+        assertTrue("Expanded flag must toggle to true on mini_player tap", expanded)
+        val containerNodes = composeTestRule.onAllNodes(hasTestTag("now_playing_container"))
+            .fetchSemanticsNodes()
+        assertTrue("now_playing_container must be visible after expansion", containerNodes.isNotEmpty())
+        assertTrue(
+            "now_playing_container bounds height must be > 400",
+            containerNodes.first().boundsInRoot.height > 400f
+        )
+        assertTrue(
+            composeTestRule.onAllNodes(hasTestTag("now_playing_artwork_stage"))
+                .fetchSemanticsNodes().isNotEmpty()
+        )
     }
 }

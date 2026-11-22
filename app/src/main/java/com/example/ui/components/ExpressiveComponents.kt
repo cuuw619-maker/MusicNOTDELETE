@@ -222,8 +222,6 @@ class LiveMorphPolygonShape(
     private val cycleProgressState: State<Float>,
     private val rotationDegState: State<Float>
 ) : Shape {
-    private val outlinePath = Path()
-
     override fun createOutline(
         size: Size,
         layoutDirection: LayoutDirection,
@@ -250,8 +248,10 @@ class LiveMorphPolygonShape(
         val cosRot = cos(rotRad)
         val sinRot = sin(rotRad)
 
-        outlinePath.reset()
-        for (i in 0 until MorphShapeLut.STEPS) {
+        val path = Path()
+        var first = true
+        var i = 0
+        while (i < MorphShapeLut.STEPS) {
             val rNorm = shapeA[i] + (shapeB[i] - shapeA[i]) * glideT
             val r = maxR * rNorm
             val c0 = MorphShapeLut.cosTable[i]
@@ -260,10 +260,16 @@ class LiveMorphPolygonShape(
             val ry = s0 * cosRot + c0 * sinRot
             val x = cx + r * rx
             val y = cy + r * ry
-            if (i == 0) outlinePath.moveTo(x, y) else outlinePath.lineTo(x, y)
+            if (first) {
+                path.moveTo(x, y)
+                first = false
+            } else {
+                path.lineTo(x, y)
+            }
+            i += 2
         }
-        outlinePath.close()
-        return Outline.Generic(outlinePath)
+        path.close()
+        return Outline.Generic(path)
     }
 }
 

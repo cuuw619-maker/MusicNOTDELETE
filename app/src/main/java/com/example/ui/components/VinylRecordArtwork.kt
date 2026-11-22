@@ -122,12 +122,10 @@ fun VinylRecordArtwork(
 
                 // Vinyl light sheen reflections (anisotropic highlights)
                 drawLine(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.14f), Color.Transparent)
-                    ),
-                    start = Offset(center.x - radius, center.y - radius),
-                    end = Offset(center.x + radius, center.y + radius),
-                    strokeWidth = 24f,
+                    color = Color.White.copy(alpha = 0.08f),
+                    start = Offset(center.x - radius * 0.85f, center.y - radius * 0.85f),
+                    end = Offset(center.x + radius * 0.85f, center.y + radius * 0.85f),
+                    strokeWidth = 20f,
                     cap = StrokeCap.Round
                 )
             }
