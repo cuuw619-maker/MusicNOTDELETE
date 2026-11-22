@@ -138,6 +138,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val hapticEnabled = preferencesManager.hapticEnabled
     val animationScale = preferencesManager.animationScale
     val performanceMode = preferencesManager.performanceMode
+    val audioReactiveShadersEnabled = preferencesManager.audioReactiveShadersEnabled
+    val autoDjEnabled = preferencesManager.autoDjEnabled
+    val miniSpectrumMode = preferencesManager.miniSpectrumMode
 
     // In-memory song bookmarks (timestamp pins): songId -> list of timestamps
     private val _bookmarksState = MutableStateFlow<Map<Long, List<Long>>>(emptyMap())
@@ -557,6 +560,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun setHapticEnabled(enabled: Boolean) = preferencesManager.setHapticEnabled(enabled)
     fun setAnimationScale(scale: Float) = preferencesManager.setAnimationScale(scale)
     fun setPerformanceMode(mode: PreferencesManager.PerformanceMode) = preferencesManager.setPerformanceMode(mode)
+    fun setAudioReactiveShadersEnabled(enabled: Boolean) = preferencesManager.setAudioReactiveShadersEnabled(enabled)
+    fun setAutoDjEnabled(enabled: Boolean) = preferencesManager.setAutoDjEnabled(enabled)
+    fun setMiniSpectrumMode(mode: String) = preferencesManager.setMiniSpectrumMode(mode)
+    fun cycleMiniSpectrumMode() {
+        val next = when (miniSpectrumMode.value) {
+            "BARS" -> "WAVE"
+            "WAVE" -> "OFF"
+            else -> "BARS"
+        }
+        preferencesManager.setMiniSpectrumMode(next)
+    }
 
     fun setPlaybackSpeed(speed: Float) = controllerManager.setPlaybackSpeed(speed)
     fun setPitchSemitones(semitones: Int) = controllerManager.setPitchSemitones(semitones)
@@ -607,7 +621,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSpatialReverbPreset(preset: String) = equalizerManager.setSpatialReverbPreset(preset)
     fun setStereoWidener(percent: Int) = preferencesManager.setStereoWidener(percent)
-    fun setAudioBalance(balance: Float) = preferencesManager.setAudioBalance(balance)
+    fun setAudioBalance(balance: Float) = equalizerManager.setAudioBalance(balance)
 
     fun setPluginEnabled(pluginId: String, enabled: Boolean) = pluginManager.setPluginEnabled(pluginId, enabled)
     fun saveUserPlugin(project: com.example.plugin.UserPluginProject) = pluginManager.saveUserPlugin(project)
@@ -618,6 +632,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun setBassBoost(level: Short) = equalizerManager.setBassBoost(level)
     fun setVirtualizer(strength: Short) = equalizerManager.setVirtualizer(strength)
     fun setLoudnessEnhancer(targetGainmB: Int) = equalizerManager.setLoudnessEnhancer(targetGainmB)
+    fun setEqualizerPreAmpDb(db: Float) = equalizerManager.setPreAmpDb(db)
+    fun setEqualizerLimiterEnabled(enabled: Boolean) = equalizerManager.setLimiterEnabled(enabled)
+    fun resetEqualizerBands() = equalizerManager.resetAllBands()
     fun useEqualizerPreset(presetIndex: Short) = equalizerManager.usePreset(presetIndex)
     fun applyEqualizerPreset(presetName: String) = equalizerManager.applyPreset(presetName)
 
@@ -707,7 +724,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         onlineSearchJob?.cancel()
         onlineSearchJob = viewModelScope.launch {
             if (!immediate) {
-                kotlinx.coroutines.delay(420L)
+                kotlinx.coroutines.delay(280L)
             }
             _isOnlineSearchLoading.value = true
             try {
@@ -716,6 +733,20 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     _onlineSearchResults.value = results
                     _isOnlineSearchLoading.value = false
                     if (results.isNotEmpty()) {
+                        val imageLoader = coil.Coil.imageLoader(app)
+                        results.take(6).forEach { track ->
+                            val thumb = track.thumbnailUrl
+                            if (!thumb.isNullOrBlank()) {
+                                runCatching {
+                                    imageLoader.enqueue(
+                                        coil.request.ImageRequest.Builder(app)
+                                            .data(thumb)
+                                            .size(200)
+                                            .build()
+                                    )
+                                }
+                            }
+                        }
                         scheduleHistoryCommitCheck()
                     }
                 } else {

@@ -9,6 +9,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,6 +35,16 @@ object FreeCatalogProviders {
 
     private const val TAG = "FreeCatalogProviders"
     private val client = NetworkClient.fastProbeClient
+    private val unhealthyHostsUntil = ConcurrentHashMap<String, Long>()
+
+    private fun isHostHealthy(host: String): Boolean {
+        val until = unhealthyHostsUntil[host] ?: return true
+        return System.currentTimeMillis() >= until
+    }
+
+    private fun markHostUnhealthy(host: String, cooldownMs: Long = 90_000L) {
+        unhealthyHostsUntil[host] = System.currentTimeMillis() + cooldownMs
+    }
 
     // ========================================================
     // 1. SOUNDCLOUD v2 (Dynamic client_id + Progressive/HLS)
@@ -556,8 +567,9 @@ object FreeCatalogProviders {
 
     fun searchAudiusPool(query: String): List<OnlineTrack> {
         val pool = getAudiusDiscoveryPool()
+        val ordered = pool.filter { isHostHealthy(it) }.ifEmpty { pool }.take(3)
         val encoded = URLEncoder.encode(query.trim(), "UTF-8")
-        for (host in pool.take(4)) {
+        for (host in ordered) {
             val t0 = System.currentTimeMillis()
             try {
                 val req = Request.Builder()
@@ -566,6 +578,7 @@ object FreeCatalogProviders {
                     .build()
                 client.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) {
+                        markHostUnhealthy(host)
                         recordAttempt("audius", "Audius", "search", SourceAttemptStatus.HTTP_ERROR, resp.code, "$host HTTP ${resp.code}", t0)
                         return@use
                     }
@@ -610,6 +623,7 @@ object FreeCatalogProviders {
                     if (relevant.isNotEmpty()) return relevant
                 }
             } catch (e: Exception) {
+                markHostUnhealthy(host)
                 recordAttempt("audius", "Audius", "search", SourceAttemptStatus.NETWORK_ERROR, null, "$host: ${e.message}", t0)
             }
         }
@@ -618,7 +632,8 @@ object FreeCatalogProviders {
 
     fun resolveAudiusStreamWithFailover(trackId: String): ResolvedStream? {
         val pool = getAudiusDiscoveryPool()
-        for (host in pool.take(4)) {
+        val ordered = pool.filter { isHostHealthy(it) }.ifEmpty { pool }.take(3)
+        for (host in ordered) {
             val streamUrl = "$host/v1/tracks/$trackId/stream?app_name=imux"
             val t0 = System.currentTimeMillis()
             try {
@@ -638,15 +653,17 @@ object FreeCatalogProviders {
                             engine = "audius"
                         )
                     } else {
+                        markHostUnhealthy(host)
                         recordAttempt("audius", "Audius", "stream", SourceAttemptStatus.HTTP_ERROR, resp.code, "$host HTTP ${resp.code}", t0)
                     }
                 }
             } catch (e: Exception) {
+                markHostUnhealthy(host)
                 recordAttempt("audius", "Audius", "stream", SourceAttemptStatus.NETWORK_ERROR, null, "$host: ${e.message}", t0)
             }
         }
         return ResolvedStream(
-            url = "${pool.firstOrNull() ?: "https://discoveryprovider.audius.co"}/v1/tracks/$trackId/stream?app_name=imux",
+            url = "${ordered.firstOrNull() ?: pool.firstOrNull() ?: "https://discoveryprovider.audius.co"}/v1/tracks/$trackId/stream?app_name=imux",
             userAgent = NetworkClient.BROWSER_UA,
             expiresAtMs = System.currentTimeMillis() + 1800_000L,
             engine = "audius"
@@ -686,7 +703,7 @@ object FreeCatalogProviders {
 
             val parsedTracks = coroutineScope {
                 pageUrls.take(4).map { url ->
-                    async { parseBandcampTrackPage(url) }
+                    async { withTimeoutOrNull(2_400L) { parseBandcampTrackPage(url) } }
                 }.awaitAll().filterNotNull()
             }
             val relevant = parsedTracks.filter { RelevanceScorer.matchesSearchQuery(it, query) }

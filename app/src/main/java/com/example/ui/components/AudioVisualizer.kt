@@ -45,9 +45,9 @@ fun AudioVisualizer(
     val profile = LocalPerformanceProfile.current
     val effectiveBarCount = barCount.coerceAtMost(profile.visualizerBars).coerceAtLeast(8)
 
-    val shimmer = if (isPlaying) {
+    val shimmerState = if (isPlaying) {
         val infiniteTransition = rememberInfiniteTransition(label = "transient_shimmer")
-        val animValue by infiniteTransition.animateFloat(
+        infiniteTransition.animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
@@ -56,9 +56,8 @@ fun AudioVisualizer(
             ),
             label = "shimmer_anim"
         )
-        animValue
     } else {
-        0f
+        null
     }
 
     val barBrush = remember(primaryColor, secondaryColor) {
@@ -77,6 +76,7 @@ fun AudioVisualizer(
             .fillMaxWidth()
             .height(barHeight)
     ) {
+        val shimmer = shimmerState?.value ?: 0f
         val posMs = currentPositionProvider?.invoke() ?: currentPositionMs
         val width = size.width
         val height = size.height
@@ -151,6 +151,96 @@ fun AudioVisualizer(
                     cornerRadius = peakRadius
                 )
             }
+        }
+    }
+}
+
+/**
+ * Ultra-light live spectrum visualizer tailored for the Mini-Player capsule.
+ * Supports crisp rounded spectral bars ("BARS") and kinetic mirrored waveform ("WAVE").
+ */
+@Composable
+fun MiniPlayerLiveSpectrum(
+    isPlaying: Boolean,
+    currentPositionMs: Long = 0L,
+    durationMs: Long = 0L,
+    songId: Long = 0L,
+    mode: String = "BARS",
+    modifier: Modifier = Modifier,
+    primaryColor: Color = MaterialTheme.colorScheme.primary,
+    secondaryColor: Color = MaterialTheme.colorScheme.tertiary,
+    currentPositionProvider: (() -> Long)? = null
+) {
+    if (mode.equals("OFF", ignoreCase = true)) return
+    val profile = LocalPerformanceProfile.current
+    val count = if (profile.isPotato) 10 else 16
+
+    val shimmerState = if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "mini_spectrum_shimmer")
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(if (profile.isPotato) 640 else 420, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "mini_shimmer_anim"
+        )
+    } else {
+        null
+    }
+
+    val brush = remember(primaryColor, secondaryColor) {
+        Brush.horizontalGradient(listOf(primaryColor, secondaryColor))
+    }
+
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(10.dp)
+    ) {
+        val w = size.width
+        val h = size.height
+        if (w <= 4f || h <= 2f) return@Canvas
+        val shimmer = shimmerState?.value ?: 0f
+        val posMs = currentPositionProvider?.invoke() ?: currentPositionMs
+        val snap = AudioEnergyEngine.sample(
+            isPlaying = isPlaying,
+            positionMs = posMs,
+            durationMs = durationMs,
+            songId = songId,
+            shimmerPhase = shimmer
+        )
+
+        val gap = (w * 0.34f) / (count - 1).coerceAtLeast(1)
+        val barW = ((w - gap * (count - 1)) / count).coerceAtLeast(1.5f)
+        val corner = CornerRadius(barW / 2f, barW / 2f)
+        val isWave = mode.equals("WAVE", ignoreCase = true)
+
+        for (i in 0 until count) {
+            val frac = i / count.toFloat()
+            val mod = if (isPlaying) {
+                val band = when {
+                    frac < 0.33f -> snap.subBass
+                    frac < 0.68f -> snap.midVocal
+                    else -> snap.highAir
+                }
+                val ripple = abs(sin((posMs / 115f) + i * 0.72f + shimmer * 2.4f)) * 0.42f
+                (0.18f + band * 0.56f + ripple).coerceIn(0.16f, 1.0f)
+            } else {
+                0.22f + 0.08f * abs(sin(i * 0.6f))
+            }
+
+            val barH = (h * mod).coerceAtLeast(2.2f)
+            val left = i * (barW + gap)
+            val top = if (isWave) (h - barH) * 0.5f else (h - barH)
+            drawRoundRect(
+                brush = brush,
+                topLeft = Offset(left, top),
+                size = Size(barW, barH),
+                cornerRadius = corner,
+                alpha = if (isPlaying) 0.92f else 0.42f
+            )
         }
     }
 }

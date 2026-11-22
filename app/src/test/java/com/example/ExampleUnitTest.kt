@@ -613,4 +613,266 @@ class ExampleUnitTest {
         assertEquals(1, lines[1].parallelLines.size)
         assertEquals("Keep on shining", lines[1].parallelLines[0].text)
     }
+
+    @Test
+    fun equalizerManager_tenBandFrequenciesPreAmpBalanceAndBassCurve() {
+        val freqs = com.example.playback.EqualizerManager.TEN_BAND_CENTER_FREQS_HZ
+        assertEquals(10, freqs.size)
+        assertEquals(31, freqs.first())
+        assertEquals(16000, freqs.last())
+
+        val bassCurve = com.example.playback.EqualizerManager.presetCurveDb("Bass Boost")
+        assertTrue(bassCurve != null && bassCurve.size == 10)
+        assertTrue(bassCurve!![0] > bassCurve[5])
+
+        assertTrue(com.example.playback.EqualizerManager.calculateBassBoostDeltaDb(0, 1000) > 7.0f)
+        assertEquals(0f, com.example.playback.EqualizerManager.calculateBassBoostDeltaDb(6, 1000), 0.001f)
+
+        // Pre-Amp clamping and L/R balance attenuation
+        val leftGainCentered = com.example.playback.EqualizerManager.calculateChannelInputGainDb(
+            preAmpDb = 6f, loudnessStrengthMb = 200, audioBalance = 0f, channelIndex = 0
+        )
+        assertEquals(8.0f, leftGainCentered, 0.01f)
+
+        val rightGainShiftedLeft = com.example.playback.EqualizerManager.calculateChannelInputGainDb(
+            preAmpDb = 0f, loudnessStrengthMb = 0, audioBalance = -0.5f, channelIndex = 1
+        )
+        assertEquals(-12.0f, rightGainShiftedLeft, 0.01f)
+    }
+
+    @Test
+    fun kugouLyricsProvider_decodesKrc1XorZlibAndParsesWordTimings() {
+        val sampleKrc = "[offset:200]\n[1000,2000]<0,400,0>Hello <400,600,0>world\n"
+        val rawBytes = sampleKrc.toByteArray(Charsets.UTF_8)
+        val deflater = java.util.zip.Deflater()
+        deflater.setInput(rawBytes)
+        deflater.finish()
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(256)
+        while (!deflater.finished()) {
+            val count = deflater.deflate(buf)
+            out.write(buf, 0, count)
+        }
+        deflater.end()
+        val compressed = out.toByteArray()
+
+        val krcKey = byteArrayOf(
+            64, 71, 97, 119, 94, 50, 116, 71,
+            81, 54, 49, 45, (-50).toByte(), (-46).toByte(), 110, 105
+        )
+        val packet = ByteArray(4 + compressed.size)
+        packet[0] = 'k'.code.toByte()
+        packet[1] = 'r'.code.toByte()
+        packet[2] = 'c'.code.toByte()
+        packet[3] = '1'.code.toByte()
+        for (i in compressed.indices) {
+            packet[4 + i] = (compressed[i].toInt() xor krcKey[i % krcKey.size].toInt()).toByte()
+        }
+        val b64 = java.util.Base64.getEncoder().encodeToString(packet)
+
+        val decoded = com.example.lyrics.KuGouLyricsProvider.decodeKrcBase64(b64)
+        assertEquals(sampleKrc, decoded)
+
+        val manager = LyricsManager()
+        val parsed = com.example.lyrics.KuGouLyricsProvider.parseKrcLines(
+            rawKrc = decoded!!,
+            inlineSpeakerParser = { Triple(LyricSpeaker.FIRST, null, it) },
+            synthesizeWords = { txt, s, e -> manager.synthesizeNaturalWords(txt, s, e) }
+        )
+        assertEquals(1, parsed.size)
+        val line = parsed.first()
+        assertEquals(1200L, line.timestampMs) // 1000 + 200ms offset
+        assertEquals("Hello world", line.primaryText)
+        assertTrue(line.hasWordTiming)
+        assertEquals(2, line.words.size)
+        assertEquals("Hello", line.words[0].text)
+        assertEquals(1200L, line.words[0].startTimeMs)
+        assertEquals(1600L, line.words[0].endTimeMs)
+    }
+
+    @Test
+    fun lyricsManager_endpointsIncludeAllFiveMirrorsAndScorerPrefersWordSyncParallel() {
+        val hosts = LyricsManager.LYRICS_PLUS_ENDPOINTS
+        assertEquals(5, hosts.size)
+        assertTrue(hosts.any { it.contains("lyricsplus.binimum.org") })
+        assertTrue(hosts.any { it.contains("lyricsplus.atomix.one") })
+        assertTrue(hosts.any { it.contains("lyricsplus-seven.vercel.app") })
+        assertTrue(hosts.any { it.contains("lyricsplus.prjktla.workers.dev") })
+        assertTrue(hosts.any { it.contains("lyrics-plus-backend.vercel.app") })
+
+        val manager = LyricsManager()
+        val richLine = com.example.lyrics.DualLyricLine(
+            timestampMs = 5_000L,
+            endTimeMs = 8_000L,
+            primaryText = "Feel the bass",
+            words = listOf(com.example.lyrics.LyricWord("Feel", 5_000L, 5_500L)),
+            isSynced = true,
+            hasWordTiming = true,
+            parallelLines = listOf(com.example.lyrics.ParallelLyricLine("ooh yeah", 5_400L, 6_800L))
+        )
+        val richState = com.example.lyrics.LyricsState(
+            title = "Track",
+            artist = "Artist",
+            lines = listOf(richLine),
+            source = "LyricsPlus Word-Sync",
+            isSynced = true,
+            hasWordSync = true
+        )
+        val plainSyncState = com.example.lyrics.LyricsState(
+            title = "Track",
+            artist = "Artist",
+            lines = listOf(
+                com.example.lyrics.DualLyricLine(
+                    timestampMs = 5_000L,
+                    endTimeMs = 8_000L,
+                    primaryText = "Feel the bass",
+                    isSynced = true,
+                    hasWordTiming = false
+                )
+            ),
+            source = "LRCLIB Sync",
+            isSynced = true,
+            hasWordSync = false
+        )
+        assertTrue(
+            manager.scoreLyricsCandidate(richState, 180L) > manager.scoreLyricsCandidate(plainSyncState, 180L)
+        )
+    }
+
+    @Test
+    fun youTubeStreamManager_extractsGooglevideoExpiryAndFlagsNearExpiry() {
+        val nowMs = 1_700_000_000_000L
+        val futureExpireSec = (nowMs / 1000L) + 1200L // +20 min
+        val url = "https://rr3---sn-test.googlevideo.com/videoplayback?expire=$futureExpireSec&itag=140"
+
+        val parsedExpiry = YouTubeStreamManager.extractStreamExpiryMs(url, nowMs)
+        // Expected: (now + 1200s) - 120s safety margin
+        assertEquals(nowMs + 1_080_000L, parsedExpiry)
+        assertFalse(YouTubeStreamManager.isStreamNearExpiry(parsedExpiry, nowMs))
+        assertTrue(YouTubeStreamManager.isStreamNearExpiry(nowMs + 60_000L, nowMs))
+        assertTrue(YouTubeStreamManager.isStreamNearExpiry(nowMs - 1_000L, nowMs))
+    }
+
+    @Test
+    fun trackArtworkLoader_allowsFallbackOnlyForNamedAlbums() {
+        assertFalse(com.example.ui.components.TrackArtworkLoader.shouldAllowAlbumFallback("Unknown Album"))
+        assertFalse(com.example.ui.components.TrackArtworkLoader.shouldAllowAlbumFallback("<unknown>"))
+        assertFalse(com.example.ui.components.TrackArtworkLoader.shouldAllowAlbumFallback("Downloads"))
+        assertFalse(com.example.ui.components.TrackArtworkLoader.shouldAllowAlbumFallback("Music"))
+        assertFalse(com.example.ui.components.TrackArtworkLoader.shouldAllowAlbumFallback(""))
+        assertTrue(com.example.ui.components.TrackArtworkLoader.shouldAllowAlbumFallback("Random Access Memories"))
+    }
+
+    @Test
+    fun swipeTrackPolicy_resolvesLeftRightAndPreviewTarget() {
+        val songs = listOf(
+            com.example.model.Song(id = 1L, title = "One", artist = "A", album = "Al", albumId = 10L, durationMs = 180_000L, contentUriString = ""),
+            com.example.model.Song(id = 2L, title = "Two", artist = "B", album = "Al", albumId = 11L, durationMs = 180_000L, contentUriString = ""),
+            com.example.model.Song(id = 3L, title = "Three", artist = "C", album = "Al", albumId = 12L, durationMs = 180_000L, contentUriString = "")
+        )
+
+        // Default preference: RIGHT -> NEXT, LEFT -> PREVIOUS
+        assertEquals(
+            com.example.ui.player.SwipeTrackAction.NEXT,
+            com.example.ui.player.SwipeTrackPolicy.resolveHorizontalSwipeAction(
+                dragOffsetPx = 72f,
+                velocityPxPerSec = 0f,
+                thresholdPx = 56f
+            )
+        )
+        assertEquals(
+            com.example.ui.player.SwipeTrackAction.PREVIOUS,
+            com.example.ui.player.SwipeTrackPolicy.resolveHorizontalSwipeAction(
+                dragOffsetPx = -72f,
+                velocityPxPerSec = 0f,
+                thresholdPx = 56f
+            )
+        )
+        // Reversed preference: LEFT -> NEXT
+        assertEquals(
+            com.example.ui.player.SwipeTrackAction.NEXT,
+            com.example.ui.player.SwipeTrackPolicy.resolveHorizontalSwipeAction(
+                dragOffsetPx = -32f,
+                velocityPxPerSec = -650f,
+                thresholdPx = 56f,
+                swipeDirectionPref = com.example.ui.player.SwipeTrackPolicy.DIR_LEFT_NEXT_RIGHT_PREV
+            )
+        )
+        // Below threshold without flick velocity -> NONE
+        assertEquals(
+            com.example.ui.player.SwipeTrackAction.NONE,
+            com.example.ui.player.SwipeTrackPolicy.resolveHorizontalSwipeAction(
+                dragOffsetPx = 22f,
+                velocityPxPerSec = 100f,
+                thresholdPx = 56f
+            )
+        )
+
+        assertEquals(
+            songs[2],
+            com.example.ui.player.SwipeTrackPolicy.previewTargetSong(songs, 1, com.example.ui.player.SwipeTrackAction.NEXT)
+        )
+        assertEquals(
+            songs[0],
+            com.example.ui.player.SwipeTrackPolicy.previewTargetSong(songs, 1, com.example.ui.player.SwipeTrackAction.PREVIOUS)
+        )
+    }
+
+    @Test
+    fun audioEnergyEngine_and_shaderSafetyGuard_behaveSafely() {
+        val paused = com.example.ui.components.AudioEnergyEngine.sample(
+            isPlaying = false,
+            positionMs = 15_000L,
+            durationMs = 180_000L,
+            songId = 42L
+        )
+        val playing = com.example.ui.components.AudioEnergyEngine.sample(
+            isPlaying = true,
+            positionMs = 60_000L,
+            durationMs = 180_000L,
+            songId = 42L
+        )
+        assertTrue(playing.compositeEnergy > paused.compositeEnergy)
+        assertTrue(playing.subBass in 0f..1f && playing.beatPulse in 0f..1f)
+
+        com.example.ui.components.ShaderSafetyGuard.resetForTesting()
+        assertFalse(
+            com.example.ui.components.ShaderSafetyGuard.isAgslAllowed(
+                sdkInt = 31,
+                profileEnableShaders = true,
+                userShadersEnabled = true,
+                reducedMotion = false,
+                isEmulatedDevice = false
+            )
+        )
+        assertFalse(
+            com.example.ui.components.ShaderSafetyGuard.isAgslAllowed(
+                sdkInt = 34,
+                profileEnableShaders = true,
+                userShadersEnabled = true,
+                reducedMotion = false,
+                isEmulatedDevice = true
+            )
+        )
+        assertTrue(
+            com.example.ui.components.ShaderSafetyGuard.isAgslAllowed(
+                sdkInt = 34,
+                profileEnableShaders = true,
+                userShadersEnabled = true,
+                reducedMotion = false,
+                isEmulatedDevice = false
+            )
+        )
+        com.example.ui.components.ShaderSafetyGuard.markAgslFailure()
+        assertFalse(
+            com.example.ui.components.ShaderSafetyGuard.isAgslAllowed(
+                sdkInt = 34,
+                profileEnableShaders = true,
+                userShadersEnabled = true,
+                reducedMotion = false,
+                isEmulatedDevice = false
+            )
+        )
+        com.example.ui.components.ShaderSafetyGuard.resetForTesting()
+    }
 }

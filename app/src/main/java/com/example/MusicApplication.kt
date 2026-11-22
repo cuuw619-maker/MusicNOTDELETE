@@ -172,6 +172,10 @@ class MusicApplication : Application(), ImageLoaderFactory {
         val isLowRam = am?.isLowRamDevice == true
         return ImageLoader.Builder(this)
             .okHttpClient { NetworkClient.okHttpClient }
+            .components {
+                add(com.example.ui.components.TrackArtworkKeyer())
+                add(com.example.ui.components.TrackArtworkFetcher.Factory(this@MusicApplication))
+            }
             .memoryCache {
                 MemoryCache.Builder(this)
                     .maxSizePercent(if (isLowRam) 0.12 else 0.24)

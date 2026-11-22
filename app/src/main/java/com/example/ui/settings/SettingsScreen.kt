@@ -127,6 +127,9 @@ fun SettingsScreen(
     val volumeGestureEnabled by viewModel.volumeGestureEnabled.collectAsStateWithLifecycle()
     val filterShortAudio by viewModel.filterShortAudio.collectAsStateWithLifecycle()
     val performanceMode by viewModel.performanceMode.collectAsStateWithLifecycle()
+    val audioReactiveShadersEnabled by viewModel.audioReactiveShadersEnabled.collectAsStateWithLifecycle()
+    val autoDjEnabled by viewModel.autoDjEnabled.collectAsStateWithLifecycle()
+    val miniSpectrumMode by viewModel.miniSpectrumMode.collectAsStateWithLifecycle()
     val perfProfile = com.example.ui.theme.LocalPerformanceProfile.current
 
     var selectedCategoryIndex by remember { mutableIntStateOf(0) }
@@ -405,6 +408,14 @@ fun SettingsScreen(
                                 }
 
                                 SettingsSwitchRow(
+                                    icon = Icons.Rounded.GraphicEq,
+                                    title = "Smart Auto-DJ переходы",
+                                    subtitle = if (autoDjEnabled) "Автоматический плавный микс (~3.5 с) и кроссфейд при переключении" else "Выключен (используется стандартный переход)",
+                                    checked = autoDjEnabled,
+                                    onCheckedChange = { viewModel.setAutoDjEnabled(it) }
+                                )
+
+                                SettingsSwitchRow(
                                     icon = Icons.Rounded.TrendingDown,
                                     title = "Затухание в конце трека",
                                     subtitle = if (trackEndFadeOutEnabled) "Плавный уход в тишину (%.1f с) перед окончанием".format(trackEndFadeOutDuration) else "Выключено",
@@ -526,12 +537,12 @@ fun SettingsScreen(
                         }
 
                         item {
-                            SectionTitle(title = "Производительность и шейдеры")
+                            SectionTitle(title = "Производительность и графика")
                             ExpressiveSettingsCard {
                                 val resolvedName = when (perfProfile.tier) {
                                     com.example.ui.theme.PerformanceTier.POTATO -> "Бюджетный (Макс. FPS)"
                                     com.example.ui.theme.PerformanceTier.BALANCED -> "Сбалансированный"
-                                    com.example.ui.theme.PerformanceTier.FLAGSHIP -> "Флагман (AGSL Шейдеры)"
+                                    com.example.ui.theme.PerformanceTier.FLAGSHIP -> "Флагман (Блюр и эффекты)"
                                 }
                                 Column(
                                     modifier = Modifier
@@ -576,7 +587,7 @@ fun SettingsScreen(
                                     ) {
                                         val secondRow = listOf(
                                             PreferencesManager.PerformanceMode.BALANCED to ("Баланс" to "Оптимально"),
-                                            PreferencesManager.PerformanceMode.FLAGSHIP to ("Флагман" to "Шейдеры")
+                                            PreferencesManager.PerformanceMode.FLAGSHIP to ("Флагман" to "Максимум")
                                         )
                                         secondRow.forEach { (mode, labels) ->
                                             ExpressiveOvalChoiceChip(
@@ -589,6 +600,57 @@ fun SettingsScreen(
                                                 modifier = Modifier
                                                     .weight(1f)
                                                     .testTag("perf_mode_${mode.name.lowercase()}")
+                                            )
+                                        }
+                                    }
+                                }
+
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.GraphicEq,
+                                    title = "Аудио-реактивные GPU-шейдеры",
+                                    subtitle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        "Безопасная подсветка и пульсация в такт басу с автозащитой от сбоев"
+                                    } else {
+                                        "Адаптивная пульсация Canvas (оптимизировано для Android < 13)"
+                                    },
+                                    checked = audioReactiveShadersEnabled,
+                                    onCheckedChange = { viewModel.setAudioReactiveShadersEnabled(it) }
+                                )
+
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "Живой спектр в мини-плеере",
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                    Text(
+                                        text = "Отображение эквалайзера прямо внутри нижней капсулы мини-плеера",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        val spectrumOptions = listOf(
+                                            "BARS" to "Столбики",
+                                            "WAVE" to "Волна",
+                                            "OFF" to "Выкл"
+                                        )
+                                        spectrumOptions.forEach { (key, label) ->
+                                            ExpressiveOvalChoiceChip(
+                                                label = label,
+                                                selected = miniSpectrumMode.equals(key, ignoreCase = true),
+                                                onClick = { viewModel.setMiniSpectrumMode(key) },
+                                                minHeight = 42.dp,
+                                                fontSizeSp = 12.5f,
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .testTag("settings_spectrum_${key.lowercase()}")
                                             )
                                         }
                                     }

@@ -75,19 +75,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -99,8 +105,7 @@ import com.example.lyrics.DualLyricLine
 import com.example.lyrics.LyricSpeaker
 import com.example.lyrics.LyricWord
 import com.example.model.Song
-import com.example.ui.components.AgslAmbientGlowCanvas
-import com.example.ui.components.AmbientGeometricShapesOverlay
+import com.example.ui.components.BlurredArtworkBackdrop
 import com.example.ui.components.ConnectedGroupItem
 import com.example.ui.components.ExpressiveConnectedButtonGroup
 import com.example.ui.components.ExpressiveHorizontalFloatingToolbar
@@ -268,12 +273,15 @@ fun LyricsBottomSheet(
         modifier = Modifier.testTag("lyrics_bottom_sheet")
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            AdaptiveLyricsBackdrop(
+            BlurredArtworkBackdrop(
                 artworkUri = song.albumArtUriString,
-                isPlaying = playbackState.isPlaying,
-                accentColor = MaterialTheme.colorScheme.primary,
-                secondaryColor = MaterialTheme.colorScheme.tertiary,
-                profile = profile
+                blurRadius = 38.dp,
+                artworkAlpha = 0.56f,
+                scrimTopColor = Color(0xB808090D),
+                scrimMidColor = Color(0x880A0C12),
+                scrimBottomColor = Color(0xDE07080C),
+                fallbackBaseColor = Color(0xFF0B0D13),
+                modifier = Modifier.fillMaxSize()
             )
 
             Column(
@@ -791,113 +799,7 @@ fun LyricsBottomSheet(
     }
 }
 
-/**
- * Hardware-adaptive Lyrics Backdrop:
- * - Flagship (Android 13+): real-time AGSL RuntimeShader plasma mesh + subtle low-res blurred art layer
- * - Balanced: single downsampled artwork + single RenderEffect blur
- * - Potato: ultra-light 64px thumbnail with zero live blurs and zero overlapping full-res bitmaps
- */
-@Composable
-private fun AdaptiveLyricsBackdrop(
-    artworkUri: String?,
-    isPlaying: Boolean,
-    accentColor: Color,
-    secondaryColor: Color,
-    profile: PerformanceProfile
-) {
-    val context = LocalContext.current
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        if (profile.enableShaders && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            AgslAmbientGlowCanvas(
-                isPlaying = isPlaying,
-                primaryColor = accentColor,
-                secondaryColor = secondaryColor,
-                accentColor = Color(0xFF3E68FF),
-                baseIntensity = if (isPlaying) 0.72f else 0.35f,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                accentColor.copy(alpha = 0.36f),
-                                Color(0xFF141824),
-                                Color(0xFF0A0B0E)
-                            )
-                        )
-                    )
-            )
-        }
-
-        AmbientGeometricShapesOverlay(
-            isPlaying = isPlaying,
-            primaryColor = accentColor,
-            secondaryColor = Color(0xFF6BA6FF),
-            tertiaryColor = secondaryColor,
-            modifier = Modifier.fillMaxSize()
-        )
-
-        if (!artworkUri.isNullOrBlank()) {
-            val blurModifier = if (profile.enableLiveBlur && !profile.isPotato && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                Modifier.blur(16.dp)
-            } else {
-                Modifier
-            }
-            val driftScale = if (profile.isPotato) {
-                1.18f
-            } else {
-                val infiniteTransition = rememberInfiniteTransition(label = "artwork_warp_opt")
-                val breathe by infiniteTransition.animateFloat(
-                    initialValue = 1.18f,
-                    targetValue = 1.42f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 11000, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "breathe_opt"
-                )
-                if (isPlaying) breathe else 1.20f
-            }
-
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(artworkUri)
-                    .size(profile.lyricBackdropResolutionPx)
-                    .allowRgb565(true)
-                    .crossfade(profile.crossfadeImages)
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = driftScale
-                        scaleY = driftScale
-                        alpha = if (profile.isPotato) 0.32f else if (profile.enableShaders) 0.36f else 0.56f
-                    }
-                    .then(blurModifier)
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xB308090D),
-                            Color(0x800A0C12),
-                            Color(0xD907080C)
-                        )
-                    )
-                )
-        )
-    }
-}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -1173,11 +1075,11 @@ private fun KineticLyricLineItem(
 }
 
 /**
- * Per-letter Kinetic Wave & Accent Tremble Renderer:
- * - On Balanced & Flagship (`usePerLetter = true`): splits word glyphs once into zero-recomposition `Box` slots
- *   where each letter computes smooth fill mask (`BlendMode.DstIn`), gentle cosine lift, and subtle controlled
- *   tremble (<= 1.4dp) on sustained or punctuated vocal accents inside `graphicsLayer` + `drawWithContent`.
- * - On Potato (`usePerLetter = false`): falls back cleanly to single-pass liquid gradient word sweep.
+ * GPU-safe Single-Canvas Luminous Per-Letter Wave & Accent Tremble Renderer:
+ * - Uses [TextMeasurer] cached once per word (zero per-character offscreen layer allocations).
+ * - Illuminates each active letter with a soft radial bloom + glowing [Shadow], smooth alpha/color fill,
+ *   gentle vertical lift, and controlled tremble on sustained/punctuated accents.
+ * - Falls back cleanly on Potato tier or RTL layouts to a single-pass word highlight.
  */
 @Composable
 private fun KineticWordWaveSweep(
@@ -1195,16 +1097,6 @@ private fun KineticWordWaveSweep(
         fontSize = fontSizeSp.sp,
         lineHeight = (fontSizeSp + 8).sp
     )
-    val glowStyle = if (enableGlow) {
-        wordStyle.copy(
-            shadow = Shadow(
-                color = highlightColor.copy(alpha = 0.62f),
-                blurRadius = 16f
-            )
-        )
-    } else {
-        wordStyle
-    }
     val duration = (word.endTimeMs - word.startTimeMs).coerceAtLeast(80L).toFloat()
     val hasEmphasisMark = remember(word.text, word.endTimeMs, word.startTimeMs) {
         val t = word.text
@@ -1214,132 +1106,203 @@ private fun KineticWordWaveSweep(
     }
     val accentStrength = if (hasEmphasisMark) 1.0f else if (word.text.length >= 6) 0.45f else 0.0f
 
-    if (!usePerLetter || word.text.length <= 1) {
-        Box(
-            modifier = Modifier.graphicsLayer {
-                val nowMs = currentTimeProvider()
-                val rawProgress = ((nowMs - word.startTimeMs).toFloat() / duration)
-                val progress = rawProgress.coerceIn(0f, 1f)
-                val isCurrentWord = rawProgress in 0f..1.05f
-                val bell = if (isCurrentWord) (0.5f - 0.5f * cos(2f * PI.toFloat() * progress)).coerceIn(0f, 1f) else 0f
-                val zoom = 1.0f + 0.068f * bell
-                scaleX = zoom
-                scaleY = zoom
-                translationY = (-2.6f * bell).dp.toPx()
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val wordLayout = remember(word.text, wordStyle) {
+        textMeasurer.measure(text = word.text, style = wordStyle)
+    }
+    val glyphSlices = remember(word.text, wordLayout) {
+        val len = word.text.length
+        if (len == 0) emptyList()
+        else {
+            val offsets = ArrayList<Int>(len)
+            var i = 0
+            while (i < len) {
+                offsets.add(i)
+                i += Character.charCount(word.text.codePointAt(i))
             }
-        ) {
-            Text(text = word.text, style = wordStyle, color = highlightColor.copy(alpha = 0.28f))
-            Text(
-                text = word.text,
-                style = glowStyle,
-                color = highlightColor,
-                modifier = Modifier
-                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                    .drawWithContent {
-                        val nowMs = currentTimeProvider()
-                        val linear = ((nowMs - word.startTimeMs).toFloat() / duration).coerceIn(0f, 1f)
-                        val progress = linear * linear * (3f - 2f * linear)
-                        if (linear >= 0.996f) {
-                            drawContent()
-                        } else if (linear > 0.002f) {
-                            drawContent()
-                            val feather = 0.28f
-                            val edgeEnd = (progress * (1f + feather)).coerceIn(0.02f, 1f)
-                            val edgeStart = (edgeEnd - feather).coerceIn(0f, edgeEnd - 0.01f)
-                            drawRect(
-                                brush = Brush.horizontalGradient(
-                                    0f to Color.White,
-                                    edgeStart to Color.White,
-                                    edgeEnd to Color.Transparent,
-                                    1f to Color.Transparent
-                                ),
-                                blendMode = BlendMode.DstIn
-                            )
-                        }
-                    }
-            )
+            val rawBoxes = offsets.mapNotNull { offset ->
+                runCatching {
+                    val box = wordLayout.getBoundingBox(offset)
+                    offset to box
+                }.getOrNull()
+            }
+            val isMonotonicLtr = rawBoxes.size == offsets.size &&
+                rawBoxes.zipWithNext().all { (a, b) -> a.second.left <= b.second.left + 0.5f }
+            if (!isMonotonicLtr || rawBoxes.isEmpty()) {
+                emptyList()
+            } else {
+                rawBoxes.mapIndexed { idx, (offset, box) ->
+                    val prevRight = if (idx == 0) -12f else rawBoxes[idx - 1].second.right
+                    val nextLeft = if (idx == rawBoxes.lastIndex) wordLayout.size.width + 12f else rawBoxes[idx + 1].second.left
+                    val clipLeft = if (idx == 0) -12f else (prevRight + box.left) * 0.5f
+                    val clipRight = if (idx == rawBoxes.lastIndex) wordLayout.size.width + 12f else (box.right + nextLeft) * 0.5f
+                    GlyphSlice(
+                        clipLeft = clipLeft.coerceAtMost(clipRight),
+                        clipRight = clipRight.coerceAtLeast(clipLeft),
+                        centerX = (box.left + box.right) * 0.5f,
+                        centerY = (box.top + box.bottom) * 0.5f,
+                        glowRadius = maxOf(box.width, box.height, 12f) * 0.85f
+                    )
+                }
+            }
         }
-        return
     }
 
-    val charCount = word.text.length
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    val widthDp = with(density) { wordLayout.size.width.toDp() }
+    val heightDp = with(density) { wordLayout.size.height.toDp() }
+
+    Canvas(
+        modifier = Modifier.size(width = widthDp, height = heightDp)
+    ) {
+        val nowMs = currentTimeProvider()
+        val rawWordProgress = (nowMs - word.startTimeMs).toFloat() / duration
+        val wordLinear = rawWordProgress.coerceIn(0f, 1f)
+        val isWordSinging = rawWordProgress in 0f..1.08f
+        val wordBell = if (isWordSinging) (0.5f - 0.5f * cos(2f * PI.toFloat() * wordLinear)).coerceIn(0f, 1f) else 0f
+
+        if (!usePerLetter || glyphSlices.size <= 1) {
+            val zoom = 1.0f + 0.068f * wordBell
+            val liftPx = (-2.6f * wordBell).dp.toPx()
+            val eased = wordLinear * wordLinear * (3f - 2f * wordLinear)
+            val color = if (isWordSinging) lerp(highlightColor, Color.White, 0.30f * wordBell) else highlightColor
+            val shadow = if (enableGlow && eased > 0.05f) {
+                Shadow(
+                    color = highlightColor.copy(alpha = if (isWordSinging) 0.88f else 0.45f),
+                    blurRadius = if (isWordSinging) 20f else 10f
+                )
+            } else null
+
+            withTransform({
+                translate(top = liftPx)
+                scale(scaleX = zoom, scaleY = zoom, pivot = Offset(size.width * 0.5f, size.height * 0.5f))
+            }) {
+                if (enableGlow && wordBell > 0.08f) {
+                    val c = Offset(size.width * 0.5f, size.height * 0.5f)
+                    val r = maxOf(size.width, size.height) * 0.72f
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            0f to highlightColor.copy(alpha = 0.32f * wordBell),
+                            1f to Color.Transparent,
+                            center = c,
+                            radius = r
+                        ),
+                        radius = r,
+                        center = c
+                    )
+                }
+                drawText(
+                    textLayoutResult = wordLayout,
+                    color = highlightColor,
+                    alpha = 0.28f
+                )
+                if (eased > 0.005f) {
+                    drawText(
+                        textLayoutResult = wordLayout,
+                        color = color,
+                        alpha = eased,
+                        shadow = shadow
+                    )
+                }
+            }
+            return@Canvas
+        }
+
+        val charCount = glyphSlices.size
+        val spanPerChar = 1f / charCount.toFloat()
+        val windowWidth = (spanPerChar * 1.55f).coerceAtMost(1f)
+        val tPhaseBase = (nowMs % 60_000L) * 0.048f
+
         for (charIdx in 0 until charCount) {
-            val chText = word.text[charIdx].toString()
-            // Overlapping per-character windows so the sweep glides fluidly letter by letter
-            val spanPerChar = 1f / charCount.toFloat()
-            val windowWidth = (spanPerChar * 1.45f).coerceAtMost(1f)
+            val slice = glyphSlices[charIdx]
             val charStartFrac = (charIdx.toFloat() / charCount.toFloat()) * (1f - (windowWidth - spanPerChar)).coerceAtLeast(0f)
+            val charProgress = ((rawWordProgress - charStartFrac) / windowWidth).coerceIn(0f, 1f)
+            val eased = charProgress * charProgress * (3f - 2f * charProgress)
+            val isCharSinging = rawWordProgress in charStartFrac..(charStartFrac + windowWidth + 0.14f)
+            val envelope = if (isCharSinging) sin(PI.toFloat() * charProgress).coerceIn(0f, 1f) else 0f
 
-            Box(
-                modifier = Modifier.graphicsLayer {
-                    val nowMs = currentTimeProvider()
-                    val wordProgress = ((nowMs - word.startTimeMs).toFloat() / duration)
-                    val charProgress = ((wordProgress - charStartFrac) / windowWidth).coerceIn(0f, 1f)
-                    val isCharSinging = wordProgress in charStartFrac..(charStartFrac + windowWidth + 0.12f)
-                    val envelope = if (isCharSinging) sin(PI.toFloat() * charProgress).coerceIn(0f, 1f) else 0f
+            val zoom = 1.0f + 0.092f * envelope
+            val baseLiftPx = when {
+                isCharSinging -> (-2.6f * envelope).dp.toPx()
+                rawWordProgress > charStartFrac + windowWidth -> (-0.5f).dp.toPx()
+                else -> 0f
+            }
+            var dxPx = 0f
+            var dyPx = baseLiftPx
+            if (accentStrength > 0.05f && envelope > 0.08f) {
+                val tPhase = tPhaseBase + charIdx * 1.55f
+                val ampPx = (1.15f * accentStrength * envelope).dp.toPx()
+                dxPx = sin(tPhase) * ampPx
+                dyPx += cos(tPhase * 1.33f) * ampPx * 0.85f
+            }
 
-                    val zoom = 1.0f + 0.085f * envelope
-                    scaleX = zoom
-                    scaleY = zoom
+            withTransform({
+                translate(left = dxPx, top = dyPx)
+                scale(scaleX = zoom, scaleY = zoom, pivot = Offset(slice.centerX, slice.centerY))
+            }) {
+                // Soft per-letter halo bloom kept strictly on text letters (never background)
+                if (enableGlow && eased > 0.08f) {
+                    val glowStrength = if (isCharSinging) (0.34f + 0.42f * envelope) else 0.16f
+                    val radius = slice.glowRadius * (1f + 0.35f * envelope)
+                    val c = Offset(slice.centerX, slice.centerY)
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            0f to highlightColor.copy(alpha = glowStrength),
+                            0.55f to highlightColor.copy(alpha = glowStrength * 0.35f),
+                            1f to Color.Transparent,
+                            center = c,
+                            radius = radius
+                        ),
+                        radius = radius,
+                        center = c
+                    )
+                }
 
-                    val baseLiftPx = when {
-                        isCharSinging -> (-2.4f * envelope).dp.toPx()
-                        wordProgress > charStartFrac + windowWidth -> (-0.5f).dp.toPx()
-                        else -> 0f
-                    }
-                    if (accentStrength > 0.05f && envelope > 0.08f) {
-                        val tPhase = (nowMs % 60_000L) * 0.048f + charIdx * 1.55f
-                        val ampPx = (1.15f * accentStrength * envelope).dp.toPx()
-                        translationX = sin(tPhase) * ampPx
-                        translationY = baseLiftPx + cos(tPhase * 1.33f) * ampPx * 0.85f
-                    } else {
-                        translationX = 0f
-                        translationY = baseLiftPx
+                clipRect(
+                    left = slice.clipLeft,
+                    top = -14f,
+                    right = slice.clipRight,
+                    bottom = size.height + 14f
+                ) {
+                    // Unsung base glyph
+                    drawText(
+                        textLayoutResult = wordLayout,
+                        color = highlightColor,
+                        alpha = 0.28f
+                    )
+                    // Illuminated active glyph + outer glow shadow
+                    if (eased > 0.005f) {
+                        val litColor = if (isCharSinging) {
+                            lerp(highlightColor, Color.White, 0.45f * envelope)
+                        } else {
+                            highlightColor
+                        }
+                        val shadow = if (enableGlow) {
+                            Shadow(
+                                color = highlightColor.copy(alpha = if (isCharSinging) 0.92f else 0.45f),
+                                blurRadius = if (isCharSinging) (14f + 10f * envelope) else 8f
+                            )
+                        } else null
+                        drawText(
+                            textLayoutResult = wordLayout,
+                            color = litColor,
+                            alpha = eased,
+                            shadow = shadow
+                        )
                     }
                 }
-            ) {
-                Text(
-                    text = chText,
-                    style = wordStyle,
-                    color = highlightColor.copy(alpha = 0.28f)
-                )
-                Text(
-                    text = chText,
-                    style = glowStyle,
-                    color = highlightColor,
-                    modifier = Modifier
-                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                        .drawWithContent {
-                            val nowMs = currentTimeProvider()
-                            val wordProgress = ((nowMs - word.startTimeMs).toFloat() / duration)
-                            val linearChar = ((wordProgress - charStartFrac) / windowWidth).coerceIn(0f, 1f)
-                            val eased = linearChar * linearChar * (3f - 2f * linearChar)
-                            if (linearChar >= 0.995f) {
-                                drawContent()
-                            } else if (linearChar > 0.005f) {
-                                drawContent()
-                                val feather = 0.32f
-                                val edgeEnd = (eased * (1f + feather)).coerceIn(0.02f, 1f)
-                                val edgeStart = (edgeEnd - feather).coerceIn(0f, edgeEnd - 0.01f)
-                                val mid = (edgeStart + edgeEnd) * 0.5f
-                                drawRect(
-                                    brush = Brush.horizontalGradient(
-                                        0f to Color.White,
-                                        edgeStart to Color.White,
-                                        mid to Color.White.copy(alpha = 0.58f),
-                                        edgeEnd to Color.Transparent,
-                                        1f to Color.Transparent
-                                    ),
-                                    blendMode = BlendMode.DstIn
-                                )
-                            }
-                        }
-                )
             }
         }
     }
 }
+
+private data class GlyphSlice(
+    val clipLeft: Float,
+    val clipRight: Float,
+    val centerX: Float,
+    val centerY: Float,
+    val glowRadius: Float
+)
 
 @Composable
 private fun InstrumentalInterludeDots(

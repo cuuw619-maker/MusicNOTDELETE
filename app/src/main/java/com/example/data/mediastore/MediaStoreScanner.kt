@@ -101,15 +101,6 @@ class MediaStoreScanner(private val context: Context) {
                         id
                     )
 
-                    val albumArtUri = try {
-                        ContentUris.withAppendedId(
-                            Uri.parse("content://media/external/audio/albumart"),
-                            albumId
-                        ).toString()
-                    } catch (e: Exception) {
-                        null
-                    } ?: contentUri.toString()
-
                     val title = rawTitle.ifBlank {
                         dataPath.substringAfterLast("/").substringBeforeLast(".")
                     }.ifBlank { "Track $id" }
@@ -125,6 +116,14 @@ class MediaStoreScanner(private val context: Context) {
                     } else {
                         rawAlbum
                     }
+
+                    val albumArtUri = com.example.ui.components.TrackArtworkLoader.buildTrackArtUri(
+                        songId = id,
+                        albumId = albumId,
+                        album = album,
+                        contentUri = contentUri.toString(),
+                        dataPath = dataPath
+                    )
 
                     val folderName = if (dataPath.isNotEmpty()) {
                         try {

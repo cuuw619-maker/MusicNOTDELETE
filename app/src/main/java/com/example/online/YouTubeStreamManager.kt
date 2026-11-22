@@ -4,6 +4,7 @@ import android.net.Uri
 import android.util.Log
 import com.example.model.Song
 import com.example.network.NetworkClient
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -135,6 +136,8 @@ class YouTubeStreamManager {
     private val hostHeadersCache = ConcurrentHashMap<String, ResolvedStream>()
     private val matchCache = ConcurrentHashMap<String, OnlineTrack>()
     private val unhealthyMirrorsUntil = ConcurrentHashMap<String, Long>()
+    private val inFlightResolutions = ConcurrentHashMap<String, CompletableDeferred<ResolvedStream?>>()
+    private val searchCache = ConcurrentHashMap<String, Pair<Long, List<OnlineTrack>>>()
 
     @Volatile
     private var cachedVisitorData: String? = null
@@ -243,6 +246,31 @@ class YouTubeStreamManager {
             return false
         }
 
+        private const val STREAM_EXPIRY_SAFETY_BUFFER_MS = 90_000L
+        private const val STREAM_EXPIRY_CAP_MS = 12 * 3600_000L
+
+        fun extractStreamExpiryMs(
+            url: String,
+            nowMs: Long = System.currentTimeMillis(),
+            defaultTtlMs: Long = 3 * 3600_000L
+        ): Long {
+            val match = Regex("""[?&]expire=(\d{9,12})(?:&|$)""").find(url)
+            val rawExpireSec = match?.groupValues?.getOrNull(1)?.toLongOrNull()
+            if (rawExpireSec != null && rawExpireSec > 0L) {
+                val rawExpireMs = rawExpireSec * 1000L
+                if (rawExpireMs <= nowMs) return rawExpireMs
+                val capped = minOf(rawExpireMs, nowMs + STREAM_EXPIRY_CAP_MS)
+                return (capped - 120_000L).coerceAtLeast(nowMs + 30_000L)
+            }
+            return nowMs + defaultTtlMs
+        }
+
+        fun isStreamNearExpiry(
+            expiresAtMs: Long,
+            nowMs: Long = System.currentTimeMillis(),
+            bufferMs: Long = STREAM_EXPIRY_SAFETY_BUFFER_MS
+        ): Boolean = expiresAtMs <= nowMs + bufferMs
+
         fun translatePlayabilityReason(status: String, reason: String): String {
             val cleanReason = reason.trim()
             return when {
@@ -340,6 +368,22 @@ class YouTubeStreamManager {
         return streamCache[videoId]?.engine
     }
 
+    private suspend fun <T> withSafeTimeout(
+        timeoutMs: Long,
+        fallback: T,
+        block: suspend () -> T
+    ): T = withTimeoutOrNull(timeoutMs) {
+        runCatching { block() }.getOrDefault(fallback)
+    } ?: fallback
+
+    fun getCachedStreamExpiryMs(videoId: String?, streamUrl: String): Long {
+        urlHeadersCache[streamUrl]?.let { return it.expiresAtMs }
+        if (!videoId.isNullOrBlank()) {
+            streamCache[videoId]?.takeIf { it.url == streamUrl }?.let { return it.expiresAtMs }
+        }
+        return extractStreamExpiryMs(streamUrl)
+    }
+
     /**
      * Multi-source online search supporting both aggregated ("all") mode and single-source targeting:
      * Sources: YouTube, SoundCloud, Audius, JioSaavn Direct, Bandcamp, Archive.org, Deezer, iTunes.
@@ -349,7 +393,15 @@ class YouTubeStreamManager {
         if (trimmed.isBlank()) return@withContext emptyList()
 
         val normalizedFilter = sourceFilter.lowercase().trim()
-        withTimeoutOrNull(14_500L) {
+        val cacheKey = "${normalizedFilter}|${trimmed.lowercase()}"
+        val now = System.currentTimeMillis()
+        searchCache[cacheKey]?.let { (cachedAt, cachedTracks) ->
+            if (now - cachedAt < 45_000L && cachedTracks.isNotEmpty()) {
+                return@withContext cachedTracks
+            }
+        }
+
+        val fresh = withTimeoutOrNull(8_500L) {
             when (normalizedFilter) {
                 "youtube" -> searchYouTubeAggregated(trimmed)
                 "soundcloud" -> FreeCatalogProviders.searchSoundCloud(trimmed)
@@ -363,14 +415,14 @@ class YouTubeStreamManager {
                 "itunes" -> FreeCatalogProviders.searchItunes(trimmed)
                 else -> {
                     coroutineScope {
-                        val ytDeferred = async { searchYouTubeAggregated(trimmed) }
-                        val scDeferred = async { FreeCatalogProviders.searchSoundCloud(trimmed) }
-                        val jamendoDeferred = async { FreeCatalogProviders.searchJamendo(trimmed) }
-                        val bilibiliDeferred = async { FreeCatalogProviders.searchBilibili(trimmed) }
-                        val audiusDeferred = async { FreeCatalogProviders.searchAudiusPool(trimmed) }
-                        val saavnDeferred = async { FreeCatalogProviders.searchJioSaavnDirect(trimmed) }
-                        val bandcampDeferred = async { FreeCatalogProviders.searchBandcamp(trimmed) }
-                        val archiveDeferred = async { FreeCatalogProviders.searchArchiveMusic(trimmed) }
+                        val ytDeferred = async { withSafeTimeout(4_600L, emptyList()) { searchYouTubeAggregated(trimmed) } }
+                        val scDeferred = async { withSafeTimeout(4_200L, emptyList()) { FreeCatalogProviders.searchSoundCloud(trimmed) } }
+                        val jamendoDeferred = async { withSafeTimeout(3_800L, emptyList()) { FreeCatalogProviders.searchJamendo(trimmed) } }
+                        val bilibiliDeferred = async { withSafeTimeout(4_000L, emptyList()) { FreeCatalogProviders.searchBilibili(trimmed) } }
+                        val audiusDeferred = async { withSafeTimeout(4_000L, emptyList()) { FreeCatalogProviders.searchAudiusPool(trimmed) } }
+                        val saavnDeferred = async { withSafeTimeout(3_800L, emptyList()) { FreeCatalogProviders.searchJioSaavnDirect(trimmed) } }
+                        val bandcampDeferred = async { withSafeTimeout(4_200L, emptyList()) { FreeCatalogProviders.searchBandcamp(trimmed) } }
+                        val archiveDeferred = async { withSafeTimeout(3_800L, emptyList()) { FreeCatalogProviders.searchArchiveMusic(trimmed) } }
 
                         val buckets = awaitAll(
                             ytDeferred,
@@ -387,19 +439,31 @@ class YouTubeStreamManager {
                 }
             }
         } ?: emptyList()
+
+        if (fresh.isNotEmpty()) {
+            if (searchCache.size > 40) searchCache.clear()
+            searchCache[cacheKey] = System.currentTimeMillis() to fresh
+        }
+        fresh
     }
 
     private suspend fun searchYouTubeAggregated(query: String): List<OnlineTrack> = coroutineScope {
-        val ytMusic = searchViaYtMusicInnerTube(query)
-        val webResults = async { searchViaYouTubeWebHtml(query) }
-        val ytWebList = if (ytMusic.isNotEmpty()) ytMusic else webResults.await()
-        if (ytWebList.isNotEmpty()) {
-            webResults.cancel()
-            return@coroutineScope ytWebList
+        val ytMusicDeferred = async { withSafeTimeout(3_200L, emptyList()) { searchViaYtMusicInnerTube(query) } }
+        val webDeferred = async { withSafeTimeout(3_400L, emptyList()) { searchViaYouTubeWebHtml(query) } }
+
+        val ytMusic = ytMusicDeferred.await()
+        if (ytMusic.isNotEmpty()) {
+            webDeferred.cancel()
+            return@coroutineScope ytMusic
         }
 
-        val piped = async { searchViaPipedParallel(query) }
-        val invidious = async { searchViaInvidiousParallel(query) }
+        val webList = webDeferred.await()
+        if (webList.isNotEmpty()) {
+            return@coroutineScope webList
+        }
+
+        val piped = async { withSafeTimeout(3_500L, emptyList()) { searchViaPipedParallel(query) } }
+        val invidious = async { withSafeTimeout(3_500L, emptyList()) { searchViaInvidiousParallel(query) } }
         (piped.await() + invidious.await()).distinctBy { it.id }
     }
 
@@ -436,15 +500,15 @@ class YouTubeStreamManager {
         val query = "$cleanArtist $cleanTitle".trim().ifBlank { targetTitle }
 
         val candidates = coroutineScope {
-            val ytDeferred = async { searchViaYtMusicInnerTube("$query audio") }
-            val ytPlainDeferred = async { searchYouTubeAggregated(query) }
-            val scDeferred = async { FreeCatalogProviders.searchSoundCloud(query) }
-            val jamendoDeferred = async { FreeCatalogProviders.searchJamendo(query) }
-            val bilibiliDeferred = async { FreeCatalogProviders.searchBilibili(query) }
-            val saavnDeferred = async { FreeCatalogProviders.searchJioSaavnDirect(query) }
-            val audiusDeferred = async { FreeCatalogProviders.searchAudiusPool(query) }
-            val bandcampDeferred = async { FreeCatalogProviders.searchBandcamp(query) }
-            val archiveDeferred = async { FreeCatalogProviders.searchArchiveMusic(query) }
+            val ytDeferred = async { withSafeTimeout(3_400L, emptyList()) { searchViaYtMusicInnerTube("$query audio") } }
+            val ytPlainDeferred = async { withSafeTimeout(3_800L, emptyList()) { searchYouTubeAggregated(query) } }
+            val scDeferred = async { withSafeTimeout(3_600L, emptyList()) { FreeCatalogProviders.searchSoundCloud(query) } }
+            val jamendoDeferred = async { withSafeTimeout(3_200L, emptyList()) { FreeCatalogProviders.searchJamendo(query) } }
+            val bilibiliDeferred = async { withSafeTimeout(3_400L, emptyList()) { FreeCatalogProviders.searchBilibili(query) } }
+            val saavnDeferred = async { withSafeTimeout(3_200L, emptyList()) { FreeCatalogProviders.searchJioSaavnDirect(query) } }
+            val audiusDeferred = async { withSafeTimeout(3_400L, emptyList()) { FreeCatalogProviders.searchAudiusPool(query) } }
+            val bandcampDeferred = async { withSafeTimeout(3_600L, emptyList()) { FreeCatalogProviders.searchBandcamp(query) } }
+            val archiveDeferred = async { withSafeTimeout(3_200L, emptyList()) { FreeCatalogProviders.searchArchiveMusic(query) } }
             (ytDeferred.await() + ytPlainDeferred.await() + scDeferred.await() +
                 jamendoDeferred.await() + bilibiliDeferred.await() +
                 saavnDeferred.await() + audiusDeferred.await() +
@@ -477,28 +541,28 @@ class YouTubeStreamManager {
         allowPreviewFallback: Boolean = false,
         excludedVideoIds: Set<String> = emptySet()
     ): Triple<String, Long, String>? = withContext(Dispatchers.IO) {
-        withTimeoutOrNull(20_000L) {
+        withTimeoutOrNull(18_000L) {
             val cleanTitle = cleanQueryPart(targetTitle)
             val cleanArtist = cleanQueryPart(targetArtist)
             val query = "$cleanArtist $cleanTitle".trim().ifBlank { targetTitle }
 
             val candidates = coroutineScope {
-                val ytD = async { searchYouTubeAggregated(query) }
+                val ytD = async { withSafeTimeout(3_800L, emptyList()) { searchYouTubeAggregated(query) } }
                 val ytAudioD = async {
-                    if (excludedVideoIds.isNotEmpty()) searchViaYtMusicInnerTube("$query audio") else emptyList()
+                    if (excludedVideoIds.isNotEmpty()) withSafeTimeout(3_400L, emptyList()) { searchViaYtMusicInnerTube("$query audio") } else emptyList()
                 }
-                val scD = async { FreeCatalogProviders.searchSoundCloud(query) }
-                val jamendoD = async { FreeCatalogProviders.searchJamendo(query) }
-                val bilibiliD = async { FreeCatalogProviders.searchBilibili(query) }
-                val saavnD = async { FreeCatalogProviders.searchJioSaavnDirect(query) }
-                val audiusD = async { FreeCatalogProviders.searchAudiusPool(query) }
-                val bandcampD = async { FreeCatalogProviders.searchBandcamp(query) }
-                val archiveD = async { FreeCatalogProviders.searchArchiveMusic(query) }
+                val scD = async { withSafeTimeout(3_600L, emptyList()) { FreeCatalogProviders.searchSoundCloud(query) } }
+                val jamendoD = async { withSafeTimeout(3_200L, emptyList()) { FreeCatalogProviders.searchJamendo(query) } }
+                val bilibiliD = async { withSafeTimeout(3_400L, emptyList()) { FreeCatalogProviders.searchBilibili(query) } }
+                val saavnD = async { withSafeTimeout(3_200L, emptyList()) { FreeCatalogProviders.searchJioSaavnDirect(query) } }
+                val audiusD = async { withSafeTimeout(3_400L, emptyList()) { FreeCatalogProviders.searchAudiusPool(query) } }
+                val bandcampD = async { withSafeTimeout(3_600L, emptyList()) { FreeCatalogProviders.searchBandcamp(query) } }
+                val archiveD = async { withSafeTimeout(3_200L, emptyList()) { FreeCatalogProviders.searchArchiveMusic(query) } }
                 val deezerD = async {
-                    if (allowPreviewFallback) FreeCatalogProviders.searchDeezer(query) else emptyList()
+                    if (allowPreviewFallback) withSafeTimeout(3_000L, emptyList()) { FreeCatalogProviders.searchDeezer(query) } else emptyList()
                 }
                 val itunesD = async {
-                    if (allowPreviewFallback) FreeCatalogProviders.searchItunes(query) else emptyList()
+                    if (allowPreviewFallback) withSafeTimeout(3_000L, emptyList()) { FreeCatalogProviders.searchItunes(query) } else emptyList()
                 }
                 (ytD.await() + ytAudioD.await() + scD.await() + jamendoD.await() + bilibiliD.await() +
                     saavnD.await() + audiusD.await() + bandcampD.await() + archiveD.await() +
@@ -732,14 +796,14 @@ class YouTubeStreamManager {
 
         if (normalizedPref == "auto") {
             val cached = streamCache[videoId]
-            if (cached != null && System.currentTimeMillis() < cached.expiresAtMs &&
+            if (cached != null && !isStreamNearExpiry(cached.expiresAtMs) &&
                 normalizeEngineId(cached.engine) !in normalizedExcluded
             ) {
                 return@withContext cached
             }
         } else {
             val cached = streamCache[videoId]
-            if (cached != null && System.currentTimeMillis() < cached.expiresAtMs &&
+            if (cached != null && !isStreamNearExpiry(cached.expiresAtMs) &&
                 normalizeEngineId(cached.engine) == normalizedPref &&
                 normalizeEngineId(cached.engine) !in normalizedExcluded
             ) {
@@ -747,51 +811,71 @@ class YouTubeStreamManager {
             }
         }
 
-        // Explicit 2-engine override (persisted user choice)
-        if (normalizedPref != "auto") {
-            val forced = when (normalizedPref) {
-                "yt_web_rhino" -> resolveViaWebRhinoEngine(videoId, expectedDurationMs)
-                "innertube_tv_remix" -> resolveViaInnerTubeTvAndRemix(videoId, expectedDurationMs)
-                else -> null
-            }
-            if (forced != null) {
-                cacheStream(videoId, forced)
-                return@withContext forced
-            }
-            return@withContext null
+        val flightKey = "$videoId|$normalizedPref|${normalizedExcluded.sorted().joinToString(",")}"
+        inFlightResolutions[flightKey]?.let { existing ->
+            return@withContext runCatching { existing.await() }.getOrNull()
         }
 
-        withTimeoutOrNull(20_000L) {
-            // Auto mode: race BOTH primary extraction engines in parallel (no WebView)
-            val primaryResult = coroutineScope {
-                val racers = buildList {
-                    if ("innertube_tv_remix" !in normalizedExcluded) {
-                        add(async(Dispatchers.IO) { resolveViaInnerTubeTvAndRemix(videoId, expectedDurationMs) })
-                    }
-                    if ("yt_web_rhino" !in normalizedExcluded) {
-                        add(async(Dispatchers.IO) { resolveViaWebRhinoEngine(videoId, expectedDurationMs) })
-                    }
+        val myFlight = CompletableDeferred<ResolvedStream?>()
+        val prevFlight = inFlightResolutions.putIfAbsent(flightKey, myFlight)
+        if (prevFlight != null) {
+            return@withContext runCatching { prevFlight.await() }.getOrNull()
+        }
+
+        try {
+            // Explicit 2-engine override (persisted user choice)
+            if (normalizedPref != "auto") {
+                val forced = when (normalizedPref) {
+                    "yt_web_rhino" -> resolveViaWebRhinoEngine(videoId, expectedDurationMs)
+                    "innertube_tv_remix" -> resolveViaInnerTubeTvAndRemix(videoId, expectedDurationMs)
+                    else -> null
                 }
-                if (racers.isEmpty()) null else raceFirstNonNull(racers)
-            }
-            if (primaryResult != null) {
-                cacheStream(videoId, primaryResult)
-                return@withTimeoutOrNull primaryResult
+                if (forced != null) {
+                    cacheStream(videoId, forced)
+                }
+                myFlight.complete(forced)
+                return@withContext forced
             }
 
-            // Mirror rescue: race Cobalt, Piped & Invidious instances when direct YouTube clients fail
-            val mirrorResult = coroutineScope {
-                val mirrorRacers = listOf(
-                    async(Dispatchers.IO) { resolveViaCobaltParallel(videoId) },
-                    async(Dispatchers.IO) { resolveViaPipedParallel(videoId) },
-                    async(Dispatchers.IO) { resolveViaInvidiousParallel(videoId) }
-                )
-                raceFirstNonNull(mirrorRacers)
+            val resolvedAuto = withTimeoutOrNull(20_000L) {
+                // Auto mode: race BOTH primary extraction engines in parallel (no WebView)
+                val primaryResult = coroutineScope {
+                    val racers = buildList {
+                        if ("innertube_tv_remix" !in normalizedExcluded) {
+                            add(async(Dispatchers.IO) { resolveViaInnerTubeTvAndRemix(videoId, expectedDurationMs) })
+                        }
+                        if ("yt_web_rhino" !in normalizedExcluded) {
+                            add(async(Dispatchers.IO) { resolveViaWebRhinoEngine(videoId, expectedDurationMs) })
+                        }
+                    }
+                    if (racers.isEmpty()) null else raceFirstNonNull(racers)
+                }
+                if (primaryResult != null) {
+                    cacheStream(videoId, primaryResult)
+                    return@withTimeoutOrNull primaryResult
+                }
+
+                // Mirror rescue: race Cobalt, Piped & Invidious instances when direct YouTube clients fail
+                val mirrorResult = coroutineScope {
+                    val mirrorRacers = listOf(
+                        async(Dispatchers.IO) { resolveViaCobaltParallel(videoId) },
+                        async(Dispatchers.IO) { resolveViaPipedParallel(videoId) },
+                        async(Dispatchers.IO) { resolveViaInvidiousParallel(videoId) }
+                    )
+                    raceFirstNonNull(mirrorRacers)
+                }
+                if (mirrorResult != null) {
+                    cacheStream(videoId, mirrorResult)
+                }
+                mirrorResult
             }
-            if (mirrorResult != null) {
-                cacheStream(videoId, mirrorResult)
-            }
-            mirrorResult
+            myFlight.complete(resolvedAuto)
+            resolvedAuto
+        } catch (t: Throwable) {
+            myFlight.complete(null)
+            throw t
+        } finally {
+            inFlightResolutions.remove(flightKey, myFlight)
         }
     }
 
@@ -1579,7 +1663,7 @@ class YouTubeStreamManager {
                     url = candidateUrl,
                     userAgent = userAgent,
                     headers = cdnHeaders,
-                    expiresAtMs = System.currentTimeMillis() + (3 * 3600 * 1000L),
+                    expiresAtMs = extractStreamExpiryMs(candidateUrl),
                     engine = engineId
                 )
             }
@@ -1606,50 +1690,52 @@ class YouTubeStreamManager {
 
         val deferreds = healthy.map { instance ->
             async(Dispatchers.IO) {
-                val t0 = System.currentTimeMillis()
-                try {
-                    val payload = JSONObject().apply {
-                        put("url", watchUrl)
-                        put("downloadMode", "audio")
-                        put("audioFormat", "best")
-                        put("audioBitrate", "128")
-                        put("disableMetadata", true)
-                    }
-                    val request = Request.Builder()
-                        .url(instance)
-                        .post(payload.toString().toRequestBody(JSON_MEDIA))
-                        .header("Accept", "application/json")
-                        .header("Content-Type", "application/json")
-                        .header("User-Agent", MOBILE_UA)
-                        .build()
+                withTimeoutOrNull(4_500L) {
+                    val t0 = System.currentTimeMillis()
+                    try {
+                        val payload = JSONObject().apply {
+                            put("url", watchUrl)
+                            put("downloadMode", "audio")
+                            put("audioFormat", "best")
+                            put("audioBitrate", "128")
+                            put("disableMetadata", true)
+                        }
+                        val request = Request.Builder()
+                            .url(instance)
+                            .post(payload.toString().toRequestBody(JSON_MEDIA))
+                            .header("Accept", "application/json")
+                            .header("Content-Type", "application/json")
+                            .header("User-Agent", MOBILE_UA)
+                            .build()
 
-                    probeClient.newCall(request).execute().use { response ->
-                        val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-                        if (!response.isSuccessful) {
-                            markMirrorUnhealthy(instance)
-                            SourceDiagnosticsLog.record(SourceAttemptLog("cobalt", "Cobalt", instance, SourceAttemptStatus.HTTP_ERROR, response.code, "HTTP ${response.code}", dt))
-                            return@use null
-                        }
-                        val json = JSONObject(response.body?.string() ?: "{}")
-                        val status = json.optString("status", "")
-                        if (status == "tunnel" || status == "redirect" || status == "stream") {
-                            val streamUrl = json.optString("url", "")
-                            if (streamUrl.isNotBlank()) {
-                                SourceDiagnosticsLog.record(SourceAttemptLog("cobalt", "Cobalt", instance, SourceAttemptStatus.SUCCESS, 200, "Туннель активен", dt))
-                                return@use ResolvedStream(
-                                    url = streamUrl,
-                                    userAgent = MOBILE_UA,
-                                    expiresAtMs = System.currentTimeMillis() + (1800 * 1000L),
-                                    engine = "cobalt"
-                                )
+                        probeClient.newCall(request).execute().use { response ->
+                            val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                            if (!response.isSuccessful) {
+                                markMirrorUnhealthy(instance)
+                                SourceDiagnosticsLog.record(SourceAttemptLog("cobalt", "Cobalt", instance, SourceAttemptStatus.HTTP_ERROR, response.code, "HTTP ${response.code}", dt))
+                                return@use null
                             }
+                            val json = JSONObject(response.body?.string() ?: "{}")
+                            val status = json.optString("status", "")
+                            if (status == "tunnel" || status == "redirect" || status == "stream") {
+                                val streamUrl = json.optString("url", "")
+                                if (streamUrl.isNotBlank()) {
+                                    SourceDiagnosticsLog.record(SourceAttemptLog("cobalt", "Cobalt", instance, SourceAttemptStatus.SUCCESS, 200, "Туннель активен", dt))
+                                    return@use ResolvedStream(
+                                        url = streamUrl,
+                                        userAgent = MOBILE_UA,
+                                        expiresAtMs = extractStreamExpiryMs(streamUrl, defaultTtlMs = 1800_000L),
+                                        engine = "cobalt"
+                                    )
+                                }
+                            }
+                            null
                         }
+                    } catch (e: Exception) {
+                        markMirrorUnhealthy(instance)
+                        SourceDiagnosticsLog.record(SourceAttemptLog("cobalt", "Cobalt", instance, SourceAttemptStatus.NETWORK_ERROR, null, e.message?.take(80) ?: "Сбой", (System.currentTimeMillis() - t0).coerceAtLeast(1L)))
                         null
                     }
-                } catch (e: Exception) {
-                    markMirrorUnhealthy(instance)
-                    SourceDiagnosticsLog.record(SourceAttemptLog("cobalt", "Cobalt", instance, SourceAttemptStatus.NETWORK_ERROR, null, e.message?.take(80) ?: "Сбой", (System.currentTimeMillis() - t0).coerceAtLeast(1L)))
-                    null
                 }
             }
         }
@@ -1662,59 +1748,61 @@ class YouTubeStreamManager {
 
         val deferreds = healthy.map { instance ->
             async(Dispatchers.IO) {
-                val t0 = System.currentTimeMillis()
-                try {
-                    val request = Request.Builder()
-                        .url("$instance/streams/$videoId")
-                        .header("Accept", "application/json")
-                        .header("User-Agent", MOBILE_UA)
-                        .build()
-                    probeClient.newCall(request).execute().use { response ->
-                        val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-                        if (!response.isSuccessful) {
-                            markMirrorUnhealthy(instance)
-                            SourceDiagnosticsLog.record(SourceAttemptLog("piped", "Piped", instance, SourceAttemptStatus.HTTP_ERROR, response.code, "HTTP ${response.code}", dt))
-                            return@use null
-                        }
-                        val json = JSONObject(response.body?.string() ?: "{}")
-                        val audioStreams = json.optJSONArray("audioStreams") ?: JSONArray()
-                        val candidates = mutableListOf<Pair<String, Int>>()
-                        for (i in 0 until audioStreams.length()) {
-                            val stream = audioStreams.optJSONObject(i) ?: continue
-                            val streamUrl = stream.optString("url", "")
-                            if (streamUrl.isBlank()) continue
-                            val bitrate = stream.optInt("bitrate", 0)
-                            val mime = stream.optString("mimeType", "")
-                            val score = bitrate + if (mime.contains("mp4", true) || mime.contains("m4a", true)) 45_000 else 25_000
-                            candidates.add(streamUrl to score)
-                        }
-                        for ((candidateUrl, _) in candidates.sortedByDescending { it.second }.take(2)) {
-                            if (verifyStreamReachable("piped", candidateUrl, MOBILE_UA)) {
-                                SourceDiagnosticsLog.record(SourceAttemptLog("piped", "Piped", instance, SourceAttemptStatus.SUCCESS, 200, "Поток готов", dt))
+                withTimeoutOrNull(4_500L) {
+                    val t0 = System.currentTimeMillis()
+                    try {
+                        val request = Request.Builder()
+                            .url("$instance/streams/$videoId")
+                            .header("Accept", "application/json")
+                            .header("User-Agent", MOBILE_UA)
+                            .build()
+                        probeClient.newCall(request).execute().use { response ->
+                            val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                            if (!response.isSuccessful) {
+                                markMirrorUnhealthy(instance)
+                                SourceDiagnosticsLog.record(SourceAttemptLog("piped", "Piped", instance, SourceAttemptStatus.HTTP_ERROR, response.code, "HTTP ${response.code}", dt))
+                                return@use null
+                            }
+                            val json = JSONObject(response.body?.string() ?: "{}")
+                            val audioStreams = json.optJSONArray("audioStreams") ?: JSONArray()
+                            val candidates = mutableListOf<Pair<String, Int>>()
+                            for (i in 0 until audioStreams.length()) {
+                                val stream = audioStreams.optJSONObject(i) ?: continue
+                                val streamUrl = stream.optString("url", "")
+                                if (streamUrl.isBlank()) continue
+                                val bitrate = stream.optInt("bitrate", 0)
+                                val mime = stream.optString("mimeType", "")
+                                val score = bitrate + if (mime.contains("mp4", true) || mime.contains("m4a", true)) 45_000 else 25_000
+                                candidates.add(streamUrl to score)
+                            }
+                            for ((candidateUrl, _) in candidates.sortedByDescending { it.second }.take(2)) {
+                                if (verifyStreamReachable("piped", candidateUrl, MOBILE_UA)) {
+                                    SourceDiagnosticsLog.record(SourceAttemptLog("piped", "Piped", instance, SourceAttemptStatus.SUCCESS, 200, "Поток готов", dt))
+                                    return@use ResolvedStream(
+                                        url = candidateUrl,
+                                        userAgent = MOBILE_UA,
+                                        expiresAtMs = extractStreamExpiryMs(candidateUrl, defaultTtlMs = 2 * 3600_000L),
+                                        engine = "piped"
+                                    )
+                                }
+                            }
+                            val hlsUrl = json.optString("hls", "")
+                            if (hlsUrl.isNotBlank() && verifyStreamReachable("piped", hlsUrl, MOBILE_UA, useHeadOnly = true)) {
+                                SourceDiagnosticsLog.record(SourceAttemptLog("piped", "Piped", instance, SourceAttemptStatus.SUCCESS, 200, "HLS поток готов", dt))
                                 return@use ResolvedStream(
-                                    url = candidateUrl,
+                                    url = hlsUrl,
                                     userAgent = MOBILE_UA,
-                                    expiresAtMs = System.currentTimeMillis() + (2 * 3600 * 1000L),
+                                    expiresAtMs = extractStreamExpiryMs(hlsUrl, defaultTtlMs = 2 * 3600_000L),
                                     engine = "piped"
                                 )
                             }
+                            null
                         }
-                        val hlsUrl = json.optString("hls", "")
-                        if (hlsUrl.isNotBlank() && verifyStreamReachable("piped", hlsUrl, MOBILE_UA, useHeadOnly = true)) {
-                            SourceDiagnosticsLog.record(SourceAttemptLog("piped", "Piped", instance, SourceAttemptStatus.SUCCESS, 200, "HLS поток готов", dt))
-                            return@use ResolvedStream(
-                                url = hlsUrl,
-                                userAgent = MOBILE_UA,
-                                expiresAtMs = System.currentTimeMillis() + (2 * 3600 * 1000L),
-                                engine = "piped"
-                            )
-                        }
+                    } catch (e: Exception) {
+                        markMirrorUnhealthy(instance)
+                        SourceDiagnosticsLog.record(SourceAttemptLog("piped", "Piped", instance, SourceAttemptStatus.NETWORK_ERROR, null, e.message?.take(80) ?: "Сбой", (System.currentTimeMillis() - t0).coerceAtLeast(1L)))
                         null
                     }
-                } catch (e: Exception) {
-                    markMirrorUnhealthy(instance)
-                    SourceDiagnosticsLog.record(SourceAttemptLog("piped", "Piped", instance, SourceAttemptStatus.NETWORK_ERROR, null, e.message?.take(80) ?: "Сбой", (System.currentTimeMillis() - t0).coerceAtLeast(1L)))
-                    null
                 }
             }
         }
@@ -1727,50 +1815,52 @@ class YouTubeStreamManager {
 
         val deferreds = healthy.map { instance ->
             async(Dispatchers.IO) {
-                val t0 = System.currentTimeMillis()
-                try {
-                    val request = Request.Builder()
-                        .url("$instance/api/v1/videos/$videoId")
-                        .header("Accept", "application/json")
-                        .header("User-Agent", MOBILE_UA)
-                        .build()
-                    probeClient.newCall(request).execute().use { response ->
-                        val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-                        if (!response.isSuccessful) {
-                            markMirrorUnhealthy(instance)
-                            SourceDiagnosticsLog.record(SourceAttemptLog("invidious", "Invidious", instance, SourceAttemptStatus.HTTP_ERROR, response.code, "HTTP ${response.code}", dt))
-                            return@use null
-                        }
-                        val json = JSONObject(response.body?.string() ?: "{}")
-                        val formats = json.optJSONArray("adaptiveFormats") ?: JSONArray()
-                        val candidates = mutableListOf<Pair<String, Int>>()
-                        for (i in 0 until formats.length()) {
-                            val fmt = formats.optJSONObject(i) ?: continue
-                            val type = fmt.optString("type", "")
-                            if (!type.startsWith("audio/")) continue
-                            val rawUrl = fmt.optString("url", "")
-                            if (rawUrl.isBlank()) continue
-                            val fullUrl = if (rawUrl.startsWith("/")) "$instance$rawUrl" else rawUrl
-                            val bitrate = fmt.optInt("bitrate", 0)
-                            candidates.add(fullUrl to bitrate)
-                        }
-                        for ((candidateUrl, _) in candidates.sortedByDescending { it.second }.take(2)) {
-                            if (verifyStreamReachable("invidious", candidateUrl, MOBILE_UA)) {
-                                SourceDiagnosticsLog.record(SourceAttemptLog("invidious", "Invidious", instance, SourceAttemptStatus.SUCCESS, 200, "Поток готов", dt))
-                                return@use ResolvedStream(
-                                    url = candidateUrl,
-                                    userAgent = MOBILE_UA,
-                                    expiresAtMs = System.currentTimeMillis() + (2 * 3600 * 1000L),
-                                    engine = "invidious"
-                                )
+                withTimeoutOrNull(4_500L) {
+                    val t0 = System.currentTimeMillis()
+                    try {
+                        val request = Request.Builder()
+                            .url("$instance/api/v1/videos/$videoId")
+                            .header("Accept", "application/json")
+                            .header("User-Agent", MOBILE_UA)
+                            .build()
+                        probeClient.newCall(request).execute().use { response ->
+                            val dt = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                            if (!response.isSuccessful) {
+                                markMirrorUnhealthy(instance)
+                                SourceDiagnosticsLog.record(SourceAttemptLog("invidious", "Invidious", instance, SourceAttemptStatus.HTTP_ERROR, response.code, "HTTP ${response.code}", dt))
+                                return@use null
                             }
+                            val json = JSONObject(response.body?.string() ?: "{}")
+                            val formats = json.optJSONArray("adaptiveFormats") ?: JSONArray()
+                            val candidates = mutableListOf<Pair<String, Int>>()
+                            for (i in 0 until formats.length()) {
+                                val fmt = formats.optJSONObject(i) ?: continue
+                                val type = fmt.optString("type", "")
+                                if (!type.startsWith("audio/")) continue
+                                val rawUrl = fmt.optString("url", "")
+                                if (rawUrl.isBlank()) continue
+                                val fullUrl = if (rawUrl.startsWith("/")) "$instance$rawUrl" else rawUrl
+                                val bitrate = fmt.optInt("bitrate", 0)
+                                candidates.add(fullUrl to bitrate)
+                            }
+                            for ((candidateUrl, _) in candidates.sortedByDescending { it.second }.take(2)) {
+                                if (verifyStreamReachable("invidious", candidateUrl, MOBILE_UA)) {
+                                    SourceDiagnosticsLog.record(SourceAttemptLog("invidious", "Invidious", instance, SourceAttemptStatus.SUCCESS, 200, "Поток готов", dt))
+                                    return@use ResolvedStream(
+                                        url = candidateUrl,
+                                        userAgent = MOBILE_UA,
+                                        expiresAtMs = extractStreamExpiryMs(candidateUrl, defaultTtlMs = 2 * 3600_000L),
+                                        engine = "invidious"
+                                    )
+                                }
+                            }
+                            null
                         }
+                    } catch (e: Exception) {
+                        markMirrorUnhealthy(instance)
+                        SourceDiagnosticsLog.record(SourceAttemptLog("invidious", "Invidious", instance, SourceAttemptStatus.NETWORK_ERROR, null, e.message?.take(80) ?: "Сбой", (System.currentTimeMillis() - t0).coerceAtLeast(1L)))
                         null
                     }
-                } catch (e: Exception) {
-                    markMirrorUnhealthy(instance)
-                    SourceDiagnosticsLog.record(SourceAttemptLog("invidious", "Invidious", instance, SourceAttemptStatus.NETWORK_ERROR, null, e.message?.take(80) ?: "Сбой", (System.currentTimeMillis() - t0).coerceAtLeast(1L)))
-                    null
                 }
             }
         }

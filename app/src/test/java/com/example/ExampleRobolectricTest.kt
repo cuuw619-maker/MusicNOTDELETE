@@ -157,4 +157,100 @@ class ExampleRobolectricTest {
     val blockedDiag = manager.diagnosePlayerJsonFailure(blockedJson)
     assertEquals(com.example.online.SourceAttemptStatus.PLAYABILITY_BLOCKED, blockedDiag?.first)
   }
+
+  @Test
+  fun `trackArtworkLoader builds distinct URIs and cache keys for tracks sharing albumId`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val uri1 = com.example.ui.components.TrackArtworkLoader.buildTrackArtUri(
+      songId = 101L,
+      albumId = 42L,
+      album = "Downloads",
+      contentUri = "content://media/external/audio/media/101",
+      dataPath = "/storage/emulated/0/Download/song1.mp3"
+    )
+    val uri2 = com.example.ui.components.TrackArtworkLoader.buildTrackArtUri(
+      songId = 102L,
+      albumId = 42L,
+      album = "Downloads",
+      contentUri = "content://media/external/audio/media/102",
+      dataPath = "/storage/emulated/0/Download/song2.mp3"
+    )
+    org.junit.Assert.assertNotEquals(uri1, uri2)
+    org.junit.Assert.assertTrue(uri1.contains("fallback=0"))
+
+    val keyer = com.example.ui.components.TrackArtworkKeyer()
+    val options = coil.request.Options(context)
+    val key1 = keyer.key(android.net.Uri.parse(uri1), options)
+    val key2 = keyer.key(android.net.Uri.parse(uri2), options)
+    org.junit.Assert.assertNotNull(key1)
+    org.junit.Assert.assertNotNull(key2)
+    org.junit.Assert.assertNotEquals(key1, key2)
+  }
+
+  @Test
+  fun `preferencesManager persists 10-band levels preamp and limiter state`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefs1 = com.example.data.preferences.PreferencesManager(context)
+    prefs1.set10BandLevel(0, 650)
+    prefs1.set10BandLevel(9, -400)
+    prefs1.setPreAmpDb(18f) // clamped to 12f
+    prefs1.setLimiterEnabled(false)
+
+    val prefs2 = com.example.data.preferences.PreferencesManager(context)
+    assertEquals(650.toShort(), prefs2.get10BandLevel(0, 0))
+    assertEquals((-400).toShort(), prefs2.get10BandLevel(9, 0))
+    assertEquals(12f, prefs2.preAmpDb.value, 0.001f)
+    assertEquals(false, prefs2.limiterEnabled.value)
+  }
+
+  @Test
+  fun `lyricsManager parses LyricsPlus and SimpMusic JSON with word sync and parallel cues`() {
+    val manager = com.example.lyrics.LyricsManager()
+    val lpJson = """
+      {
+        "type": "Word",
+        "lyrics": [
+          {
+            "time": 1000,
+            "duration": 3000,
+            "text": "Shine bright",
+            "syllabus": [
+              {"time": 1000, "duration": 600, "text": "Shine"},
+              {"time": 1700, "duration": 900, "text": "bright"}
+            ],
+            "translation": {"text": "Сияй ярко"}
+          },
+          {
+            "time": 1400,
+            "duration": 1800,
+            "text": "(Ooh yeah)",
+            "element": {"isBackground": true},
+            "syllabus": [
+              {"time": 1400, "duration": 700, "text": "(Ooh"},
+              {"time": 2100, "duration": 800, "text": "yeah)"}
+            ]
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val lpState = manager.parseLyricsPlusJson(lpJson, "Diamonds", "Rihanna", "lyricsplus.binimum.org")
+    org.junit.Assert.assertNotNull(lpState)
+    org.junit.Assert.assertTrue(lpState!!.isSynced)
+    org.junit.Assert.assertTrue(lpState.hasWordSync)
+    org.junit.Assert.assertTrue(lpState.lines.any { it.parallelLines.isNotEmpty() })
+
+    val simpJson = """
+      {
+        "data": [
+          {
+            "richSyncLyrics": "[00:04.00] <00:04.00>Night <00:04.50>call"
+          }
+        ]
+      }
+    """.trimIndent()
+    val simpState = manager.parseSimpMusicResponse(simpJson, "Nightcall", "Kavinsky")
+    org.junit.Assert.assertNotNull(simpState)
+    org.junit.Assert.assertTrue(simpState!!.hasWordSync)
+  }
 }

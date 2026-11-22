@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,9 +71,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -90,9 +94,10 @@ import com.example.ui.animation.HapticType
 import com.example.ui.animation.calculateRubberBandOffset
 import com.example.ui.animation.fluidPress
 import com.example.ui.animation.performHapticFeedback
-import com.example.ui.components.AmbientGlowCanvas
 import com.example.ui.components.AppIcons
+import com.example.ui.components.AudioReactiveShaderLayer
 import com.example.ui.components.AudioVisualizer
+import com.example.ui.components.BlurredArtworkBackdrop
 import com.example.ui.components.ExpressiveHorizontalFloatingToolbar
 import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.ExpressiveSplitButton
@@ -107,6 +112,7 @@ import com.example.ui.theme.SpringTokens
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -151,6 +157,13 @@ fun NowPlayingScreen(
     activeStreamEngine: String = "local",
     onOpenSourceSwitcher: () -> Unit = {},
     playbackPositionFlow: StateFlow<Long>? = null,
+    swipeDirectionPref: String = SwipeTrackPolicy.DIR_RIGHT_NEXT_LEFT_PREV,
+    audioReactiveShadersEnabled: Boolean = true,
+    autoDjEnabled: Boolean = false,
+    onToggleAutoDj: () -> Unit = {},
+    reducedMotion: Boolean = false,
+    hideArtwork: Boolean = false,
+    isTransitioning: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val currentSong = playbackState.currentSong ?: return
@@ -161,6 +174,7 @@ fun NowPlayingScreen(
     var showSpeedPitchSheet by remember { mutableStateOf(false) }
     val artOffsetX = remember { Animatable(0f) }
     var isForwardTransition by remember { mutableStateOf(true) }
+    var thresholdHapticFired by remember { mutableStateOf(false) }
 
     var showVolumeHud by remember { mutableStateOf(false) }
     var volumeHudLevel by remember { mutableFloatStateOf(currentVolume) }
@@ -206,10 +220,32 @@ fun NowPlayingScreen(
                     )
                 }
         ) {
-            AmbientGlowCanvas(
-                isPlaying = playbackState.isPlaying,
+            BlurredArtworkBackdrop(
+                artworkUri = currentSong.albumArtUriString,
+                blurRadius = 14.dp,
+                allowLiveBlur = !isTransitioning,
+                artworkAlpha = 0.52f,
+                scrimTopColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.68f),
+                scrimMidColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
+                scrimBottomColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f),
+                fallbackBaseColor = MaterialTheme.colorScheme.surface,
                 modifier = Modifier.fillMaxSize()
             )
+
+            if (audioReactiveShadersEnabled && !reducedMotion) {
+                AudioReactiveShaderLayer(
+                    isPlaying = playbackState.isPlaying,
+                    songId = currentSong.id,
+                    durationMs = playbackState.durationMs,
+                    positionProvider = { playbackPositionFlow?.value ?: playbackState.currentPositionMs },
+                    shadersEnabled = audioReactiveShadersEnabled,
+                    reducedMotion = reducedMotion,
+                    isPaused = isTransitioning,
+                    touchOffsetProvider = { Offset((artOffsetX.value / 140f).coerceIn(-1f, 1f), 0f) },
+                    intensity = if (playbackState.isPlaying) 0.56f else 0.20f,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
 
             Column(
                 modifier = Modifier
@@ -339,20 +375,48 @@ fun NowPlayingScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 32.dp)
+                        .widthIn(max = 380.dp)
                         .aspectRatio(1f)
+                        .graphicsLayer {
+                            alpha = if (hideArtwork) 0f else 1f
+                            if (!reducedMotion && !profile.isPotato) {
+                                cameraDistance = 14f * density
+                                rotationY = (artOffsetX.value / 11f).coerceIn(-16f, 16f)
+                                val scaleLift = 1f - (abs(artOffsetX.value) / 1400f).coerceIn(0f, 0.05f)
+                                scaleX = scaleLift
+                                scaleY = scaleLift
+                            }
+                        }
                         .offset { IntOffset(artOffsetX.value.roundToInt(), 0) }
-                        .pointerInput(currentSong.id) {
+                        .pointerInput(currentSong.id, swipeDirectionPref) {
+                            val tracker = VelocityTracker()
+                            var rawDragX = 0f
                             detectHorizontalDragGestures(
+                                onDragStart = {
+                                    rawDragX = 0f
+                                    thresholdHapticFired = false
+                                    tracker.resetTracking()
+                                },
                                 onDragEnd = {
-                                    val threshold = 70f
-                                    if (artOffsetX.value < -threshold) {
-                                        isForwardTransition = false
-                                        performHapticFeedback(view, HapticType.LIGHT)
-                                        onSkipPrevious()
-                                    } else if (artOffsetX.value > threshold) {
-                                        isForwardTransition = true
-                                        performHapticFeedback(view, HapticType.LIGHT)
-                                        onSkipNext()
+                                    val vx = runCatching { tracker.calculateVelocity().x }.getOrDefault(0f)
+                                    val action = SwipeTrackPolicy.resolveHorizontalSwipeAction(
+                                        dragOffsetPx = artOffsetX.value,
+                                        velocityPxPerSec = vx,
+                                        thresholdPx = 68f,
+                                        swipeDirectionPref = swipeDirectionPref
+                                    )
+                                    when (action) {
+                                        SwipeTrackAction.PREVIOUS -> {
+                                            isForwardTransition = false
+                                            performHapticFeedback(view, HapticType.MEDIUM)
+                                            onSkipPrevious()
+                                        }
+                                        SwipeTrackAction.NEXT -> {
+                                            isForwardTransition = true
+                                            performHapticFeedback(view, HapticType.MEDIUM)
+                                            onSkipNext()
+                                        }
+                                        SwipeTrackAction.NONE -> Unit
                                     }
                                     scope.launch {
                                         artOffsetX.animateTo(0f, FluidMotionConstants.dragSpring())
@@ -363,8 +427,15 @@ fun NowPlayingScreen(
                                 },
                                 onHorizontalDrag = { change, dragAmount ->
                                     change.consume()
+                                    tracker.addPosition(change.uptimeMillis, change.position)
+                                    rawDragX += dragAmount
+                                    val damped = calculateRubberBandOffset(rawDragX, 0.42f)
+                                    if (!thresholdHapticFired && abs(damped) >= 68f) {
+                                        thresholdHapticFired = true
+                                        performHapticFeedback(view, HapticType.TOGGLE)
+                                    }
                                     scope.launch {
-                                        artOffsetX.snapTo(calculateRubberBandOffset(artOffsetX.value + dragAmount, 0.25f))
+                                        artOffsetX.snapTo(damped)
                                     }
                                 }
                             )
@@ -389,7 +460,8 @@ fun NowPlayingScreen(
                                     onOpenAudioInspector()
                                 }
                             )
-                        },
+                        }
+                        .testTag("now_playing_artwork_stage"),
                     contentAlignment = Alignment.Center
                 ) {
                     if (vinylModeEnabled) {
@@ -405,7 +477,7 @@ fun NowPlayingScreen(
                             label = "now_playing_art_corner"
                         )
                         val shadowElevation = when {
-                            profile.isPotato -> 0.dp
+                            profile.isPotato || isTransitioning -> 0.dp
                             playbackState.isPlaying -> 18.dp
                             else -> 8.dp
                         }
@@ -427,11 +499,11 @@ fun NowPlayingScreen(
                                 targetState = currentSong,
                                 transitionSpec = {
                                     if (isForwardTransition) {
-                                        (slideInHorizontally(FluidMotionConstants.artworkSpring()) { width -> (width * 0.3f).toInt() } + fadeIn(FluidMotionConstants.pressSpring())) togetherWith
-                                        (slideOutHorizontally(FluidMotionConstants.artworkSpring()) { width -> (-width * 0.3f).toInt() } + fadeOut(FluidMotionConstants.pressSpring()))
+                                        (slideInHorizontally(FluidMotionConstants.artworkSpring()) { width -> (width * 0.32f).toInt() } + fadeIn(FluidMotionConstants.pressSpring())) togetherWith
+                                        (slideOutHorizontally(FluidMotionConstants.artworkSpring()) { width -> (-width * 0.32f).toInt() } + fadeOut(FluidMotionConstants.pressSpring()))
                                     } else {
-                                        (slideInHorizontally(FluidMotionConstants.artworkSpring()) { width -> (-width * 0.3f).toInt() } + fadeIn(FluidMotionConstants.pressSpring())) togetherWith
-                                        (slideOutHorizontally(FluidMotionConstants.artworkSpring()) { width -> (width * 0.3f).toInt() } + fadeOut(FluidMotionConstants.pressSpring()))
+                                        (slideInHorizontally(FluidMotionConstants.artworkSpring()) { width -> (-width * 0.32f).toInt() } + fadeIn(FluidMotionConstants.pressSpring())) togetherWith
+                                        (slideOutHorizontally(FluidMotionConstants.artworkSpring()) { width -> (width * 0.32f).toInt() } + fadeOut(FluidMotionConstants.pressSpring()))
                                     }
                                 },
                                 label = "now_playing_art_anim"
@@ -443,6 +515,46 @@ fun NowPlayingScreen(
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
+                        }
+                    }
+
+                    // Swipe track preview badge floating over artwork during horizontal drag
+                    val swipeHint = SwipeTrackPolicy.resolveDragDirectionHint(
+                        dragOffsetPx = artOffsetX.value,
+                        swipeDirectionPref = swipeDirectionPref
+                    )
+                    val swipeTargetSong = SwipeTrackPolicy.previewTargetSong(
+                        queue = playbackState.queue,
+                        currentIndex = playbackState.currentQueueIndex,
+                        action = swipeHint
+                    )
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = swipeHint != SwipeTrackAction.NONE && abs(artOffsetX.value) > 18f,
+                        enter = fadeIn(tween(120)) + scaleIn(initialScale = 0.9f),
+                        exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.9f),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 14.dp)
+                    ) {
+                        val badgeText = when (swipeHint) {
+                            SwipeTrackAction.NEXT -> if (swipeTargetSong != null) "Следующий: ${swipeTargetSong.title} →" else "Следующий →"
+                            SwipeTrackAction.PREVIOUS -> if (swipeTargetSong != null) "← Назад: ${swipeTargetSong.title}" else "← Предыдущий"
+                            SwipeTrackAction.NONE -> ""
+                        }
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.94f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                            shadowElevation = 6.dp
+                        ) {
+                            Text(
+                                text = badgeText,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                            )
                         }
                     }
                 }
@@ -565,29 +677,56 @@ fun NowPlayingScreen(
                         )
                     }
 
-                    Surface(
-                        shape = CircleShape,
-                        color = if (abPointA != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
-                        modifier = Modifier.clickable {
-                            performHapticFeedback(view, HapticType.LIGHT)
-                            when {
-                                abPointA == null -> onSetABPointA()
-                                abPointB == null -> onSetABPointB()
-                                else -> onClearABRepeat()
-                            }
-                        }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val abText = when {
-                            abPointA == null -> "A-B Цикл"
-                            abPointB == null -> "A: %02d:%02d → B?".format(abPointA / 60000, (abPointA % 60000) / 1000)
-                            else -> "A ⇄ B ✕"
+                        Surface(
+                            shape = CircleShape,
+                            color = if (autoDjEnabled) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.80f),
+                            border = BorderStroke(
+                                1.dp,
+                                if (autoDjEnabled) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
+                            ),
+                            modifier = Modifier
+                                .clickable {
+                                    performHapticFeedback(view, HapticType.TOGGLE)
+                                    onToggleAutoDj()
+                                }
+                                .testTag("now_playing_autodj_chip")
+                        ) {
+                            Text(
+                                text = if (autoDjEnabled) "Auto-DJ • Вкл" else "Auto-DJ",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = if (autoDjEnabled) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
+                            )
                         }
-                        Text(
-                            text = abText,
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = if (abPointA != null) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
-                        )
+
+                        Surface(
+                            shape = CircleShape,
+                            color = if (abPointA != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                            modifier = Modifier.clickable {
+                                performHapticFeedback(view, HapticType.LIGHT)
+                                when {
+                                    abPointA == null -> onSetABPointA()
+                                    abPointB == null -> onSetABPointB()
+                                    else -> onClearABRepeat()
+                                }
+                            }
+                        ) {
+                            val abText = when {
+                                abPointA == null -> "A-B Цикл"
+                                abPointB == null -> "A: %02d:%02d → B?".format(abPointA / 60000, (abPointA % 60000) / 1000)
+                                else -> "A ⇄ B ✕"
+                            }
+                            Text(
+                                text = abText,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = if (abPointA != null) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+                            )
+                        }
                     }
                 }
 
@@ -617,7 +756,8 @@ fun NowPlayingScreen(
                     val shuffleShape = com.example.ui.components.rememberContinuousMorphShape(
                         startIndex = 4,
                         cycleDurationMs = 9600,
-                        rotate = playbackState.shuffleModeEnabled
+                        rotate = playbackState.shuffleModeEnabled,
+                        paused = isTransitioning || reducedMotion
                     )
                     Surface(
                         onClick = {
@@ -659,7 +799,8 @@ fun NowPlayingScreen(
                     val prevShape = com.example.ui.components.rememberContinuousMorphShape(
                         startIndex = 7,
                         cycleDurationMs = 10400,
-                        rotate = false
+                        rotate = false,
+                        paused = isTransitioning || reducedMotion
                     )
                     Surface(
                         shape = prevShape,
@@ -698,7 +839,8 @@ fun NowPlayingScreen(
                     val nextShape = com.example.ui.components.rememberContinuousMorphShape(
                         startIndex = 3,
                         cycleDurationMs = 10400,
-                        rotate = false
+                        rotate = false,
+                        paused = isTransitioning || reducedMotion
                     )
                     Surface(
                         shape = nextShape,
@@ -726,7 +868,8 @@ fun NowPlayingScreen(
                     val repeatShape = com.example.ui.components.rememberContinuousMorphShape(
                         startIndex = 2,
                         cycleDurationMs = 9600,
-                        rotate = playbackState.repeatMode != RepeatMode.OFF
+                        rotate = playbackState.repeatMode != RepeatMode.OFF,
+                        paused = isTransitioning || reducedMotion
                     )
                     Surface(
                         onClick = {
@@ -810,7 +953,8 @@ fun NowPlayingScreen(
                         val lyricsShape = com.example.ui.components.rememberContinuousMorphShape(
                             startIndex = 5,
                             cycleDurationMs = 8800,
-                            rotate = true
+                            rotate = true,
+                            paused = isTransitioning || reducedMotion
                         )
                         Surface(
                             onClick = {

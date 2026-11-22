@@ -89,6 +89,9 @@ fun EqualizerSheet(
     onReverbPresetChange: (String) -> Unit = {},
     onStereoWidenerChange: (Int) -> Unit = {},
     onAudioBalanceChange: (Float) -> Unit = {},
+    onPreAmpChange: (Float) -> Unit = {},
+    onLimiterToggle: (Boolean) -> Unit = {},
+    onResetBands: (() -> Unit)? = null,
     onSelectPreset: (Short) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
@@ -132,7 +135,11 @@ fun EqualizerSheet(
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = if (equalizerState.isEnabled) "DSP обработка активна" else "Эффекты выключены",
+                            text = when {
+                                !equalizerState.isEnabled -> "Эффекты выключены"
+                                equalizerState.isDynamicsProcessing -> "10-полосный DynamicsProcessing DSP"
+                                else -> "DSP обработка активна"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -145,8 +152,12 @@ fun EqualizerSheet(
                         IconButton(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
-                                equalizerState.bands.forEach { band ->
-                                    onBandLevelChange(band.bandIndex, 0)
+                                if (onResetBands != null) {
+                                    onResetBands()
+                                } else {
+                                    equalizerState.bands.forEach { band ->
+                                        onBandLevelChange(band.bandIndex, 0)
+                                    }
                                 }
                             }
                         ) {
@@ -327,10 +338,89 @@ fun EqualizerSheet(
                     Spacer(modifier = Modifier.height(18.dp))
                 }
 
+                // Pre-Amp (-12..+12 dB) & Anti-Clip Limiter
+                Card(
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.GraphicEq,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Преамп (Pre-Amp Gain)",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                )
+                                Slider(
+                                    value = equalizerState.preAmpDb.coerceIn(-12f, 12f),
+                                    valueRange = -12f..12f,
+                                    onValueChange = { raw ->
+                                        val snapped = if (kotlin.math.abs(raw) < 0.4f) 0f else raw
+                                        onPreAmpChange(snapped)
+                                    },
+                                    enabled = equalizerState.isEnabled,
+                                    modifier = Modifier.testTag("equalizer_preamp_slider")
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "${if (equalizerState.preAmpDb > 0.05f) "+" else ""}%.1f dB".format(equalizerState.preAmpDb),
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = if (kotlin.math.abs(equalizerState.preAmpDb) > 0.05f) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.width(56.dp),
+                                textAlign = TextAlign.End
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Анти-клиппинг Limiter (-0.5 dB)",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                )
+                                Text(
+                                    text = "Предотвращает хрип при высоком басе и преампе",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = equalizerState.limiterEnabled,
+                                onCheckedChange = {
+                                    performHapticFeedback(view, HapticType.TOGGLE)
+                                    onLimiterToggle(it)
+                                },
+                                enabled = equalizerState.isEnabled,
+                                modifier = Modifier.testTag("equalizer_limiter_switch")
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+
                 // Frequency Bands Sliders
                 if (equalizerState.bands.isNotEmpty()) {
                     Text(
-                        text = "Частотные регуляторы",
+                        text = if (equalizerState.bands.size >= 10) "Частотные полосы (10-Band)" else "Частотные регуляторы",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.primary
                     )

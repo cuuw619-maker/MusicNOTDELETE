@@ -155,6 +155,9 @@ data class EqualizerState(
     val bassBoostStrength: Short = 0,
     val virtualizerStrength: Short = 0,
     val loudnessEnhancerStrength: Int = 0,
+    val preAmpDb: Float = 0f,
+    val limiterEnabled: Boolean = true,
+    val isDynamicsProcessing: Boolean = false,
     val presets: List<String> = emptyList(),
     val currentPresetIndex: Short = -1
 )

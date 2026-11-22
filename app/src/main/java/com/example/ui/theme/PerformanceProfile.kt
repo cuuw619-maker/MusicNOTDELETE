@@ -56,8 +56,8 @@ fun resolvePerformanceProfile(context: Context, mode: PerformanceMode): Performa
         PerformanceMode.BALANCED -> PerformanceTier.BALANCED
         PerformanceMode.FLAGSHIP -> PerformanceTier.FLAGSHIP
     }
-    val supportsAgsl = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
     val supportsRenderBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val supportsSafeAgsl = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 
     return when (resolvedTier) {
         PerformanceTier.POTATO -> PerformanceProfile(
@@ -76,7 +76,7 @@ fun resolvePerformanceProfile(context: Context, mode: PerformanceMode): Performa
         )
         PerformanceTier.BALANCED -> PerformanceProfile(
             tier = PerformanceTier.BALANCED,
-            enableShaders = false,
+            enableShaders = supportsSafeAgsl,
             enableLiveBlur = supportsRenderBlur,
             enableHeavyShadows = false,
             visualizerBars = 22,
@@ -90,7 +90,7 @@ fun resolvePerformanceProfile(context: Context, mode: PerformanceMode): Performa
         )
         PerformanceTier.FLAGSHIP -> PerformanceProfile(
             tier = PerformanceTier.FLAGSHIP,
-            enableShaders = supportsAgsl,
+            enableShaders = supportsSafeAgsl,
             enableLiveBlur = supportsRenderBlur,
             enableHeavyShadows = true,
             visualizerBars = 30,

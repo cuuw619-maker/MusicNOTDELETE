@@ -19,7 +19,7 @@ class PreferencesManager(context: Context) {
         AUTO("Авто", "Подбирается под устройство"),
         POTATO("Картошка (Макс. FPS)", "Без размытий, лёгкие обложки и 60 Гц"),
         BALANCED("Баланс", "Плавные анимации и экономные эффекты"),
-        FLAGSHIP("Флагман (Шейдеры)", "AGSL-шейдеры, блюр и максимум деталей")
+        FLAGSHIP("Флагман (Максимум)", "Глубокий блюр обложки, свечение текста и 120 Гц")
     }
 
     private val prefs: SharedPreferences =
@@ -42,6 +42,21 @@ class PreferencesManager(context: Context) {
 
     private val _virtualizerStrength = MutableStateFlow(prefs.getInt(KEY_VIRTUALIZER, 0).toShort())
     val virtualizerStrength: StateFlow<Short> = _virtualizerStrength.asStateFlow()
+
+    private val _preAmpDb = MutableStateFlow(prefs.getFloat(KEY_PREAMP_DB, 0f).coerceIn(-12f, 12f))
+    val preAmpDb: StateFlow<Float> = _preAmpDb.asStateFlow()
+
+    private val _limiterEnabled = MutableStateFlow(prefs.getBoolean(KEY_LIMITER_ENABLED, true))
+    val limiterEnabled: StateFlow<Boolean> = _limiterEnabled.asStateFlow()
+
+    private val _audioReactiveShadersEnabled = MutableStateFlow(prefs.getBoolean(KEY_AUDIO_REACTIVE_SHADERS, true))
+    val audioReactiveShadersEnabled: StateFlow<Boolean> = _audioReactiveShadersEnabled.asStateFlow()
+
+    private val _autoDjEnabled = MutableStateFlow(prefs.getBoolean(KEY_AUTO_DJ_ENABLED, false))
+    val autoDjEnabled: StateFlow<Boolean> = _autoDjEnabled.asStateFlow()
+
+    private val _miniSpectrumMode = MutableStateFlow(prefs.getString(KEY_MINI_SPECTRUM_MODE, "BARS") ?: "BARS")
+    val miniSpectrumMode: StateFlow<String> = _miniSpectrumMode.asStateFlow()
 
     private val _amoledDark = MutableStateFlow(prefs.getBoolean(KEY_AMOLED_DARK, false))
     val amoledDark: StateFlow<Boolean> = _amoledDark.asStateFlow()
@@ -274,6 +289,26 @@ class PreferencesManager(context: Context) {
         _virtualizerStrength.value = strength
     }
 
+    fun setPreAmpDb(db: Float) {
+        val clamped = db.coerceIn(-12f, 12f)
+        prefs.edit().putFloat(KEY_PREAMP_DB, clamped).apply()
+        _preAmpDb.value = clamped
+    }
+
+    fun setLimiterEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_LIMITER_ENABLED, enabled).apply()
+        _limiterEnabled.value = enabled
+    }
+
+    fun set10BandLevel(band: Short, level: Short) {
+        prefs.edit().putInt("${KEY_EQ_10BAND_PREFIX}$band", level.toInt()).apply()
+    }
+
+    fun get10BandLevel(band: Short, defaultLevel: Short): Short {
+        val stored = prefs.getInt("${KEY_EQ_10BAND_PREFIX}$band", Integer.MIN_VALUE)
+        return if (stored == Integer.MIN_VALUE) defaultLevel else stored.toShort()
+    }
+
     fun setBandLevel(band: Short, level: Short) {
         prefs.edit().putInt("${KEY_EQ_BAND_PREFIX}$band", level.toInt()).apply()
     }
@@ -429,6 +464,25 @@ class PreferencesManager(context: Context) {
         _hapticEnabled.value = enabled
     }
 
+    fun setAudioReactiveShadersEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUDIO_REACTIVE_SHADERS, enabled).apply()
+        _audioReactiveShadersEnabled.value = enabled
+    }
+
+    fun setAutoDjEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_DJ_ENABLED, enabled).apply()
+        _autoDjEnabled.value = enabled
+    }
+
+    fun setMiniSpectrumMode(mode: String) {
+        val clean = when (mode.uppercase()) {
+            "WAVE", "OFF" -> mode.uppercase()
+            else -> "BARS"
+        }
+        prefs.edit().putString(KEY_MINI_SPECTRUM_MODE, clean).apply()
+        _miniSpectrumMode.value = clean
+    }
+
     fun setShuffleEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_SHUFFLE_ENABLED, enabled).apply()
         _shuffleEnabled.value = enabled
@@ -503,6 +557,12 @@ class PreferencesManager(context: Context) {
         private const val KEY_BASS_BOOST = "key_bass_boost"
         private const val KEY_VIRTUALIZER = "key_virtualizer"
         private const val KEY_EQ_BAND_PREFIX = "key_eq_band_"
+        private const val KEY_EQ_10BAND_PREFIX = "key_eq_10band_"
+        private const val KEY_PREAMP_DB = "key_preamp_db"
+        private const val KEY_LIMITER_ENABLED = "key_limiter_enabled"
+        private const val KEY_AUDIO_REACTIVE_SHADERS = "key_audio_reactive_shaders"
+        private const val KEY_AUTO_DJ_ENABLED = "key_auto_dj_enabled"
+        private const val KEY_MINI_SPECTRUM_MODE = "key_mini_spectrum_mode"
         private const val KEY_AMOLED_DARK = "key_amoled_dark"
         private const val KEY_PLAYBACK_SPEED = "key_playback_speed"
         private const val KEY_PITCH_SEMITONES = "key_pitch_semitones"

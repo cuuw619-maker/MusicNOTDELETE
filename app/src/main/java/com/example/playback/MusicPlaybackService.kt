@@ -37,7 +37,16 @@ import com.example.R
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import android.graphics.Bitmap
+import android.net.Uri
 import android.util.Log
+import androidx.media3.common.util.BitmapLoader
+import androidx.media3.datasource.DataSourceBitmapLoader
+import androidx.media3.session.CacheBitmapLoader
+import com.example.ui.components.TrackArtworkLoader
+import com.google.common.util.concurrent.ListeningExecutorService
+import com.google.common.util.concurrent.MoreExecutors
+import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -201,9 +210,13 @@ class MusicPlaybackService : MediaSessionService() {
             .setLoadControl(loadControl)
             .build()
 
-        // Bind equalizer directly to player session
+        // Bind equalizer to BOTH primary and crossfade ExoPlayer sessions so DSP never drops during transitions
         if (app != null && player.audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
             app.equalizerManager.bindAudioSession(player.audioSessionId)
+        }
+        val secSessionId = crossfadePlayer?.audioSessionId ?: C.AUDIO_SESSION_ID_UNSET
+        if (app != null && secSessionId != C.AUDIO_SESSION_ID_UNSET) {
+            app.equalizerManager.bindSecondaryAudioSession(secSessionId)
         }
         app?.musicControllerManager?.attachService(this)
 
@@ -211,6 +224,13 @@ class MusicPlaybackService : MediaSessionService() {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
                     app?.equalizerManager?.bindAudioSession(audioSessionId)
+                }
+            }
+        })
+        crossfadePlayer?.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
+                    app?.equalizerManager?.bindSecondaryAudioSession(audioSessionId)
                 }
             }
         })
@@ -290,9 +310,34 @@ class MusicPlaybackService : MediaSessionService() {
             }
         }
 
+        val artworkExecutor: ListeningExecutorService = MoreExecutors.listeningDecorator(Executors.newSingleThreadExecutor())
+        val baseBitmapLoader: BitmapLoader = CacheBitmapLoader(DataSourceBitmapLoader(this))
+        val trackArtAwareBitmapLoader = object : BitmapLoader {
+            override fun supportsMimeType(mimeType: String): Boolean =
+                baseBitmapLoader.supportsMimeType(mimeType)
+
+            override fun decodeBitmap(data: ByteArray): ListenableFuture<Bitmap> =
+                baseBitmapLoader.decodeBitmap(data)
+
+            override fun loadBitmap(uri: Uri): ListenableFuture<Bitmap> {
+                if (uri.scheme == TrackArtworkLoader.SCHEME) {
+                    return artworkExecutor.submit<Bitmap> {
+                        TrackArtworkLoader.extractArtworkBitmap(
+                            context = this@MusicPlaybackService,
+                            uri = uri,
+                            maxDimPx = 512,
+                            allowRgb565 = false
+                        ) ?: throw IllegalStateException("Track artwork missing for $uri")
+                    }
+                }
+                return baseBitmapLoader.loadBitmap(uri)
+            }
+        }
+
         mediaSession = MediaSession.Builder(this, player)
             .setSessionActivity(pendingIntent)
             .setCallback(sessionCallback)
+            .setBitmapLoader(trackArtAwareBitmapLoader)
             .setCustomLayout(customLayout)
             .build()
 
@@ -451,6 +496,10 @@ class MusicPlaybackService : MediaSessionService() {
         cancelCrossfade()
         val app = applicationContext as? MusicApplication
         app?.musicControllerManager?.detachService()
+        val pSession = if (::player.isInitialized) player.audioSessionId else C.AUDIO_SESSION_ID_UNSET
+        val cSession = crossfadePlayer?.audioSessionId ?: C.AUDIO_SESSION_ID_UNSET
+        if (pSession != C.AUDIO_SESSION_ID_UNSET) app?.equalizerManager?.unbindAudioSession(pSession)
+        if (cSession != C.AUDIO_SESSION_ID_UNSET) app?.equalizerManager?.unbindAudioSession(cSession)
         if (instance === this) {
             instance = null
         }
