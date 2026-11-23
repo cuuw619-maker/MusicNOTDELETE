@@ -2,8 +2,11 @@ package com.example.ui.settings
 
 import android.os.Build
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -39,12 +42,15 @@ import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.FilterAlt
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.BlurOn
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.MotionPhotosOn
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PauseCircle
 import androidx.compose.material.icons.rounded.Refresh
@@ -58,12 +64,14 @@ import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.Vibration
 import androidx.compose.material.icons.rounded.VolumeDown
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -83,10 +91,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.preferences.PreferencesManager
 import com.example.ui.components.ExpressiveOvalChoiceChip
+import com.example.ui.components.LiquidGlassCausticBackdrop
+import com.example.ui.components.LiquidGlassConfig
+import com.example.ui.components.LiquidGlassSurface
 import com.example.ui.components.OvalTabItem
 import com.example.ui.components.OvalTabRow
 import com.example.ui.player.SpeedPitchBottomSheet
 import com.example.ui.theme.MonoFontFamily
+import com.example.ui.theme.PerformanceTier
 import com.example.ui.util.HapticFeedbackType
 import com.example.ui.util.rememberHapticHelper
 import com.example.ui.viewmodel.MusicViewModel
@@ -122,6 +134,11 @@ fun SettingsScreen(
 
     val audioEngineMode by viewModel.audioEngineMode.collectAsStateWithLifecycle()
     val antiCrackleBuffer by viewModel.antiCrackleBuffer.collectAsStateWithLifecycle()
+    val preservePitch by viewModel.preservePitch.collectAsStateWithLifecycle()
+    val volumeNormalize by viewModel.volumeNormalize.collectAsStateWithLifecycle()
+    val gaplessPlayback by viewModel.gaplessPlayback.collectAsStateWithLifecycle()
+    val equalizerState by viewModel.equalizerState.collectAsStateWithLifecycle()
+
     val playerSwipeDirection by viewModel.playerSwipeDirection.collectAsStateWithLifecycle()
     val doubleTapSeekSeconds by viewModel.doubleTapSeekSeconds.collectAsStateWithLifecycle()
     val volumeGestureEnabled by viewModel.volumeGestureEnabled.collectAsStateWithLifecycle()
@@ -130,6 +147,14 @@ fun SettingsScreen(
     val audioReactiveShadersEnabled by viewModel.audioReactiveShadersEnabled.collectAsStateWithLifecycle()
     val autoDjEnabled by viewModel.autoDjEnabled.collectAsStateWithLifecycle()
     val miniSpectrumMode by viewModel.miniSpectrumMode.collectAsStateWithLifecycle()
+
+    val liquidGlassEnabled by viewModel.liquidGlassEnabled.collectAsStateWithLifecycle()
+    val liquidGlassPreset by viewModel.liquidGlassPreset.collectAsStateWithLifecycle()
+    val liquidGlassBlurDp by viewModel.liquidGlassBlurDp.collectAsStateWithLifecycle()
+    val liquidGlassRefraction by viewModel.liquidGlassRefraction.collectAsStateWithLifecycle()
+    val liquidGlassFrostAlpha by viewModel.liquidGlassFrostAlpha.collectAsStateWithLifecycle()
+    val liquidGlassHighlight by viewModel.liquidGlassHighlight.collectAsStateWithLifecycle()
+
     val perfProfile = com.example.ui.theme.LocalPerformanceProfile.current
 
     var selectedCategoryIndex by remember { mutableIntStateOf(0) }
@@ -323,12 +348,16 @@ fun SettingsScreen(
                 when (categoryIndex) {
                     0 -> {
                         item {
-                            SectionTitle(title = "Студийный движок обработки звука (DSP)")
+                            SectionTitle(title = "Студийный DSP движок звука (ExoPlayer)")
                             ExpressiveSettingsCard {
                                 SettingsRow(
                                     icon = Icons.Rounded.Tune,
-                                    title = "Режим аудиодвижка",
-                                    subtitle = if (audioEngineMode == "STUDIO") "Studio Master Native (аппаратный sinc-интерполятор 64-bit)" else "Software Sonic (Exo)",
+                                    title = "Режим Float DSP конвейера",
+                                    subtitle = if (audioEngineMode == "STUDIO") {
+                                        "Studio Biquad 64-bit (точный 10-полосный EQ, панорама, M/S сцена)"
+                                    } else {
+                                        "Sonic Soft-Knee Float (мягкое сатурированное звучание и бас)"
+                                    },
                                     onClick = {
                                         val newMode = if (audioEngineMode == "STUDIO") "SONIC" else "STUDIO"
                                         viewModel.setAudioEngineMode(newMode)
@@ -338,7 +367,7 @@ fun SettingsScreen(
                                 SettingsSwitchRow(
                                     icon = Icons.Rounded.Memory,
                                     title = "Студийный 4x буфер против треска",
-                                    subtitle = "Предотвращает щелчки и 'репение' звука при замедлении (до 0.5x)",
+                                    subtitle = "Увеличенный 128 КБ аудиобуфер (4x) исключает щелчки на замедлении",
                                     checked = antiCrackleBuffer,
                                     onCheckedChange = { viewModel.setAntiCrackleBuffer(it) }
                                 )
@@ -350,10 +379,34 @@ fun SettingsScreen(
                                     onClick = { showSpeedPitchSheet = true }
                                 )
 
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.MusicNote,
+                                    title = "Сохранять тональность при ускорении",
+                                    subtitle = if (preservePitch) "Независимая регулировка скорости без сдвига высоты" else "Режим винила: скорость сдвигает тон естественно",
+                                    checked = preservePitch,
+                                    onCheckedChange = { viewModel.setPreservePitch(it) }
+                                )
+
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.VolumeUp,
+                                    title = "Нормализация громкости (AGC)",
+                                    subtitle = if (volumeNormalize) "Выравнивание громкости между тихими и громкими треками" else "Выключена (оригинальный динамический диапазон)",
+                                    checked = volumeNormalize,
+                                    onCheckedChange = { viewModel.setVolumeNormalize(it) }
+                                )
+
                                 SettingsRow(
                                     icon = Icons.Rounded.Equalizer,
-                                    title = "Эквалайзер и полосы частот",
-                                    subtitle = "Настройка тембра, усиление басов Bass Boost и Virtualizer",
+                                    title = "10-полосный Эквалайзер и эффекты",
+                                    subtitle = if (equalizerState.isEnabled) {
+                                        "Активен • Pre-Amp %+.1f dB • Bass %d%% • Reverb %s".format(
+                                            equalizerState.preAmpDb,
+                                            equalizerState.bassBoostStrength / 10,
+                                            viewModel.spatialReverbPreset.collectAsStateWithLifecycle().value
+                                        )
+                                    } else {
+                                        "10 полос (31 Гц – 16 кГц), Bass Boost, Stereo Widener, L/R баланс"
+                                    },
                                     onClick = { viewModel.setEqualizerSheetVisible(true) }
                                 )
                             }
@@ -371,7 +424,11 @@ fun SettingsScreen(
                                     onCheckedChange = { viewModel.setCrossfadeEnabled(it) }
                                 )
 
-                                if (crossfadeEnabled) {
+                                AnimatedVisibility(
+                                    visible = crossfadeEnabled,
+                                    enter = expandVertically() + fadeIn(),
+                                    exit = shrinkVertically() + fadeOut()
+                                ) {
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -423,7 +480,11 @@ fun SettingsScreen(
                                     onCheckedChange = { viewModel.setTrackEndFadeOutEnabled(it) }
                                 )
 
-                                if (trackEndFadeOutEnabled) {
+                                AnimatedVisibility(
+                                    visible = trackEndFadeOutEnabled,
+                                    enter = expandVertically() + fadeIn(),
+                                    exit = shrinkVertically() + fadeOut()
+                                ) {
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -477,10 +538,10 @@ fun SettingsScreen(
 
                                 SettingsSwitchRow(
                                     icon = Icons.Rounded.AllInclusive,
-                                    title = "Устранение микропауз",
-                                    subtitle = "Предварительная буферизация двух движков исключает тишину",
-                                    checked = true,
-                                    onCheckedChange = {}
+                                    title = "Устранение микропауз (Gapless)",
+                                    subtitle = if (gaplessPlayback) "Бесшовный стык треков внутри ExoPlayer" else "Выключено (стандартная пауза между треками)",
+                                    checked = gaplessPlayback,
+                                    onCheckedChange = { viewModel.setGaplessPlayback(it) }
                                 )
                             }
                             Spacer(modifier = Modifier.height(16.dp))
@@ -540,9 +601,8 @@ fun SettingsScreen(
                             SectionTitle(title = "Производительность и графика")
                             ExpressiveSettingsCard {
                                 val resolvedName = when (perfProfile.tier) {
-                                    com.example.ui.theme.PerformanceTier.POTATO -> "Бюджетный (Макс. FPS)"
-                                    com.example.ui.theme.PerformanceTier.BALANCED -> "Сбалансированный"
-                                    com.example.ui.theme.PerformanceTier.FLAGSHIP -> "Флагман (Блюр и эффекты)"
+                                    PerformanceTier.LOW -> "Низкая графика (Макс. FPS)"
+                                    PerformanceTier.HIGH -> "Большая графика (Эффекты и детали)"
                                 }
                                 Column(
                                     modifier = Modifier
@@ -551,7 +611,7 @@ fun SettingsScreen(
                                     verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
                                     Text(
-                                        text = "Режим графики и эффектов",
+                                        text = "Режим графики",
                                         style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
                                     )
                                     Text(
@@ -561,41 +621,19 @@ fun SettingsScreen(
                                     )
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        val firstRow = listOf(
-                                            PreferencesManager.PerformanceMode.AUTO to ("Авто" to "Устройство"),
-                                            PreferencesManager.PerformanceMode.POTATO to ("Картошка" to "Макс. FPS")
+                                        val modes = listOf(
+                                            PreferencesManager.PerformanceMode.HIGH to ("Большая графика" to "Эффекты и детали"),
+                                            PreferencesManager.PerformanceMode.LOW to ("Низкая графика" to "Макс. FPS")
                                         )
-                                        firstRow.forEach { (mode, labels) ->
+                                        modes.forEach { (mode, labels) ->
                                             ExpressiveOvalChoiceChip(
                                                 label = labels.first,
                                                 subtitle = labels.second,
                                                 selected = performanceMode == mode,
                                                 onClick = { viewModel.setPerformanceMode(mode) },
-                                                minHeight = 50.dp,
-                                                fontSizeSp = 12.5f,
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .testTag("perf_mode_${mode.name.lowercase()}")
-                                            )
-                                        }
-                                    }
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        val secondRow = listOf(
-                                            PreferencesManager.PerformanceMode.BALANCED to ("Баланс" to "Оптимально"),
-                                            PreferencesManager.PerformanceMode.FLAGSHIP to ("Флагман" to "Максимум")
-                                        )
-                                        secondRow.forEach { (mode, labels) ->
-                                            ExpressiveOvalChoiceChip(
-                                                label = labels.first,
-                                                subtitle = labels.second,
-                                                selected = performanceMode == mode,
-                                                onClick = { viewModel.setPerformanceMode(mode) },
-                                                minHeight = 50.dp,
+                                                minHeight = 54.dp,
                                                 fontSizeSp = 12.5f,
                                                 modifier = Modifier
                                                     .weight(1f)
@@ -663,6 +701,158 @@ fun SettingsScreen(
                                     checked = reducedMotion,
                                     onCheckedChange = { viewModel.setReducedMotion(it) }
                                 )
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+
+                        item {
+                            SectionTitle(title = "Жидкое стекло (AndroidLiquidGlass)")
+                            ExpressiveSettingsCard {
+                                SettingsSwitchRow(
+                                    icon = Icons.Rounded.BlurOn,
+                                    title = "Жидкое стекло везде",
+                                    subtitle = if (liquidGlassEnabled) {
+                                        "Активно • Пресет: $liquidGlassPreset • Оптические линзы и блики Френеля"
+                                    } else {
+                                        "Выключено по умолчанию — включите для стеклянных панелей и преломления"
+                                    },
+                                    checked = liquidGlassEnabled,
+                                    onCheckedChange = { viewModel.setLiquidGlassEnabled(it) },
+                                    switchTestTag = "settings_liquid_glass_switch"
+                                )
+
+                                AnimatedVisibility(
+                                    visible = liquidGlassEnabled,
+                                    enter = expandVertically() + fadeIn(),
+                                    exit = shrinkVertically() + fadeOut()
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        // Live Caustic Backdrop + LiquidGlassSurface Preview Card
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(112.dp)
+                                                .clip(RoundedCornerShape(22.dp))
+                                                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            LiquidGlassCausticBackdrop(modifier = Modifier.fillMaxSize())
+                                            LiquidGlassSurface(
+                                                shape = RoundedCornerShape(20.dp),
+                                                fallbackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(14.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = "Предпросмотр линзы • $liquidGlassPreset",
+                                                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold)
+                                                        )
+                                                        Text(
+                                                            text = "Блюр ${liquidGlassBlurDp.roundToInt()}dp • Преломление ${(liquidGlassRefraction * 100).roundToInt()}%",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.AutoAwesome,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        Text(
+                                            text = "Оптический пресет стекла",
+                                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        val presets = listOf(
+                                            LiquidGlassConfig.PRESET_CRYSTAL to "Кристалл",
+                                            LiquidGlassConfig.PRESET_SILK to "Шёлк",
+                                            LiquidGlassConfig.PRESET_PRISM to "Призма",
+                                            LiquidGlassConfig.PRESET_OBSIDIAN to "Обсидиан"
+                                        )
+                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            presets.chunked(2).forEach { rowItems ->
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    rowItems.forEach { (key, title) ->
+                                                        ExpressiveOvalChoiceChip(
+                                                            label = title,
+                                                            selected = liquidGlassPreset.equals(key, ignoreCase = true),
+                                                            onClick = { viewModel.applyLiquidGlassPreset(key) },
+                                                            minHeight = 44.dp,
+                                                            fontSizeSp = 12.5f,
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .testTag("liquid_glass_preset_${key.lowercase()}")
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        LiquidGlassSliderRow(
+                                            label = "Размытие линзы (Blur)",
+                                            valueText = "${liquidGlassBlurDp.roundToInt()} dp",
+                                            value = liquidGlassBlurDp,
+                                            valueRange = 0f..32f,
+                                            onValueChange = { viewModel.setLiquidGlassBlurDp(it) }
+                                        )
+                                        LiquidGlassSliderRow(
+                                            label = "Дисперсия и преломление",
+                                            valueText = "${(liquidGlassRefraction * 100).roundToInt()}%",
+                                            value = liquidGlassRefraction,
+                                            valueRange = 0f..1f,
+                                            onValueChange = { viewModel.setLiquidGlassRefraction(it) }
+                                        )
+                                        LiquidGlassSliderRow(
+                                            label = "Матовость (Frost Alpha)",
+                                            valueText = "${(liquidGlassFrostAlpha * 100).roundToInt()}%",
+                                            value = liquidGlassFrostAlpha,
+                                            valueRange = 0.05f..0.85f,
+                                            onValueChange = { viewModel.setLiquidGlassFrostAlpha(it) }
+                                        )
+                                        LiquidGlassSliderRow(
+                                            label = "Блики и кайма Френеля",
+                                            valueText = "${(liquidGlassHighlight * 100).roundToInt()}%",
+                                            value = liquidGlassHighlight,
+                                            valueRange = 0f..1f,
+                                            onValueChange = { viewModel.setLiquidGlassHighlight(it) }
+                                        )
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.End
+                                        ) {
+                                            TextButton(
+                                                onClick = {
+                                                    haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
+                                                    viewModel.applyLiquidGlassPreset(LiquidGlassConfig.PRESET_CRYSTAL)
+                                                }
+                                            ) {
+                                                Text("Сбросить оптику", fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Spacer(modifier = Modifier.height(16.dp))
                         }
@@ -811,16 +1001,51 @@ fun SettingsScreen(
 }
 
 @Composable
+private fun LiquidGlassSliderRow(
+    label: String,
+    valueText: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = valueText,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = MonoFontFamily,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Slider(
+            value = value.coerceIn(valueRange.start, valueRange.endInclusive),
+            onValueChange = onValueChange,
+            valueRange = valueRange
+        )
+    }
+}
+
+@Composable
 private fun ExpressiveSettingsCard(
     content: @Composable () -> Unit
 ) {
-    Card(
+    LiquidGlassSurface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp),
         shape = RoundedCornerShape(24.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.22f)),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+        fallbackColor = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Column(modifier = Modifier.padding(vertical = 4.dp)) {
             content()
@@ -893,7 +1118,8 @@ private fun SettingsSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    switchTestTag: String = ""
 ) {
     val haptic = rememberHapticHelper()
     Row(
@@ -944,7 +1170,8 @@ private fun SettingsSwitchRow(
                 haptic.performHaptic(HapticFeedbackType.MEDIUM_TICK)
                 onCheckedChange(it)
             },
-            pattern = com.example.ui.components.GeometricPatternKind.ARC
+            pattern = com.example.ui.components.GeometricPatternKind.ARC,
+            modifier = if (switchTestTag.isNotBlank()) Modifier.testTag(switchTestTag) else Modifier
         )
     }
 }

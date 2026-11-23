@@ -120,9 +120,9 @@ fun groupedItemShape(
 }
 
 /**
- * 10-shape canonical M3 Expressive lookup table with zero per-frame trigonometric allocations:
- * 0: Circle, 1: Squircle, 2: 6-Lobe Clover, 3: 8-Wave Cookie, 4: 4-Point Spark,
- * 5: 12-Petal Flower, 6: Soft Pill/Stadium, 7: Arch/Shield, 8: Slanted Diamond, 9: Scalloped Sunburst
+ * 10-shape canonical M3 Expressive lookup table (strictly >= 5 vertices/lobes) with zero per-frame allocations:
+ * 0: Pentagon (5), 1: Hexagon (6), 2: 5-Point Star, 3: 6-Point Star, 4: Heptagon (7),
+ * 5: Octagon (8), 6: 5-Petal Flower, 7: 6-Lobe Clover, 8: 8-Point Rosette Star, 9: 10-Point Sunburst
  */
 object MorphShapeLut {
     const val SHAPE_COUNT = 10
@@ -135,28 +135,39 @@ object MorphShapeLut {
         sin((i.toFloat() / STEPS.toFloat()) * (2f * PI.toFloat()))
     }
 
+    private fun regularPolygonRadius(theta: Float, sides: Int, cornerSoftness: Float = 0.14f): Float {
+        val sector = (2f * PI.toFloat()) / sides.toFloat()
+        val halfSector = sector * 0.5f
+        val mod = (((theta % sector) + sector) % sector) - halfSector
+        val sharp = (cos(halfSector) / cos(mod)).coerceIn(0.65f, 1.0f)
+        val avg = cos(halfSector) * 0.5f + 0.5f
+        val blended = sharp * (1f - cornerSoftness) + avg * cornerSoftness
+        return (blended * 0.94f).coerceIn(0.50f, 0.98f)
+    }
+
+    private fun starRadius(theta: Float, points: Int, innerRatio: Float = 0.56f): Float {
+        val sector = (2f * PI.toFloat()) / points.toFloat()
+        val halfSector = sector * 0.5f
+        val mod = (((theta % sector) + sector) % sector)
+        val t = abs(mod - halfSector) / halfSector
+        val curved = smoothStep(t) * 0.30f + t * 0.70f
+        return (innerRatio + (0.96f - innerRatio) * curved).coerceIn(0.45f, 0.98f)
+    }
+
     val radii: Array<FloatArray> = Array(SHAPE_COUNT) { shapeIdx ->
         FloatArray(STEPS) { stepIdx ->
             val theta = (stepIdx.toFloat() / STEPS.toFloat()) * (2f * PI.toFloat())
             when (shapeIdx) {
-                0 -> 0.88f
-                1 -> {
-                    val c = abs(cos(theta)).pow(4f)
-                    val s = abs(sin(theta)).pow(4f)
-                    (0.84f / (c + s).pow(0.25f)).coerceAtMost(0.98f)
-                }
-                2 -> 0.80f + 0.17f * cos(theta * 6f) // 6-lobe clover
-                3 -> 0.83f + 0.14f * cos(theta * 8f) // 8-wave cookie
-                4 -> 0.68f + 0.28f * cos(theta * 4f) // 4-point spark
-                5 -> 0.85f + 0.12f * cos(theta * 12f) // 12-petal flower
-                6 -> 0.82f + 0.15f * cos(theta * 2f) // organic stadium pill
-                7 -> (0.84f - 0.10f * sin(theta) + 0.08f * cos(theta * 3f)).coerceIn(0.68f, 0.98f) // shield/arch
-                8 -> {
-                    val c = abs(cos(theta - 0.35f)).pow(1.65f)
-                    val s = abs(sin(theta - 0.35f)).pow(1.65f)
-                    (0.76f / (c + s).pow(0.606f)).coerceIn(0.66f, 0.98f) // slanted diamond
-                }
-                else -> 0.86f + 0.10f * cos(theta * 10f) // 10-scallop sunburst badge
+                0 -> regularPolygonRadius(theta, sides = 5, cornerSoftness = 0.12f) // 5-угольник
+                1 -> regularPolygonRadius(theta, sides = 6, cornerSoftness = 0.12f) // 6-угольник
+                2 -> starRadius(theta, points = 5, innerRatio = 0.56f)              // 5-конечная звезда
+                3 -> starRadius(theta, points = 6, innerRatio = 0.62f)              // 6-конечная звезда
+                4 -> regularPolygonRadius(theta, sides = 7, cornerSoftness = 0.12f) // 7-угольник
+                5 -> regularPolygonRadius(theta, sides = 8, cornerSoftness = 0.10f) // 8-угольник
+                6 -> 0.78f + 0.18f * cos(theta * 5f)                                // 5-лепестковый цветок
+                7 -> 0.80f + 0.17f * cos(theta * 6f)                                // 6-лепестковый клевер
+                8 -> starRadius(theta, points = 8, innerRatio = 0.68f)              // 8-лучевая розетка
+                else -> 0.85f + 0.12f * cos(theta * 10f)                            // 10-лучевое солнце
             }
         }
     }
@@ -645,19 +656,19 @@ fun ExpressiveSplitButton(
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
+        val primaryShape = RoundedCornerShape(
+            topStart = 24.dp,
+            bottomStart = 24.dp,
+            topEnd = innerLeftRadius,
+            bottomEnd = innerLeftRadius
+        )
+        LiquidGlassSurface(
             onClick = {
                 performHapticFeedback(view, HapticType.LIGHT)
                 onPrimaryClick()
             },
-            interactionSource = primaryInteraction,
-            shape = RoundedCornerShape(
-                topStart = 24.dp,
-                bottomStart = 24.dp,
-                topEnd = innerLeftRadius,
-                bottomEnd = innerLeftRadius
-            ),
-            color = containerColor,
+            shape = primaryShape,
+            fallbackColor = containerColor,
             contentColor = contentColor,
             modifier = Modifier
                 .defaultMinSize(minHeight = 40.dp)
@@ -684,19 +695,19 @@ fun ExpressiveSplitButton(
             }
         }
 
-        Surface(
+        val menuShape = RoundedCornerShape(
+            topStart = innerRightRadius,
+            bottomStart = innerRightRadius,
+            topEnd = 24.dp,
+            bottomEnd = 24.dp
+        )
+        LiquidGlassSurface(
             onClick = {
                 performHapticFeedback(view, HapticType.LIGHT)
                 onMenuClick()
             },
-            interactionSource = menuInteraction,
-            shape = RoundedCornerShape(
-                topStart = innerRightRadius,
-                bottomStart = innerRightRadius,
-                topEnd = 24.dp,
-                bottomEnd = 24.dp
-            ),
-            color = containerColor,
+            shape = menuShape,
+            fallbackColor = containerColor,
             contentColor = contentColor,
             modifier = Modifier
                 .defaultMinSize(minWidth = 42.dp, minHeight = 40.dp)
@@ -765,9 +776,9 @@ fun ExpressiveHorizontalFloatingToolbar(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
+        LiquidGlassSurface(
             shape = CircleShape,
-            color = containerColor,
+            fallbackColor = containerColor,
             contentColor = contentColor,
             tonalElevation = 4.dp,
             shadowElevation = 6.dp,
@@ -845,10 +856,10 @@ fun ExpressiveVerticalFloatingToolbar(
     contentColor: Color = MaterialTheme.colorScheme.onSurface
 ) {
     val view = LocalView.current
-    Surface(
+    LiquidGlassSurface(
         modifier = modifier,
         shape = RoundedCornerShape(28.dp),
-        color = containerColor,
+        fallbackColor = containerColor,
         contentColor = contentColor,
         tonalElevation = 4.dp,
         shadowElevation = 6.dp,
@@ -894,9 +905,9 @@ fun ExpressiveDockedToolbar(
     modifier: Modifier = Modifier,
     containerColor: Color = MaterialTheme.colorScheme.surfaceContainerLow
 ) {
-    Surface(
+    LiquidGlassSurface(
         modifier = modifier.fillMaxWidth(),
-        color = containerColor,
+        fallbackColor = containerColor,
         shape = RoundedCornerShape(22.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
     ) {
@@ -1210,19 +1221,33 @@ fun ExpressiveHeroCard(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val shape = RoundedCornerShape(28.dp)
+    val glass = LocalLiquidGlassConfig.current
     val cardModifier = modifier
         .fillMaxWidth()
-        .clip(shape)
-        .background(
-            Brush.linearGradient(listOf(containerColor, secondaryColor))
-        )
+        .let {
+            if (glass.enabled) {
+                it.liquidGlassBackground(
+                    shape = shape,
+                    fallbackColor = containerColor,
+                    tintOverride = MaterialTheme.colorScheme.primaryContainer
+                )
+            } else {
+                it.clip(shape)
+                    .background(Brush.linearGradient(listOf(containerColor, secondaryColor)))
+            }
+        }
+
+    val borderStroke = if (glass.enabled) null else BorderStroke(
+        1.dp,
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
+    )
 
     if (onClick != null) {
         Surface(
             onClick = onClick,
             shape = shape,
             color = Color.Transparent,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)),
+            border = borderStroke,
             modifier = cardModifier
         ) {
             Column(modifier = Modifier.padding(contentPadding), content = content)
@@ -1231,7 +1256,7 @@ fun ExpressiveHeroCard(
         Surface(
             shape = shape,
             color = Color.Transparent,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)),
+            border = borderStroke,
             modifier = cardModifier
         ) {
             Column(modifier = Modifier.padding(contentPadding), content = content)

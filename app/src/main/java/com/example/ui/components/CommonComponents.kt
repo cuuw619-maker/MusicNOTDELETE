@@ -85,17 +85,19 @@ fun SongListItem(
     var showMenu by remember { mutableStateOf(false) }
     val profile = LocalPerformanceProfile.current
 
-    Surface(
+    val songContainerColor = if (isCurrent) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerLow
+    }
+
+    LiquidGlassSurface(
+        onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .clip(shape)
-            .clickable(onClick = onClick)
             .testTag("song_item_${song.id}"),
-        color = if (isCurrent) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerLow
-        },
+        fallbackColor = songContainerColor,
+        tintOverride = if (isCurrent) MaterialTheme.colorScheme.primaryContainer else null,
         shape = shape
     ) {
         Row(
@@ -302,14 +304,12 @@ fun AlbumCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
-            .clickable(onClick = onClick),
+    LiquidGlassSurface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.18f)),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+        fallbackColor = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
             Box(
@@ -379,13 +379,11 @@ fun ArtistListItem(
     shape: Shape = RoundedCornerShape(16.dp),
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .clickable(onClick = onClick),
+    LiquidGlassSurface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
         shape = shape,
-        color = MaterialTheme.colorScheme.surfaceContainerLow
+        fallbackColor = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(
             modifier = Modifier
@@ -435,13 +433,11 @@ fun FolderListItem(
     shape: Shape = RoundedCornerShape(16.dp),
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .clickable(onClick = onClick),
+    LiquidGlassSurface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
         shape = shape,
-        color = MaterialTheme.colorScheme.surfaceContainerLow
+        fallbackColor = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(
             modifier = Modifier

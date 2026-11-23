@@ -57,6 +57,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.components.LiquidGlassSurface
+import com.example.ui.components.LocalLiquidGlassConfig
 import com.example.ui.components.morphPolygonShape
 import com.example.ui.components.rememberContinuousMorphShape
 import com.example.ui.util.HapticFeedbackType
@@ -115,7 +117,7 @@ fun ExpressiveFloatingNavigationBar(
         // ==========================================
         // LEFT: ELONGATED OVAL CATEGORIES CAPSULE
         // ==========================================
-        Surface(
+        LiquidGlassSurface(
             modifier = Modifier
                 .weight(1f)
                 .shadow(
@@ -125,7 +127,7 @@ fun ExpressiveFloatingNavigationBar(
                     ambientColor = Color.Black.copy(alpha = 0.10f)
                 )
                 .testTag("floating_navigation_bar"),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            fallbackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             tonalElevation = 3.dp,
             border = androidx.compose.foundation.BorderStroke(
                 width = 1.dp,
@@ -475,15 +477,16 @@ fun ExpressiveFloatingNavigationBar(
             cycleDurationMs = 9000,
             rotate = isSearchSelected
         )
-        Surface(
+        val glassEnabled = LocalLiquidGlassConfig.current.enabled
+        LiquidGlassSurface(
             onClick = {
                 haptic.performHaptic(HapticFeedbackType.LIGHT_TICK)
                 onNavigate(NavDestination.SEARCH)
             },
-            interactionSource = searchInteraction,
             shape = searchShape,
-            color = searchBg,
+            fallbackColor = searchBg,
             contentColor = searchFg,
+            tintOverride = if (glassEnabled && isSearchSelected) MaterialTheme.colorScheme.primaryContainer else null,
             tonalElevation = if (isSearchSelected) 5.dp else 3.dp,
             border = androidx.compose.foundation.BorderStroke(
                 width = if (isSearchSelected) 1.5.dp else 1.dp,
@@ -501,7 +504,10 @@ fun ExpressiveFloatingNavigationBar(
                 }
                 .testTag("nav_${NavDestination.SEARCH.route}")
         ) {
-            Box(contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
                 Icon(
                     imageVector = NavDestination.SEARCH.icon,
                     contentDescription = NavDestination.SEARCH.title,
@@ -525,11 +531,12 @@ fun ExpressiveNavigationRail(
     val haptic = rememberHapticHelper()
     val destinations = MAIN_NAV_DESTINATIONS
 
-    Surface(
+    LiquidGlassSurface(
         modifier = modifier
             .width(80.dp)
             .fillMaxHeight(),
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = androidx.compose.ui.graphics.RectangleShape,
+        fallbackColor = MaterialTheme.colorScheme.surfaceContainer,
         tonalElevation = 2.dp
     ) {
         Column(

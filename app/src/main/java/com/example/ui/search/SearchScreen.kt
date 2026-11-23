@@ -83,6 +83,7 @@ import com.example.ui.components.ExpressiveConnectedButtonGroup
 import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.ExpressiveOvalChoiceChip
 import com.example.ui.components.ExpressiveSectionHeader
+import com.example.ui.components.LiquidGlassSurface
 import com.example.ui.components.SongListItem
 import com.example.ui.components.groupedItemShape
 import com.example.ui.theme.LocalPerformanceProfile
@@ -338,7 +339,7 @@ fun SearchScreen(
                         sourceHealthStatuses.isNotEmpty() -> "Тест: $healthyCount/${sourceHealthStatuses.size}"
                         else -> "Тест источников"
                     }
-                    Surface(
+                    LiquidGlassSurface(
                         onClick = {
                             performHapticFeedback(view, HapticType.LIGHT)
                             showSourceHealthDialog = true
@@ -347,7 +348,7 @@ fun SearchScreen(
                             }
                         },
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        fallbackColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier
                             .height(36.dp)
@@ -477,21 +478,21 @@ fun SearchScreen(
                         val isCurrentPlaying = isCurrentTrack && playbackState.isPlaying
                         val itemShape = groupedItemShape(index, onlineResults.size)
 
-                        Surface(
+                        LiquidGlassSurface(
+                            onClick = {
+                                performHapticFeedback(view, HapticType.LIGHT)
+                                viewModel.playOnlineTrack(track)
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .animateItem()
-                                .padding(horizontal = 16.dp, vertical = 1.5.dp)
-                                .clip(itemShape)
-                                .clickable {
-                                    performHapticFeedback(view, HapticType.LIGHT)
-                                    viewModel.playOnlineTrack(track)
-                                },
-                            color = if (isCurrentTrack) {
+                                .padding(horizontal = 16.dp, vertical = 1.5.dp),
+                            fallbackColor = if (isCurrentTrack) {
                                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
                             } else {
                                 MaterialTheme.colorScheme.surfaceContainerLow
                             },
+                            tintOverride = if (isCurrentTrack) MaterialTheme.colorScheme.primaryContainer else null,
                             shape = itemShape
                         ) {
                             Row(
@@ -696,9 +697,9 @@ private fun SearchHistorySection(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             searchHistory.forEach { item ->
-                Surface(
+                LiquidGlassSurface(
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    fallbackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     modifier = Modifier.bouncyClickable(
                         scaleDown = 0.95f,
                         hapticType = HapticType.LIGHT,

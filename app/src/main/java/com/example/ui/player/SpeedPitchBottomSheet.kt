@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.ExpressiveOvalChoiceChip
+import com.example.ui.components.LiquidGlassSurface
 import com.example.ui.util.HapticFeedbackType
 import com.example.ui.util.rememberHapticHelper
 import kotlin.math.roundToInt
@@ -103,9 +104,10 @@ fun SpeedPitchBottomSheet(
             }
 
             // High-Fidelity DSP Banner
-            Surface(
+            LiquidGlassSurface(
                 shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                fallbackColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                tintOverride = MaterialTheme.colorScheme.primaryContainer,
                 border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
             ) {
                 Row(
@@ -123,12 +125,12 @@ fun SpeedPitchBottomSheet(
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "Native Studio 64-bit AudioTrack DSP",
+                            text = "Studio Float DSP внутри ExoPlayer",
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                         Text(
-                            text = "Аппаратная интерполяция sinc и 4x буфер для чистого тембра",
+                            text = "64-bit Float конвейер, контроль сохранения тональности и 4x буфер",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                         )

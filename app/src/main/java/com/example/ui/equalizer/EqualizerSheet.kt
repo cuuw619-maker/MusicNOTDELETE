@@ -71,6 +71,7 @@ import com.example.ui.animation.HapticType
 import com.example.ui.animation.performHapticFeedback
 import com.example.ui.components.EmptyStateView
 import com.example.ui.components.ExpressiveOvalChoiceChip
+import com.example.ui.components.LiquidGlassSurface
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 
@@ -138,7 +139,7 @@ fun EqualizerSheet(
                             text = when {
                                 !equalizerState.isEnabled -> "Эффекты выключены"
                                 equalizerState.isDynamicsProcessing -> "10-полосный DynamicsProcessing DSP"
-                                else -> "DSP обработка активна"
+                                else -> "10-полосный Studio Float DSP"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -195,9 +196,9 @@ fun EqualizerSheet(
                 val curvePath = remember { Path() }
                 val fillPath = remember { Path() }
 
-                Card(
+                LiquidGlassSurface(
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                    fallbackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(130.dp)
@@ -339,9 +340,9 @@ fun EqualizerSheet(
                 }
 
                 // Pre-Amp (-12..+12 dB) & Anti-Clip Limiter
-                Card(
+                LiquidGlassSurface(
                     shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                    fallbackColor = MaterialTheme.colorScheme.surfaceContainer
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                         Row(
@@ -426,9 +427,9 @@ fun EqualizerSheet(
                     )
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    Card(
+                    LiquidGlassSurface(
                         shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                        fallbackColor = MaterialTheme.colorScheme.surfaceContainer
                     ) {
                         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                             equalizerState.bands.forEach { band ->
@@ -490,9 +491,9 @@ fun EqualizerSheet(
                 )
                 Spacer(modifier = Modifier.height(10.dp))
 
-                Card(
+                LiquidGlassSurface(
                     shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                    fallbackColor = MaterialTheme.colorScheme.surfaceContainer
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         // Bass Boost
@@ -616,9 +617,9 @@ fun EqualizerSheet(
                 )
                 Spacer(modifier = Modifier.height(10.dp))
 
-                Card(
+                LiquidGlassSurface(
                     shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                    fallbackColor = MaterialTheme.colorScheme.surfaceContainer
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                         // Reverb Room Presets

@@ -66,6 +66,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -104,6 +105,8 @@ import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.ExpressiveSplitButton
 import com.example.ui.components.FloatingToolbarStyle
 import com.example.ui.components.InteractiveProgressBar
+import com.example.ui.components.LiquidGlassSurface
+import com.example.ui.components.LocalLiquidGlassConfig
 import com.example.ui.components.MorphingPlayPauseButton
 import com.example.ui.components.ToolbarActionItem
 import com.example.ui.components.TrackArtwork
@@ -261,29 +264,60 @@ fun NowPlayingScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .verticalScroll(rememberScrollState()),
+                    .navigationBarsPadding(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                val latestOnCollapse by rememberUpdatedState(onCollapse)
                 TopAppBar(
                     title = {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "СЕЙЧАС ИГРАЕТ",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 1.5.sp
-                                ),
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            if (currentSong.album.isNotBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .pointerInput(Unit) {
+                                    var totalDragY = 0f
+                                    var collapsedTriggered = false
+                                    detectVerticalDragGestures(
+                                        onDragStart = {
+                                            totalDragY = 0f
+                                            collapsedTriggered = false
+                                        },
+                                        onDragEnd = {
+                                            totalDragY = 0f
+                                            collapsedTriggered = false
+                                        },
+                                        onDragCancel = {
+                                            totalDragY = 0f
+                                            collapsedTriggered = false
+                                        }
+                                    ) { _, dragAmount ->
+                                        totalDragY += dragAmount
+                                        if (!collapsedTriggered && totalDragY > 56f) {
+                                            collapsedTriggered = true
+                                            performHapticFeedback(view, HapticType.LIGHT)
+                                            latestOnCollapse()
+                                        }
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(
-                                    text = currentSong.album,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    text = "СЕЙЧАС ИГРАЕТ",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = 1.5.sp
+                                    ),
+                                    color = MaterialTheme.colorScheme.primary
                                 )
+                                if (currentSong.album.isNotBlank()) {
+                                    Text(
+                                        text = currentSong.album,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
                     },
@@ -291,7 +325,7 @@ fun NowPlayingScreen(
                         IconButton(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
-                                onCollapse()
+                                latestOnCollapse()
                             },
                             modifier = Modifier.testTag("now_playing_collapse")
                         ) {
@@ -368,17 +402,16 @@ fun NowPlayingScreen(
                             )
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-                    modifier = Modifier.pointerInput(Unit) {
-                        detectVerticalDragGestures { _, dragAmount ->
-                            if (dragAmount > 20f) {
-                                performHapticFeedback(view, HapticType.LIGHT)
-                                onCollapse()
-                            }
-                        }
-                    }
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
                 )
 
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Box(
@@ -551,9 +584,9 @@ fun NowPlayingScreen(
                             SwipeTrackAction.PREVIOUS -> if (swipeTargetSong != null) "← Назад: ${swipeTargetSong.title}" else "← Предыдущий"
                             SwipeTrackAction.NONE -> ""
                         }
-                        Surface(
+                        LiquidGlassSurface(
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.94f),
+                            fallbackColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.94f),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
                             shadowElevation = 6.dp
                         ) {
@@ -589,30 +622,46 @@ fun NowPlayingScreen(
                         .padding(horizontal = 32.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = currentSong.title,
-                            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.testTag("now_playing_title")
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = currentSong.artist,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.testTag("now_playing_artist")
-                        )
+                    AnimatedContent(
+                        targetState = currentSong,
+                        transitionSpec = {
+                            if (isForwardTransition) {
+                                (slideInHorizontally(FluidMotionConstants.artworkSpring()) { (it * 0.16f).toInt() } + fadeIn(tween(180))) togetherWith
+                                (slideOutHorizontally(FluidMotionConstants.artworkSpring()) { (-it * 0.14f).toInt() } + fadeOut(tween(130)))
+                            } else {
+                                (slideInHorizontally(FluidMotionConstants.artworkSpring()) { (-it * 0.16f).toInt() } + fadeIn(tween(180))) togetherWith
+                                (slideOutHorizontally(FluidMotionConstants.artworkSpring()) { (it * 0.14f).toInt() } + fadeOut(tween(130)))
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        label = "now_playing_meta_anim"
+                    ) { song ->
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = song.title,
+                                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("now_playing_title")
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = song.artist,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("now_playing_artist")
+                            )
+                        }
                     }
 
                     IconButton(
                         onClick = {
                             performHapticFeedback(view, HapticType.TOGGLE)
                             onToggleFavorite(currentSong.id)
-                        }
+                        },
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = if (currentSong.isFavorite) AppIcons.Favorite else AppIcons.FavoriteBorder,
@@ -634,9 +683,10 @@ fun NowPlayingScreen(
                 ) {
                     val hasStreamError = !playbackState.isBuffering && !playbackState.errorMessage.isNullOrBlank()
                     if (playbackState.isBuffering) {
-                        Surface(
+                        LiquidGlassSurface(
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer
+                            fallbackColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -691,19 +741,19 @@ fun NowPlayingScreen(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Surface(
+                        LiquidGlassSurface(
                             shape = CircleShape,
-                            color = if (autoDjEnabled) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.80f),
+                            fallbackColor = if (autoDjEnabled) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.80f),
+                            tintOverride = if (autoDjEnabled) MaterialTheme.colorScheme.tertiaryContainer else null,
                             border = BorderStroke(
                                 1.dp,
                                 if (autoDjEnabled) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
                             ),
-                            modifier = Modifier
-                                .clickable {
-                                    performHapticFeedback(view, HapticType.TOGGLE)
-                                    onToggleAutoDj()
-                                }
-                                .testTag("now_playing_autodj_chip")
+                            onClick = {
+                                performHapticFeedback(view, HapticType.TOGGLE)
+                                onToggleAutoDj()
+                            },
+                            modifier = Modifier.testTag("now_playing_autodj_chip")
                         ) {
                             Text(
                                 text = if (autoDjEnabled) "Auto-DJ • Вкл" else "Auto-DJ",
@@ -713,10 +763,11 @@ fun NowPlayingScreen(
                             )
                         }
 
-                        Surface(
+                        LiquidGlassSurface(
                             shape = CircleShape,
-                            color = if (abPointA != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
-                            modifier = Modifier.clickable {
+                            fallbackColor = if (abPointA != null) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                            tintOverride = if (abPointA != null) MaterialTheme.colorScheme.primaryContainer else null,
+                            onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
                                 when {
                                     abPointA == null -> onSetABPointA()
@@ -966,14 +1017,15 @@ fun NowPlayingScreen(
                             rotate = true,
                             paused = isTransitioning || reducedMotion
                         )
-                        Surface(
+                        LiquidGlassSurface(
                             onClick = {
                                 performHapticFeedback(view, HapticType.LIGHT)
                                 onOpenLyrics()
                             },
                             shape = lyricsShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
+                            fallbackColor = MaterialTheme.colorScheme.primaryContainer,
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            tintOverride = MaterialTheme.colorScheme.primaryContainer,
                             tonalElevation = if (profile.isPotato) 1.dp else 4.dp,
                             shadowElevation = 0.dp,
                             border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.42f)),
@@ -981,7 +1033,10 @@ fun NowPlayingScreen(
                                 .size(58.dp)
                                 .testTag("now_playing_lyrics_fab")
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
                                 Icon(
                                     imageVector = Icons.Rounded.Lyrics,
                                     contentDescription = "Текст песни",
@@ -994,6 +1049,7 @@ fun NowPlayingScreen(
                 )
 
                 Spacer(modifier = Modifier.height(24.dp))
+                }
             }
 
             AnimatedVisibility(
@@ -1004,9 +1060,9 @@ fun NowPlayingScreen(
                     .align(Alignment.CenterEnd)
                     .padding(end = 16.dp)
             ) {
-                Surface(
+                LiquidGlassSurface(
                     shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.95f),
+                    fallbackColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.95f),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
                     shadowElevation = if (profile.isPotato) 2.dp else 10.dp,
                     modifier = Modifier.width(46.dp).height(180.dp)

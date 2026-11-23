@@ -22,25 +22,52 @@ class ExampleRobolectricTest {
   @Test
   fun `resolvePerformanceProfile adapts shaders blur and thumbnails per tier`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
-    val potato = com.example.ui.theme.resolvePerformanceProfile(
+    val low = com.example.ui.theme.resolvePerformanceProfile(
       context,
-      com.example.data.preferences.PreferencesManager.PerformanceMode.POTATO
+      com.example.data.preferences.PreferencesManager.PerformanceMode.LOW
     )
-    org.junit.Assert.assertTrue(potato.isPotato)
-    org.junit.Assert.assertFalse(potato.enableShaders)
-    org.junit.Assert.assertFalse(potato.enableLiveBlur)
-    org.junit.Assert.assertFalse(potato.detailedPerCharWave)
-    org.junit.Assert.assertTrue(potato.allowRgb565)
-    org.junit.Assert.assertEquals(64, potato.lyricBackdropResolutionPx)
+    org.junit.Assert.assertTrue(low.isPotato)
+    org.junit.Assert.assertFalse(low.enableShaders)
+    org.junit.Assert.assertFalse(low.enableLiveBlur)
+    org.junit.Assert.assertFalse(low.detailedPerCharWave)
+    org.junit.Assert.assertTrue(low.allowRgb565)
+    org.junit.Assert.assertEquals(64, low.lyricBackdropResolutionPx)
 
-    val flagship = com.example.ui.theme.resolvePerformanceProfile(
+    val high = com.example.ui.theme.resolvePerformanceProfile(
       context,
-      com.example.data.preferences.PreferencesManager.PerformanceMode.FLAGSHIP
+      com.example.data.preferences.PreferencesManager.PerformanceMode.HIGH
     )
-    org.junit.Assert.assertTrue(flagship.isFlagship)
-    org.junit.Assert.assertTrue(flagship.detailedPerCharWave)
-    org.junit.Assert.assertTrue(flagship.enableHeavyShadows)
-    org.junit.Assert.assertEquals(180, flagship.lyricBackdropResolutionPx)
+    org.junit.Assert.assertTrue(high.isFlagship)
+    org.junit.Assert.assertTrue(high.detailedPerCharWave)
+    org.junit.Assert.assertTrue(high.enableHeavyShadows)
+    org.junit.Assert.assertEquals(180, high.lyricBackdropResolutionPx)
+  }
+
+  @Test
+  fun `preferencesManager migrates legacy performance modes and keeps liquid glass off by default`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val rawPrefs = context.getSharedPreferences("imux_player_prefs", Context.MODE_PRIVATE)
+    rawPrefs.edit().clear().commit()
+
+    val freshPrefs = com.example.data.preferences.PreferencesManager(context)
+    assertEquals(com.example.data.preferences.PreferencesManager.PerformanceMode.HIGH, freshPrefs.performanceMode.value)
+    assertEquals(false, freshPrefs.liquidGlassEnabled.value)
+    assertEquals("CRYSTAL", freshPrefs.liquidGlassPreset.value)
+
+    freshPrefs.setLiquidGlassEnabled(true)
+    freshPrefs.applyLiquidGlassPreset("PRISM")
+    val reloaded = com.example.data.preferences.PreferencesManager(context)
+    assertEquals(true, reloaded.liquidGlassEnabled.value)
+    assertEquals("PRISM", reloaded.liquidGlassPreset.value)
+    assertEquals(14f, reloaded.liquidGlassBlurDp.value, 0.01f)
+
+    rawPrefs.edit().putString("key_performance_mode", "POTATO").commit()
+    val migratedLow = com.example.data.preferences.PreferencesManager(context)
+    assertEquals(com.example.data.preferences.PreferencesManager.PerformanceMode.LOW, migratedLow.performanceMode.value)
+
+    rawPrefs.edit().putString("key_performance_mode", "BALANCED").commit()
+    val migratedHigh = com.example.data.preferences.PreferencesManager(context)
+    assertEquals(com.example.data.preferences.PreferencesManager.PerformanceMode.HIGH, migratedHigh.performanceMode.value)
   }
 
   @Test

@@ -16,9 +16,9 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,15 +26,13 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,14 +60,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -79,6 +78,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import com.example.model.PlaybackState
@@ -90,26 +90,31 @@ import com.example.ui.animation.performHapticFeedback
 import com.example.ui.components.AppIcons
 import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.LinearWavyProgressIndicator
+import com.example.ui.components.LiquidGlassSurface
+import com.example.ui.components.LocalLiquidGlassConfig
 import com.example.ui.components.MiniPlayerLiveSpectrum
 import com.example.ui.components.MiniPlayerReactiveAura
 import com.example.ui.components.MorphingPlayPauseButton
 import com.example.ui.components.TrackArtwork
+import com.example.ui.components.liquidGlassBackground
 import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.theme.SpringTokens
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
- * Pure GPU-composited Morphing Container: Asymmetric 3-Corner Mini Player Capsule <-> Fullscreen Now Playing.
+ * Unified Bounds-Stretching Morph Container:
+ * Asymmetric 3-Corner Mini-Player Capsule (28, 28, 28, 6 dp) <-> Fullscreen Now Playing (0 dp).
  *
- * Reworked opening architecture:
- * - Zero per-frame layout re-measurement (`height(lerp)` removed)
- * - Zero per-frame Compose recompositions (`expansionAnim.value` read inside `graphicsLayer` only)
- * - Zero per-frame shadow path re-tessellation
- * - NowPlayingScreen stays measured at fixed full-screen bounds and rises smoothly from the bottom
- *   capsule via GPU TransformOrigin(0.5f, 0.92f) scale + translationY + alpha.
+ * - Stretches physical frame bounds (x, y, width, height) and corner radii directly out of the
+ *   collapsed mini-player capsule to fullscreen edge-to-edge bounds.
+ * - Fullscreen `NowPlayingScreen` stays pinned at `requiredSize(maxWidth, maxHeight)` inside the
+ *   clipped morph viewport so inner text/controls never re-wrap or squish per frame.
+ * - All TopAppBar & Mini-Player buttons remain 100% unobstructed and responsive.
+ * - Supports Kyant0-inspired Liquid Glass optical lens rendering when enabled in Settings.
  */
 @Composable
 fun ExpandingPlayerContainer(
@@ -159,8 +164,8 @@ fun ExpandingPlayerContainer(
     onToggleAutoDj: () -> Unit = {},
     miniSpectrumMode: String = "BARS",
     onCycleMiniSpectrumMode: () -> Unit = {},
-    collapsedStartInset: Dp = 14.dp,
-    collapsedEndInset: Dp = 14.dp,
+    collapsedStartInset: Dp = 10.dp,
+    collapsedEndInset: Dp = 10.dp,
     collapsedBottomOffset: Dp = 80.dp,
     reducedMotion: Boolean = false,
     onExpansionFractionChanged: (Float) -> Unit = {},
@@ -170,10 +175,15 @@ fun ExpandingPlayerContainer(
     val view = LocalView.current
     val scope = rememberCoroutineScope()
     val profile = LocalPerformanceProfile.current
+    val liquidGlass = LocalLiquidGlassConfig.current
     val density = LocalDensity.current
 
+    val latestOnExpandedChange by rememberUpdatedState(onExpandedChange)
+    val latestOnSkipNext by rememberUpdatedState(onSkipNext)
+    val latestOnSkipPrevious by rememberUpdatedState(onSkipPrevious)
+
     BackHandler(enabled = isExpanded) {
-        onExpandedChange(false)
+        latestOnExpandedChange(false)
     }
 
     val expansionAnim = remember { Animatable(if (isExpanded) 1f else 0f) }
@@ -187,9 +197,9 @@ fun ExpandingPlayerContainer(
                 expansionAnim.animateTo(
                     targetValue = target,
                     animationSpec = if (isExpanded) {
-                        tween(durationMillis = 360, easing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1.0f))
+                        tween(durationMillis = 390, easing = CubicBezierEasing(0.16f, 1.0f, 0.30f, 1.0f))
                     } else {
-                        tween(durationMillis = 260, easing = CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f))
+                        tween(durationMillis = 290, easing = CubicBezierEasing(0.25f, 0.8f, 0.25f, 1.0f))
                     }
                 )
             }
@@ -204,240 +214,261 @@ fun ExpandingPlayerContainer(
             }
     }
 
+    val latestIsExpanded by rememberUpdatedState(isExpanded)
     val isFullPlayerVisible by remember {
-        derivedStateOf { isExpanded || expansionAnim.value > 0.005f }
+        derivedStateOf { latestIsExpanded || expansionAnim.value > 0.004f }
     }
     val isMiniPlayerVisible by remember {
-        derivedStateOf { !isExpanded || expansionAnim.value < 0.92f }
+        derivedStateOf { (!latestIsExpanded && expansionAnim.value < 0.90f) || expansionAnim.value < 0.45f }
     }
     val isTransitioning by remember {
         derivedStateOf { expansionAnim.value > 0.005f && expansionAnim.value < 0.97f }
     }
 
     var showMiniMenu by remember { mutableStateOf(false) }
-    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
 
     // Horizontal mini-player swipe state
     val miniHorizontalOffsetPx = remember { Animatable(0f) }
     var miniLastSwipeForward by remember { mutableStateOf(true) }
     var miniThresholdHapticFired by remember { mutableStateOf(false) }
 
-    val asymmetricMiniShape = remember {
-        RoundedCornerShape(
-            topStart = 28.dp,
-            topEnd = 28.dp,
-            bottomStart = 28.dp,
-            bottomEnd = 6.dp
-        )
-    }
-    val expandingSheetClipShape = remember { RoundedCornerShape(28.dp) }
-
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val totalHeight = maxHeight
-        val totalHeightPx = with(density) { (totalHeight - collapsedBottomOffset).coerceAtLeast(240.dp).toPx() }
+        val maxW = maxWidth
+        val maxH = maxHeight
+        val collapsedHeight = 76.dp
+        val collapsedWidth = (maxW - collapsedStartInset - collapsedEndInset).coerceAtLeast(180.dp)
+        val collapsedTopY = (maxH - collapsedBottomOffset - collapsedHeight).coerceAtLeast(0.dp)
+        val totalDragDistancePx = with(density) { (maxH - collapsedBottomOffset).coerceAtLeast(240.dp).toPx() }
         val swipeThresholdPx = with(density) { 56.dp.toPx() }
 
-        // Scrim backdrop behind rising fullscreen player (drawn in Canvas-free graphicsLayer alpha)
+        val f = expansionAnim.value.coerceIn(0f, 1f)
+        val currentX = lerp(collapsedStartInset.value, 0f, f).dp
+        val currentY = lerp(collapsedTopY.value, 0f, f).dp
+        val currentW = lerp(collapsedWidth.value, maxW.value, f).dp
+        val currentH = lerp(collapsedHeight.value, maxH.value, f).dp
+
+        val cornerTop = lerp(28f, 0f, f).dp
+        val cornerBotStart = lerp(28f, 0f, f).dp
+        val cornerBotEnd = lerp(6f, 0f, f).dp
+        val morphShape = RoundedCornerShape(
+            topStart = cornerTop,
+            topEnd = cornerTop,
+            bottomStart = cornerBotStart,
+            bottomEnd = cornerBotEnd
+        )
+
+        // Backdrop scrim behind stretching container
         if (isFullPlayerVisible) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        alpha = (expansionAnim.value * 0.55f).coerceIn(0f, 0.55f)
+                        alpha = (f * 0.52f).coerceIn(0f, 0.52f)
                     }
                     .background(Color.Black)
             )
         }
 
-        // Fixed-bounds Fullscreen NowPlayingSheet animated purely via GPU graphicsLayer
-        if (isFullPlayerVisible) {
-            Box(
+        // Directional swipe preview pill floating above mini-player during horizontal swipe
+        if (isMiniPlayerVisible && f < 0.15f) {
+            val dragHint = SwipeTrackPolicy.resolveDragDirectionHint(
+                dragOffsetPx = miniHorizontalOffsetPx.value,
+                swipeDirectionPref = swipeDirectionPref
+            )
+            val previewSong = SwipeTrackPolicy.previewTargetSong(
+                queue = playbackState.queue,
+                currentIndex = playbackState.currentQueueIndex,
+                action = dragHint
+            )
+            val showPreviewPill = dragHint != SwipeTrackAction.NONE && abs(miniHorizontalOffsetPx.value) > 16f
+            AnimatedVisibility(
+                visible = showPreviewPill,
+                enter = fadeIn(tween(120)) + scaleIn(initialScale = 0.88f),
+                exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.88f),
                 modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        val f = expansionAnim.value.coerceIn(0f, 1f)
-                        transformOrigin = TransformOrigin(0.5f, 0.88f)
-                        scaleX = lerp(0.92f, 1.0f, f)
-                        scaleY = lerp(0.84f, 1.0f, f)
-                        translationY = (1f - f) * (totalHeightPx * 0.18f)
-                        alpha = (f * 1.6f).coerceIn(0f, 1f)
-                        if (f < 0.992f) {
-                            clip = true
-                            shape = expandingSheetClipShape
-                        } else {
-                            clip = false
-                        }
+                    .offset {
+                        IntOffset(
+                            x = 0,
+                            y = with(density) { (collapsedTopY - 38.dp).roundToPx() }
+                        )
                     }
-                    .testTag("now_playing_container")
-            ) {
-                NowPlayingScreen(
-                    playbackState = playbackState,
-                    onCollapse = { onExpandedChange(false) },
-                    onPlayPause = onPlayPause,
-                    onSkipNext = onSkipNext,
-                    onSkipPrevious = onSkipPrevious,
-                    onSeekTo = onSeekTo,
-                    onRewind10 = onRewind10,
-                    onForward10 = onForward10,
-                    onToggleShuffle = onToggleShuffle,
-                    onCycleRepeatMode = onCycleRepeatMode,
-                    onToggleFavorite = onToggleFavorite,
-                    onOpenQueue = onOpenQueue,
-                    onOpenEqualizer = onOpenEqualizer,
-                    onAddToPlaylist = onAddToPlaylist,
-                    onOpenSleepTimer = onOpenSleepTimer,
-                    onOpenLyrics = onOpenLyrics,
-                    onOpenAudioInspector = onOpenAudioInspector,
-                    onOpenCarMode = onOpenCarMode,
-                    bookmarks = bookmarks,
-                    onOpenBookmarks = onOpenBookmarks,
-                    currentSpeed = currentSpeed,
-                    currentPitchSemitones = currentPitchSemitones,
-                    currentPitchCents = currentPitchCents,
-                    onSpeedChanged = onSpeedChanged,
-                    onPitchChanged = onPitchChanged,
-                    onPitchCentsChanged = onPitchCentsChanged,
-                    abPointA = abPointA,
-                    abPointB = abPointB,
-                    onSetABPointA = onSetABPointA,
-                    onSetABPointB = onSetABPointB,
-                    onClearABRepeat = onClearABRepeat,
-                    vinylModeEnabled = vinylModeEnabled,
-                    onToggleVinylMode = onToggleVinylMode,
-                    currentVolume = currentVolume,
-                    onVolumeChanged = onVolumeChanged,
-                    onRetryPlayback = onRetryPlayback,
-                    activeStreamEngine = activeStreamEngine,
-                    onOpenSourceSwitcher = onOpenSourceSwitcher,
-                    playbackPositionFlow = playbackPositionFlow,
-                    swipeDirectionPref = swipeDirectionPref,
-                    audioReactiveShadersEnabled = audioReactiveShadersEnabled,
-                    autoDjEnabled = autoDjEnabled,
-                    onToggleAutoDj = onToggleAutoDj,
-                    reducedMotion = reducedMotion,
-                    hideArtwork = false,
-                    isTransitioning = isTransitioning,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Top drag-to-collapse handle zone when expanded
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(statusBarTop + 56.dp)
-                        .pointerInput(totalHeightPx) {
-                            detectVerticalDragGestures(
-                                onVerticalDrag = { change, dragAmount ->
-                                    if (dragAmount > 0f || expansionAnim.value < 0.99f) {
-                                        change.consume()
-                                        val delta = -dragAmount / totalHeightPx
-                                        scope.launch {
-                                            expansionAnim.snapTo((expansionAnim.value + delta).coerceIn(0f, 1f))
-                                        }
-                                    }
-                                },
-                                onDragEnd = {
-                                    val keepExpanded = expansionAnim.value > 0.78f
-                                    if (!keepExpanded) {
-                                        performHapticFeedback(view, HapticType.LIGHT)
-                                    }
-                                    onExpandedChange(keepExpanded)
-                                    scope.launch {
-                                        expansionAnim.animateTo(
-                                            if (keepExpanded) 1f else 0f,
-                                            SpringTokens.spatialDefault()
-                                        )
-                                    }
-                                },
-                                onDragCancel = {
-                                    scope.launch {
-                                        expansionAnim.animateTo(if (isExpanded) 1f else 0f)
-                                    }
-                                }
-                            )
-                        }
-                )
-            }
-        }
-
-        // Fixed-height Asymmetric 3-Corner Mini-Player Capsule
-        if (isMiniPlayerVisible) {
-            Box(
-                modifier = Modifier
                     .fillMaxWidth()
-                    .align(Alignment.BottomCenter)
-                    .padding(
-                        start = collapsedStartInset,
-                        end = collapsedEndInset,
-                        bottom = collapsedBottomOffset
-                    )
-                    .height(76.dp)
-                    .graphicsLayer {
-                        val f = expansionAnim.value.coerceIn(0f, 1f)
-                        alpha = (1f - f * 2.4f).coerceIn(0f, 1f)
-                        translationY = -f * 72f
-                        scaleX = 1f + f * 0.05f
-                        scaleY = 1f + f * 0.10f
-                    }
             ) {
-                // Directional swipe preview pill hovering above mini-player during horizontal drag
-                val dragHint = SwipeTrackPolicy.resolveDragDirectionHint(
-                    dragOffsetPx = miniHorizontalOffsetPx.value,
-                    swipeDirectionPref = swipeDirectionPref
-                )
-                val previewSong = SwipeTrackPolicy.previewTargetSong(
-                    queue = playbackState.queue,
-                    currentIndex = playbackState.currentQueueIndex,
-                    action = dragHint
-                )
-                val showPreviewPill = dragHint != SwipeTrackAction.NONE && abs(miniHorizontalOffsetPx.value) > 16f
-                AnimatedVisibility(
-                    visible = showPreviewPill,
-                    enter = fadeIn(tween(120)) + scaleIn(initialScale = 0.88f),
-                    exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.88f),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .offset(y = (-34).dp)
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
                 ) {
                     val label = when (dragHint) {
                         SwipeTrackAction.NEXT -> if (previewSong != null) "След: ${previewSong.title} →" else "Следующий →"
                         SwipeTrackAction.PREVIOUS -> if (previewSong != null) "← Пред: ${previewSong.title}" else "← Предыдущий"
                         SwipeTrackAction.NONE -> ""
                     }
-                    Surface(
+                    LiquidGlassSurface(
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.96f),
+                        fallbackColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.96f),
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
                         shadowElevation = 4.dp
                     ) {
                         Text(
                             text = label,
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                         )
                     }
                 }
+            }
+        }
 
-                Surface(
+        // Unified Bounds-Stretching Morph Container
+        val glassOrSurfaceBg = MaterialTheme.colorScheme.surfaceContainerHigh
+        val containerElevation = if (profile.isPotato || f >= 0.98f) 0.dp else ((1f - f) * 8f).dp
+
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        x = with(density) { currentX.roundToPx() },
+                        y = with(density) { currentY.roundToPx() }
+                    )
+                }
+                .size(width = currentW, height = currentH)
+                .graphicsLayer {
+                    val dragX = miniHorizontalOffsetPx.value * (1f - f)
+                    translationX = dragX
+                    rotationZ = (dragX / 48f).coerceIn(-3.5f, 3.5f)
+                }
+                .let { mod ->
+                    if (containerElevation > 0.dp) {
+                        mod.shadow(
+                            elevation = containerElevation,
+                            shape = morphShape,
+                            spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                        )
+                    } else mod
+                }
+                .let { mod ->
+                    if (liquidGlass.enabled && f < 0.96f) {
+                        mod.liquidGlassBackground(
+                            shape = morphShape,
+                            fallbackColor = glassOrSurfaceBg,
+                            borderWidth = 1.25.dp
+                        )
+                    } else {
+                        mod
+                            .clip(morphShape)
+                            .background(
+                                if (f > 0.65f) MaterialTheme.colorScheme.surface else glassOrSurfaceBg,
+                                morphShape
+                            )
+                            .let { inner ->
+                                if (f < 0.96f) {
+                                    inner.border(
+                                        BorderStroke(
+                                            width = 1.2.dp,
+                                            brush = Brush.linearGradient(
+                                                colors = listOf(
+                                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f * (1f - f)),
+                                                    MaterialTheme.colorScheme.primary.copy(
+                                                        alpha = (if (playbackState.isPlaying) 0.65f else 0.30f) * (1f - f)
+                                                    )
+                                                )
+                                            )
+                                        ),
+                                        morphShape
+                                    )
+                                } else inner
+                            }
+                    }
+                }
+        ) {
+            // 1. Fullscreen NowPlayingScreen anchored cleanly inside stretching bounds (zero inner reflow)
+            if (isFullPlayerVisible) {
+                Box(
                     modifier = Modifier
-                        .fillMaxSize()
+                        .align(Alignment.TopCenter)
+                        .requiredSize(width = maxW, height = maxH)
                         .graphicsLayer {
-                            val dragX = miniHorizontalOffsetPx.value
-                            translationX = dragX
-                            rotationZ = (dragX / 48f).coerceIn(-3.5f, 3.5f)
+                            alpha = ((f - 0.06f) / 0.56f).coerceIn(0f, 1f)
+                            val innerScale = lerp(0.95f, 1.0f, f)
+                            scaleX = innerScale
+                            scaleY = innerScale
                         }
-                        .clip(asymmetricMiniShape)
+                        .testTag("now_playing_container")
+                ) {
+                    NowPlayingScreen(
+                        playbackState = playbackState,
+                        onCollapse = { latestOnExpandedChange(false) },
+                        onPlayPause = onPlayPause,
+                        onSkipNext = onSkipNext,
+                        onSkipPrevious = onSkipPrevious,
+                        onSeekTo = onSeekTo,
+                        onRewind10 = onRewind10,
+                        onForward10 = onForward10,
+                        onToggleShuffle = onToggleShuffle,
+                        onCycleRepeatMode = onCycleRepeatMode,
+                        onToggleFavorite = onToggleFavorite,
+                        onOpenQueue = onOpenQueue,
+                        onOpenEqualizer = onOpenEqualizer,
+                        onAddToPlaylist = onAddToPlaylist,
+                        onOpenSleepTimer = onOpenSleepTimer,
+                        onOpenLyrics = onOpenLyrics,
+                        onOpenAudioInspector = onOpenAudioInspector,
+                        onOpenCarMode = onOpenCarMode,
+                        bookmarks = bookmarks,
+                        onOpenBookmarks = onOpenBookmarks,
+                        currentSpeed = currentSpeed,
+                        currentPitchSemitones = currentPitchSemitones,
+                        currentPitchCents = currentPitchCents,
+                        onSpeedChanged = onSpeedChanged,
+                        onPitchChanged = onPitchChanged,
+                        onPitchCentsChanged = onPitchCentsChanged,
+                        abPointA = abPointA,
+                        abPointB = abPointB,
+                        onSetABPointA = onSetABPointA,
+                        onSetABPointB = onSetABPointB,
+                        onClearABRepeat = onClearABRepeat,
+                        vinylModeEnabled = vinylModeEnabled,
+                        onToggleVinylMode = onToggleVinylMode,
+                        currentVolume = currentVolume,
+                        onVolumeChanged = onVolumeChanged,
+                        onRetryPlayback = onRetryPlayback,
+                        activeStreamEngine = activeStreamEngine,
+                        onOpenSourceSwitcher = onOpenSourceSwitcher,
+                        playbackPositionFlow = playbackPositionFlow,
+                        swipeDirectionPref = swipeDirectionPref,
+                        audioReactiveShadersEnabled = audioReactiveShadersEnabled,
+                        autoDjEnabled = autoDjEnabled,
+                        onToggleAutoDj = onToggleAutoDj,
+                        reducedMotion = reducedMotion,
+                        hideArtwork = false,
+                        isTransitioning = isTransitioning,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            // 2. Collapsed Asymmetric 3-Corner Mini-Player Capsule Overlay
+            if (isMiniPlayerVisible) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(collapsedHeight)
+                        .align(Alignment.TopCenter)
+                        .graphicsLayer {
+                            alpha = (1f - f * 2.5f).coerceIn(0f, 1f)
+                        }
                         .clickable(
+                            enabled = !isExpanded && f < 0.25f,
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null
                         ) {
                             performHapticFeedback(view, HapticType.LIGHT)
-                            onExpandedChange(true)
+                            latestOnExpandedChange(true)
                         }
-                        .pointerInput(totalHeightPx, swipeDirectionPref, song.id) {
+                        .pointerInput(totalDragDistancePx, swipeDirectionPref) {
                             var axisLock = 0
                             var rawHorizontal = 0f
                             val velocityTracker = VelocityTracker()
@@ -450,7 +481,7 @@ fun ExpandingPlayerContainer(
                                 },
                                 onDrag = { change, dragAmount ->
                                     if (axisLock == 0) {
-                                        axisLock = if (abs(dragAmount.x) >= abs(dragAmount.y) * 1.1f) 1 else 2
+                                        axisLock = if (abs(dragAmount.x) >= abs(dragAmount.y) * 1.15f) 1 else 2
                                     }
                                     change.consume()
                                     if (axisLock == 1) {
@@ -465,7 +496,7 @@ fun ExpandingPlayerContainer(
                                             miniHorizontalOffsetPx.snapTo(damped)
                                         }
                                     } else {
-                                        val delta = -dragAmount.y / totalHeightPx
+                                        val delta = -dragAmount.y / totalDragDistancePx
                                         scope.launch {
                                             expansionAnim.snapTo((expansionAnim.value + delta).coerceIn(0f, 1f))
                                         }
@@ -484,12 +515,12 @@ fun ExpandingPlayerContainer(
                                             SwipeTrackAction.NEXT -> {
                                                 miniLastSwipeForward = true
                                                 performHapticFeedback(view, HapticType.MEDIUM)
-                                                onSkipNext()
+                                                latestOnSkipNext()
                                             }
                                             SwipeTrackAction.PREVIOUS -> {
                                                 miniLastSwipeForward = false
                                                 performHapticFeedback(view, HapticType.MEDIUM)
-                                                onSkipPrevious()
+                                                latestOnSkipPrevious()
                                             }
                                             SwipeTrackAction.NONE -> Unit
                                         }
@@ -499,11 +530,11 @@ fun ExpandingPlayerContainer(
                                     } else {
                                         val shouldExpand = expansionAnim.value > 0.16f
                                         performHapticFeedback(view, HapticType.LIGHT)
-                                        onExpandedChange(shouldExpand)
+                                        latestOnExpandedChange(shouldExpand)
                                         scope.launch {
                                             expansionAnim.animateTo(
                                                 if (shouldExpand) 1f else 0f,
-                                                tween(durationMillis = 280, easing = FastOutSlowInEasing)
+                                                tween(durationMillis = 300, easing = FastOutSlowInEasing)
                                             )
                                         }
                                     }
@@ -516,295 +547,283 @@ fun ExpandingPlayerContainer(
                                 }
                             )
                         }
-                        .testTag("mini_player"),
-                    shape = asymmetricMiniShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    border = BorderStroke(
-                        width = 1.2.dp,
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
-                                MaterialTheme.colorScheme.primary.copy(alpha = if (playbackState.isPlaying) 0.65f else 0.30f)
-                            )
-                        )
-                    ),
-                    shadowElevation = if (profile.isPotato) 0.dp else 6.dp,
-                    tonalElevation = 4.dp
+                        .testTag("mini_player")
                 ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        if (audioReactiveShadersEnabled && !profile.isPotato && !reducedMotion) {
-                            MiniPlayerReactiveAura(
-                                isPlaying = playbackState.isPlaying,
-                                songId = song.id,
-                                durationMs = playbackState.durationMs,
-                                positionProvider = { playbackPositionFlow?.value ?: playbackState.currentPositionMs },
-                                reducedMotion = reducedMotion,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
+                    if (audioReactiveShadersEnabled && !profile.isPotato && !reducedMotion) {
+                        MiniPlayerReactiveAura(
+                            isPlaying = playbackState.isPlaying,
+                            songId = song.id,
+                            durationMs = playbackState.durationMs,
+                            positionProvider = { playbackPositionFlow?.value ?: playbackState.currentPositionMs },
+                            reducedMotion = reducedMotion,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
 
-                        val hasError = !playbackState.isBuffering && !playbackState.errorMessage.isNullOrBlank()
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                                    .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 3.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(modifier = Modifier.size(48.dp)) {
-                                    TrackArtwork(
-                                        artUriString = song.albumArtUriString,
-                                        contentDescription = song.title,
-                                        cornerRadius = 15.dp,
-                                        decodeSizePx = profile.thumbnailMaxPx,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                    if (playbackState.isBuffering) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .clip(RoundedCornerShape(15.dp))
-                                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            ExpressiveLoadingIndicator(size = 26.dp)
-                                        }
+                    val hasError = !playbackState.isBuffering && !playbackState.errorMessage.isNullOrBlank()
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(modifier = Modifier.size(48.dp)) {
+                                TrackArtwork(
+                                    artUriString = song.albumArtUriString,
+                                    contentDescription = song.title,
+                                    cornerRadius = 15.dp,
+                                    decodeSizePx = profile.thumbnailMaxPx,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                if (playbackState.isBuffering) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(15.dp))
+                                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        ExpressiveLoadingIndicator(size = 26.dp)
                                     }
                                 }
+                            }
 
-                                Spacer(modifier = Modifier.width(12.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
 
-                                AnimatedContent(
-                                    targetState = Triple(song.id, song.title, song.artist),
-                                    transitionSpec = {
-                                        val enter = slideInHorizontally(tween(220)) { w ->
-                                            if (miniLastSwipeForward) (w * 0.28f).toInt() else (-w * 0.28f).toInt()
-                                        } + fadeIn(tween(180))
-                                        val exit = slideOutHorizontally(tween(170)) { w ->
-                                            if (miniLastSwipeForward) (-w * 0.25f).toInt() else (w * 0.25f).toInt()
-                                        } + fadeOut(tween(140))
-                                        enter togetherWith exit
-                                    },
-                                    label = "mini_player_track_meta",
-                                    modifier = Modifier.weight(1f)
-                                ) { (_, title, artist) ->
-                                    Column(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalArrangement = Arrangement.Center
+                            AnimatedContent(
+                                targetState = Triple(song.id, song.title, song.artist),
+                                transitionSpec = {
+                                    val enter = slideInHorizontally(tween(220)) { w ->
+                                        if (miniLastSwipeForward) (w * 0.28f).toInt() else (-w * 0.28f).toInt()
+                                    } + fadeIn(tween(180))
+                                    val exit = slideOutHorizontally(tween(170)) { w ->
+                                        if (miniLastSwipeForward) (-w * 0.25f).toInt() else (w * 0.25f).toInt()
+                                    } + fadeOut(tween(140))
+                                    enter togetherWith exit
+                                },
+                                label = "mini_player_track_meta",
+                                modifier = Modifier.weight(1f)
+                            ) { (_, title, artist) ->
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Text(
+                                        text = title,
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Text(
-                                            text = title,
-                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                            text = when {
+                                                playbackState.isBuffering -> "Загрузка потока..."
+                                                hasError -> "Ошибка потока • Повторить"
+                                                else -> artist
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = when {
+                                                playbackState.isBuffering -> MaterialTheme.colorScheme.primary
+                                                hasError -> MaterialTheme.colorScheme.error
+                                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
                                             maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f, fill = false)
                                         )
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Text(
-                                                text = when {
-                                                    playbackState.isBuffering -> "Загрузка потока..."
-                                                    hasError -> "Ошибка потока • Повторить"
-                                                    else -> artist
-                                                },
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = when {
-                                                    playbackState.isBuffering -> MaterialTheme.colorScheme.primary
-                                                    hasError -> MaterialTheme.colorScheme.error
-                                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                                                },
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.weight(1f, fill = false)
-                                            )
-                                            if (!hasError && !playbackState.isBuffering && !miniSpectrumMode.equals("OFF", true)) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .width(46.dp)
-                                                        .clickable {
-                                                            performHapticFeedback(view, HapticType.LIGHT)
-                                                            onCycleMiniSpectrumMode()
-                                                        }
-                                                        .testTag("mini_player_live_spectrum")
-                                                ) {
-                                                    MiniPlayerLiveSpectrum(
-                                                        isPlaying = playbackState.isPlaying,
-                                                        currentPositionMs = playbackState.currentPositionMs,
-                                                        durationMs = playbackState.durationMs,
-                                                        songId = song.id,
-                                                        mode = miniSpectrumMode,
-                                                        currentPositionProvider = {
-                                                            playbackPositionFlow?.value ?: playbackState.currentPositionMs
-                                                        }
-                                                    )
-                                                }
+                                        if (!hasError && !playbackState.isBuffering && !miniSpectrumMode.equals("OFF", true)) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .width(46.dp)
+                                                    .height(26.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        performHapticFeedback(view, HapticType.LIGHT)
+                                                        onCycleMiniSpectrumMode()
+                                                    }
+                                                    .testTag("mini_player_live_spectrum"),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                MiniPlayerLiveSpectrum(
+                                                    isPlaying = playbackState.isPlaying,
+                                                    currentPositionMs = playbackState.currentPositionMs,
+                                                    durationMs = playbackState.durationMs,
+                                                    songId = song.id,
+                                                    mode = miniSpectrumMode,
+                                                    currentPositionProvider = {
+                                                        playbackPositionFlow?.value ?: playbackState.currentPositionMs
+                                                    }
+                                                )
                                             }
                                         }
                                     }
                                 }
+                            }
 
-                                MorphingPlayPauseButton(
-                                    isPlaying = playbackState.isPlaying,
-                                    isBuffering = playbackState.isBuffering,
-                                    onClick = if (hasError) onRetryPlayback else onPlayPause,
-                                    size = 44.dp,
-                                    iconSize = 20.dp,
-                                    cornerRadius = 14.dp
+                            MorphingPlayPauseButton(
+                                isPlaying = playbackState.isPlaying,
+                                isBuffering = playbackState.isBuffering,
+                                onClick = if (hasError) onRetryPlayback else onPlayPause,
+                                size = 46.dp,
+                                iconSize = 21.dp,
+                                cornerRadius = 15.dp
+                            )
+
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(15.dp))
+                                    .fluidPress(
+                                        scaleDown = 0.90f,
+                                        hapticType = HapticType.LIGHT,
+                                        onClick = {
+                                            miniLastSwipeForward = true
+                                            latestOnSkipNext()
+                                        }
+                                    )
+                                    .testTag("mini_player_next"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = AppIcons.Next,
+                                    contentDescription = "Следующий",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(22.dp)
                                 )
+                            }
 
-                                Spacer(modifier = Modifier.width(4.dp))
-
-                                Box(
+                            Box {
+                                IconButton(
+                                    onClick = {
+                                        performHapticFeedback(view, HapticType.LIGHT)
+                                        showMiniMenu = true
+                                    },
                                     modifier = Modifier
-                                        .size(44.dp)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .fluidPress(
-                                            scaleDown = 0.92f,
-                                            hapticType = HapticType.LIGHT,
-                                            onClick = {
-                                                miniLastSwipeForward = true
-                                                onSkipNext()
-                                            }
-                                        )
-                                        .testTag("mini_player_next"),
-                                    contentAlignment = Alignment.Center
+                                        .size(48.dp)
+                                        .testTag("mini_player_more")
                                 ) {
                                     Icon(
-                                        imageVector = AppIcons.Next,
-                                        contentDescription = "Следующий",
+                                        imageVector = Icons.Rounded.MoreVert,
+                                        contentDescription = "Ещё",
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
 
-                                Box {
-                                    IconButton(
+                                DropdownMenu(
+                                    expanded = showMiniMenu,
+                                    onDismissRequest = { showMiniMenu = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Развернуть плеер") },
                                         onClick = {
-                                            performHapticFeedback(view, HapticType.LIGHT)
-                                            showMiniMenu = true
+                                            showMiniMenu = false
+                                            latestOnExpandedChange(true)
                                         },
-                                        modifier = Modifier.size(44.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.MoreVert,
-                                            contentDescription = "Ещё",
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(22.dp)
-                                        )
-                                    }
-
-                                    DropdownMenu(
-                                        expanded = showMiniMenu,
-                                        onDismissRequest = { showMiniMenu = false }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("Развернуть плеер") },
-                                            onClick = {
-                                                showMiniMenu = false
-                                                onExpandedChange(true)
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Rounded.OpenInFull, contentDescription = null, modifier = Modifier.size(20.dp))
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Стиль спектра: $miniSpectrumMode") },
-                                            onClick = {
-                                                showMiniMenu = false
-                                                onCycleMiniSpectrumMode()
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Rounded.Equalizer, contentDescription = null, modifier = Modifier.size(20.dp))
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Сменить источник / версию") },
-                                            onClick = {
-                                                showMiniMenu = false
-                                                onOpenSourceSwitcher()
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Rounded.SwapHoriz, contentDescription = null, modifier = Modifier.size(20.dp))
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Очередь") },
-                                            onClick = {
-                                                showMiniMenu = false
-                                                onOpenQueue()
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Rounded.QueueMusic, contentDescription = null, modifier = Modifier.size(20.dp))
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Эквалайзер") },
-                                            onClick = {
-                                                showMiniMenu = false
-                                                onOpenEqualizer()
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Rounded.Equalizer, contentDescription = null, modifier = Modifier.size(20.dp))
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Текст песни") },
-                                            onClick = {
-                                                showMiniMenu = false
-                                                onOpenLyrics()
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Rounded.Lyrics, contentDescription = null, modifier = Modifier.size(20.dp))
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Таймер сна") },
-                                            onClick = {
-                                                showMiniMenu = false
-                                                onOpenSleepTimer()
-                                            },
-                                            leadingIcon = {
-                                                Icon(Icons.Rounded.Timer, contentDescription = null, modifier = Modifier.size(20.dp))
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text(if (song.isFavorite) "Удалить из избранного" else "В избранное") },
-                                            onClick = {
-                                                showMiniMenu = false
-                                                onToggleFavorite(song.id)
-                                            },
-                                            leadingIcon = {
-                                                Icon(
-                                                    imageVector = if (song.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                                                    contentDescription = null,
-                                                    tint = if (song.isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                                                    modifier = Modifier.size(20.dp)
-                                                )
-                                            }
-                                        )
-                                    }
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.OpenInFull, contentDescription = null, modifier = Modifier.size(20.dp))
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Стиль спектра: $miniSpectrumMode") },
+                                        onClick = {
+                                            showMiniMenu = false
+                                            onCycleMiniSpectrumMode()
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.Equalizer, contentDescription = null, modifier = Modifier.size(20.dp))
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Сменить источник / версию") },
+                                        onClick = {
+                                            showMiniMenu = false
+                                            onOpenSourceSwitcher()
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.SwapHoriz, contentDescription = null, modifier = Modifier.size(20.dp))
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Очередь") },
+                                        onClick = {
+                                            showMiniMenu = false
+                                            onOpenQueue()
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.QueueMusic, contentDescription = null, modifier = Modifier.size(20.dp))
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Эквалайзер") },
+                                        onClick = {
+                                            showMiniMenu = false
+                                            onOpenEqualizer()
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.Equalizer, contentDescription = null, modifier = Modifier.size(20.dp))
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Текст песни") },
+                                        onClick = {
+                                            showMiniMenu = false
+                                            onOpenLyrics()
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.Lyrics, contentDescription = null, modifier = Modifier.size(20.dp))
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Таймер сна") },
+                                        onClick = {
+                                            showMiniMenu = false
+                                            onOpenSleepTimer()
+                                        },
+                                        leadingIcon = {
+                                            Icon(Icons.Rounded.Timer, contentDescription = null, modifier = Modifier.size(20.dp))
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(if (song.isFavorite) "Удалить из избранного" else "В избранное") },
+                                        onClick = {
+                                            showMiniMenu = false
+                                            onToggleFavorite(song.id)
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = if (song.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                                contentDescription = null,
+                                                tint = if (song.isFavorite) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    )
                                 }
                             }
-
-                            LinearWavyProgressIndicator(
-                                progress = if (playbackState.isBuffering) null else {
-                                    {
-                                        val pos = playbackPositionFlow?.value ?: playbackState.currentPositionMs
-                                        if (playbackState.durationMs > 0) (pos.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f) else 0f
-                                    }
-                                },
-                                isPlaying = playbackState.isPlaying || playbackState.isBuffering,
-                                color = MaterialTheme.colorScheme.primary,
-                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                                height = 6.dp,
-                                strokeWidth = 2.5.dp,
-                                amplitudeDp = 1.5.dp,
-                                wavelengthDp = 18.dp,
-                                modifier = Modifier.fillMaxWidth()
-                            )
                         }
+
+                        LinearWavyProgressIndicator(
+                            progress = if (playbackState.isBuffering) null else {
+                                {
+                                    val pos = playbackPositionFlow?.value ?: playbackState.currentPositionMs
+                                    if (playbackState.durationMs > 0) (pos.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f) else 0f
+                                }
+                            },
+                            isPlaying = playbackState.isPlaying || playbackState.isBuffering,
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            height = 6.dp,
+                            strokeWidth = 2.5.dp,
+                            amplitudeDp = 1.5.dp,
+                            wavelengthDp = 18.dp,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
             }

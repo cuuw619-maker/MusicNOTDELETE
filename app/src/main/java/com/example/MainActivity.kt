@@ -87,6 +87,29 @@ class MainActivity : ComponentActivity() {
             val performanceProfile = remember(performanceMode, this) {
                 com.example.ui.theme.resolvePerformanceProfile(this, performanceMode)
             }
+            val liquidGlassEnabled by viewModel.liquidGlassEnabled.collectAsStateWithLifecycle()
+            val liquidGlassPreset by viewModel.liquidGlassPreset.collectAsStateWithLifecycle()
+            val liquidGlassBlurDp by viewModel.liquidGlassBlurDp.collectAsStateWithLifecycle()
+            val liquidGlassRefraction by viewModel.liquidGlassRefraction.collectAsStateWithLifecycle()
+            val liquidGlassFrostAlpha by viewModel.liquidGlassFrostAlpha.collectAsStateWithLifecycle()
+            val liquidGlassHighlight by viewModel.liquidGlassHighlight.collectAsStateWithLifecycle()
+            val liquidGlassConfig = remember(
+                liquidGlassEnabled,
+                liquidGlassPreset,
+                liquidGlassBlurDp,
+                liquidGlassRefraction,
+                liquidGlassFrostAlpha,
+                liquidGlassHighlight
+            ) {
+                com.example.ui.components.LiquidGlassConfig(
+                    enabled = liquidGlassEnabled,
+                    preset = liquidGlassPreset,
+                    blurDp = liquidGlassBlurDp,
+                    refraction = liquidGlassRefraction,
+                    frostAlpha = liquidGlassFrostAlpha,
+                    highlight = liquidGlassHighlight
+                )
+            }
 
             MusicAppTheme(
                 themeMode = themeMode,
@@ -94,7 +117,8 @@ class MainActivity : ComponentActivity() {
                 amoledDark = amoledDark
             ) {
                 androidx.compose.runtime.CompositionLocalProvider(
-                    com.example.ui.theme.LocalPerformanceProfile provides performanceProfile
+                    com.example.ui.theme.LocalPerformanceProfile provides performanceProfile,
+                    com.example.ui.components.LocalLiquidGlassConfig provides liquidGlassConfig
                 ) {
                     com.example.ui.theme.ProvideResponsiveLayout {
                         MainApp(viewModel = viewModel, checkPermission = ::hasAudioPermission)

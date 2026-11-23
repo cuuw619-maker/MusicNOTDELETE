@@ -16,10 +16,8 @@ class PreferencesManager(context: Context) {
     }
 
     enum class PerformanceMode(val label: String, val subtitle: String) {
-        AUTO("Авто", "Подбирается под устройство"),
-        POTATO("Картошка (Макс. FPS)", "Без размытий, лёгкие обложки и 60 Гц"),
-        BALANCED("Баланс", "Плавные анимации и экономные эффекты"),
-        FLAGSHIP("Флагман (Максимум)", "Глубокий блюр обложки, свечение текста и 120 Гц")
+        HIGH("Большая графика", "Эффекты, живые шейдеры, мягкий блюр и 120 Гц"),
+        LOW("Низкая графика", "Облегчённая графика без размытий — максимальный FPS")
     }
 
     private val prefs: SharedPreferences =
@@ -161,9 +159,28 @@ class PreferencesManager(context: Context) {
     private val _selectedDestination = MutableStateFlow(loadSelectedDestination())
     val selectedDestination: StateFlow<NavDestination> = _selectedDestination.asStateFlow()
 
-    // Adaptive Graphics & Optimization Profile
+    // Adaptive Graphics & Optimization Profile (2 modes: HIGH / LOW)
     private val _performanceMode = MutableStateFlow(loadPerformanceMode())
     val performanceMode: StateFlow<PerformanceMode> = _performanceMode.asStateFlow()
+
+    // Liquid Glass (Kyant0/AndroidLiquidGlass inspired) — strictly OFF by default
+    private val _liquidGlassEnabled = MutableStateFlow(prefs.getBoolean(KEY_LIQUID_GLASS_ENABLED, false))
+    val liquidGlassEnabled: StateFlow<Boolean> = _liquidGlassEnabled.asStateFlow()
+
+    private val _liquidGlassPreset = MutableStateFlow(prefs.getString(KEY_LIQUID_GLASS_PRESET, "CRYSTAL") ?: "CRYSTAL")
+    val liquidGlassPreset: StateFlow<String> = _liquidGlassPreset.asStateFlow()
+
+    private val _liquidGlassBlurDp = MutableStateFlow(prefs.getFloat(KEY_LIQUID_GLASS_BLUR_DP, 18f).coerceIn(0f, 32f))
+    val liquidGlassBlurDp: StateFlow<Float> = _liquidGlassBlurDp.asStateFlow()
+
+    private val _liquidGlassRefraction = MutableStateFlow(prefs.getFloat(KEY_LIQUID_GLASS_REFRACTION, 0.58f).coerceIn(0f, 1f))
+    val liquidGlassRefraction: StateFlow<Float> = _liquidGlassRefraction.asStateFlow()
+
+    private val _liquidGlassFrostAlpha = MutableStateFlow(prefs.getFloat(KEY_LIQUID_GLASS_FROST_ALPHA, 0.34f).coerceIn(0.05f, 0.85f))
+    val liquidGlassFrostAlpha: StateFlow<Float> = _liquidGlassFrostAlpha.asStateFlow()
+
+    private val _liquidGlassHighlight = MutableStateFlow(prefs.getFloat(KEY_LIQUID_GLASS_HIGHLIGHT, 0.72f).coerceIn(0f, 1f))
+    val liquidGlassHighlight: StateFlow<Float> = _liquidGlassHighlight.asStateFlow()
 
     // Persistent Online YouTube Delivery Engine ("auto", "innertube_tv_remix", "yt_web_rhino")
     private val _preferredDeliveryEngine = MutableStateFlow(loadPreferredDeliveryEngine())
@@ -210,17 +227,80 @@ class PreferencesManager(context: Context) {
     }
 
     private fun loadPerformanceMode(): PerformanceMode {
-        val name = prefs.getString(KEY_PERFORMANCE_MODE, PerformanceMode.AUTO.name) ?: PerformanceMode.AUTO.name
-        return try {
-            PerformanceMode.valueOf(name)
-        } catch (_: Exception) {
-            PerformanceMode.AUTO
+        val name = prefs.getString(KEY_PERFORMANCE_MODE, PerformanceMode.HIGH.name) ?: PerformanceMode.HIGH.name
+        return when (name.uppercase()) {
+            "LOW", "POTATO" -> PerformanceMode.LOW
+            "HIGH", "FLAGSHIP", "BALANCED", "AUTO" -> PerformanceMode.HIGH
+            else -> PerformanceMode.HIGH
         }
     }
 
     fun setPerformanceMode(mode: PerformanceMode) {
         prefs.edit().putString(KEY_PERFORMANCE_MODE, mode.name).apply()
         _performanceMode.value = mode
+    }
+
+    fun setLiquidGlassEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_LIQUID_GLASS_ENABLED, enabled).apply()
+        _liquidGlassEnabled.value = enabled
+    }
+
+    fun setLiquidGlassPreset(preset: String) {
+        val clean = when (preset.uppercase()) {
+            "SILK", "PRISM", "OBSIDIAN" -> preset.uppercase()
+            else -> "CRYSTAL"
+        }
+        prefs.edit().putString(KEY_LIQUID_GLASS_PRESET, clean).apply()
+        _liquidGlassPreset.value = clean
+    }
+
+    fun setLiquidGlassBlurDp(blurDp: Float) {
+        val clamped = blurDp.coerceIn(0f, 32f)
+        prefs.edit().putFloat(KEY_LIQUID_GLASS_BLUR_DP, clamped).apply()
+        _liquidGlassBlurDp.value = clamped
+    }
+
+    fun setLiquidGlassRefraction(refraction: Float) {
+        val clamped = refraction.coerceIn(0f, 1f)
+        prefs.edit().putFloat(KEY_LIQUID_GLASS_REFRACTION, clamped).apply()
+        _liquidGlassRefraction.value = clamped
+    }
+
+    fun setLiquidGlassFrostAlpha(alpha: Float) {
+        val clamped = alpha.coerceIn(0.05f, 0.85f)
+        prefs.edit().putFloat(KEY_LIQUID_GLASS_FROST_ALPHA, clamped).apply()
+        _liquidGlassFrostAlpha.value = clamped
+    }
+
+    fun setLiquidGlassHighlight(highlight: Float) {
+        val clamped = highlight.coerceIn(0f, 1f)
+        prefs.edit().putFloat(KEY_LIQUID_GLASS_HIGHLIGHT, clamped).apply()
+        _liquidGlassHighlight.value = clamped
+    }
+
+    fun applyLiquidGlassPreset(preset: String) {
+        val clean = when (preset.uppercase()) {
+            "SILK", "PRISM", "OBSIDIAN" -> preset.uppercase()
+            else -> "CRYSTAL"
+        }
+        val (blur, refr, frost, spec) = when (clean) {
+            "SILK" -> listOf(24f, 0.35f, 0.52f, 0.48f)
+            "PRISM" -> listOf(14f, 0.92f, 0.24f, 0.94f)
+            "OBSIDIAN" -> listOf(22f, 0.65f, 0.68f, 0.62f)
+            else -> listOf(18f, 0.58f, 0.34f, 0.72f) // CRYSTAL
+        }
+        prefs.edit()
+            .putString(KEY_LIQUID_GLASS_PRESET, clean)
+            .putFloat(KEY_LIQUID_GLASS_BLUR_DP, blur)
+            .putFloat(KEY_LIQUID_GLASS_REFRACTION, refr)
+            .putFloat(KEY_LIQUID_GLASS_FROST_ALPHA, frost)
+            .putFloat(KEY_LIQUID_GLASS_HIGHLIGHT, spec)
+            .apply()
+        _liquidGlassPreset.value = clean
+        _liquidGlassBlurDp.value = blur
+        _liquidGlassRefraction.value = refr
+        _liquidGlassFrostAlpha.value = frost
+        _liquidGlassHighlight.value = spec
     }
 
     private fun loadPreferredDeliveryEngine(): String {
@@ -597,6 +677,12 @@ class PreferencesManager(context: Context) {
         private const val KEY_SORT_ORDER = "key_sort_order"
         private const val KEY_SELECTED_DESTINATION = "key_selected_destination"
         private const val KEY_PERFORMANCE_MODE = "key_performance_mode"
+        private const val KEY_LIQUID_GLASS_ENABLED = "key_liquid_glass_enabled"
+        private const val KEY_LIQUID_GLASS_PRESET = "key_liquid_glass_preset"
+        private const val KEY_LIQUID_GLASS_BLUR_DP = "key_liquid_glass_blur_dp"
+        private const val KEY_LIQUID_GLASS_REFRACTION = "key_liquid_glass_refraction"
+        private const val KEY_LIQUID_GLASS_FROST_ALPHA = "key_liquid_glass_frost_alpha"
+        private const val KEY_LIQUID_GLASS_HIGHLIGHT = "key_liquid_glass_highlight"
         private const val KEY_PREFERRED_DELIVERY_ENGINE = "key_preferred_delivery_engine"
         private const val KEY_ONLINE_SOURCE_FILTER = "key_online_source_filter"
     }

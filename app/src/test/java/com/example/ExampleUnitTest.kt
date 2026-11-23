@@ -875,4 +875,73 @@ class ExampleUnitTest {
         )
         com.example.ui.components.ShaderSafetyGuard.resetForTesting()
     }
+
+    @Test
+    fun studioFloatDspProcessor_appliesEqBoostBalanceWidenerAndLimiter() {
+        val processor = com.example.playback.StudioFloatDspAudioProcessor()
+        val sr = 44100
+        val n = 2048
+
+        fun sine1k(amp: Double): DoubleArray = DoubleArray(n) { i ->
+            amp * kotlin.math.sin(2.0 * kotlin.math.PI * 1000.0 * i / sr)
+        }
+        fun rms(arr: DoubleArray): Double {
+            var sumSq = 0.0
+            for (i in 512 until n) sumSq += arr[i] * arr[i]
+            return kotlin.math.sqrt(sumSq / (n - 512))
+        }
+
+        // 1. 1 kHz band (#5) +9 dB boost should clearly increase RMS over flat config
+        val flatL = sine1k(0.18)
+        val flatR = sine1k(0.18)
+        processor.processStereoBlock(
+            flatL, flatR, n,
+            com.example.playback.StudioDspConfig(equalizerEnabled = true, limiterEnabled = false),
+            sr
+        )
+        val flatRms = rms(flatL)
+
+        val boostBands = FloatArray(10) { if (it == 5) 9.0f else 0f }
+        val boostL = sine1k(0.18)
+        val boostR = sine1k(0.18)
+        processor.processStereoBlock(
+            boostL, boostR, n,
+            com.example.playback.StudioDspConfig(equalizerEnabled = true, bandGainsDb = boostBands, limiterEnabled = false),
+            sr
+        )
+        assertTrue("1 kHz +9 dB boost must raise RMS (${rms(boostL)} > $flatRms)", rms(boostL) > flatRms * 1.8)
+
+        // 2. Balance full right (+1.0f) should strongly attenuate left channel while preserving right channel
+        val balL = sine1k(0.4)
+        val balR = sine1k(0.4)
+        processor.processStereoBlock(
+            balL, balR, n,
+            com.example.playback.StudioDspConfig(equalizerEnabled = false, audioBalance = 1.0f),
+            sr
+        )
+        assertTrue("Full right balance must attenuate left channel", rms(balL) < rms(balR) * 0.15)
+
+        // 3. Stereo widener must expand channel difference when enabled
+        val widL = DoubleArray(n) { i -> 0.3 * kotlin.math.sin(2.0 * kotlin.math.PI * 800.0 * i / sr) }
+        val widR = DoubleArray(n) { i -> 0.1 * kotlin.math.sin(2.0 * kotlin.math.PI * 800.0 * i / sr) }
+        val baseDiff = kotlin.math.abs(widL[600] - widR[600])
+        processor.processStereoBlock(
+            widL, widR, n,
+            com.example.playback.StudioDspConfig(equalizerEnabled = true, stereoWidenerPercent = 100, limiterEnabled = false),
+            sr
+        )
+        val widenedDiff = kotlin.math.abs(widL[600] - widR[600])
+        assertTrue("Stereo widener must increase L-R difference ($widenedDiff > $baseDiff)", widenedDiff > baseDiff * 1.4)
+
+        // 4. Soft-knee limiter must clamp hot 2.0 input <= 1.0
+        val hotL = DoubleArray(64) { 2.0 }
+        val hotR = DoubleArray(64) { -2.0 }
+        processor.processStereoBlock(
+            hotL, hotR, 64,
+            com.example.playback.StudioDspConfig(equalizerEnabled = true, limiterEnabled = true),
+            sr
+        )
+        assertTrue("Limiter must keep positive peaks <= 1.0 (was ${hotL[0]})", hotL[0] <= 1.0)
+        assertTrue("Limiter must keep negative peaks >= -1.0 (was ${hotR[0]})", hotR[0] >= -1.0)
+    }
 }

@@ -334,6 +334,7 @@ class MusicControllerManager(
         }
         controller.repeatMode = savedRepeat
         controller.volume = preferencesManager.playerVolume.value
+        getService()?.player?.pauseAtEndOfMediaItems = !preferencesManager.gaplessPlayback.value
     }
 
     fun applyPlaybackParameters() {
@@ -341,12 +342,17 @@ class MusicControllerManager(
         val speed = preferencesManager.playbackSpeed.value.coerceIn(0.5f, 2.0f)
         val semitones = preferencesManager.pitchSemitones.value.coerceIn(-12, 12)
         val cents = preferencesManager.pitchCents.value.coerceIn(-50, 50)
+        val preservePitch = preferencesManager.preservePitch.value
 
         // Studio DSP pitch calculation: 2^((semitones + cents/100) / 12)
-        // With semitones = 0 and cents = 0, pitchMultiplier is exactly 1.0f:
-        // High quality time-stretching with studio fidelity and zero robotic crackling
+        // When preservePitch is false, pitch shifts naturally with playback speed (vinyl / tape style).
         val totalSemitones = semitones + (cents / 100.0f)
-        val pitchMultiplier = 2.0f.pow(totalSemitones / 12.0f)
+        val manualPitchFactor = 2.0f.pow(totalSemitones / 12.0f)
+        val pitchMultiplier = if (preservePitch) {
+            manualPitchFactor
+        } else {
+            (speed * manualPitchFactor).coerceIn(0.25f, 4.0f)
+        }
 
         try {
             controller.playbackParameters = PlaybackParameters(speed, pitchMultiplier)
@@ -376,6 +382,13 @@ class MusicControllerManager(
     fun setPreservePitch(preserve: Boolean) {
         preferencesManager.setPreservePitch(preserve)
         applyPlaybackParameters()
+    }
+
+    fun setGaplessPlayback(enabled: Boolean) {
+        preferencesManager.setGaplessPlayback(enabled)
+        runCatching {
+            getService()?.player?.pauseAtEndOfMediaItems = !enabled
+        }
     }
 
     private fun updatePlaybackState() {

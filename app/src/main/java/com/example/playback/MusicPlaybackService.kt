@@ -89,7 +89,11 @@ class MusicPlaybackService : MediaSessionService() {
             .setUsage(C.USAGE_MEDIA)
             .build()
 
-        // Studio Master 64-bit Audio DSP pipeline with float processing & 4x anti-crackle buffer headroom
+        val app = applicationContext as? MusicApplication
+        app?.equalizerManager?.syncToStudioDsp()
+
+        // Studio Float/64-bit Audio DSP pipeline embedded directly inside ExoPlayer's AudioSink
+        val primaryDspProcessor = StudioFloatDspAudioProcessor()
         val renderersFactory = object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(
                 context: Context,
@@ -99,10 +103,14 @@ class MusicPlaybackService : MediaSessionService() {
                 return DefaultAudioSink.Builder(context)
                     .setEnableFloatOutput(true)
                     .setEnableAudioTrackPlaybackParams(true)
+                    .setAudioProcessors(arrayOf(primaryDspProcessor))
                     .setAudioTrackBufferSizeProvider { minBufferSizeInBytes, _, _, _, _, _, _ ->
-                        // Quadruple buffer headroom (minimum 128KB) to completely eliminate buffer underruns,
-                        // crackles, flutter, and "репение" even during deep time-stretching (0.5x speed)
-                        (minBufferSizeInBytes * 4).coerceAtLeast(131072)
+                        val antiCrackle = app?.preferencesManager?.antiCrackleBuffer?.value ?: true
+                        if (antiCrackle) {
+                            (minBufferSizeInBytes * 4).coerceAtLeast(131072)
+                        } else {
+                            (minBufferSizeInBytes * 2).coerceAtLeast(32768)
+                        }
                     }
                     .build()
             }
@@ -118,7 +126,6 @@ class MusicPlaybackService : MediaSessionService() {
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
-        val app = applicationContext as? MusicApplication
         val streamManager = app?.youTubeStreamManager
 
         // Header-aware DataSource so YouTube/SoundCloud/CDN URLs receive matching User-Agent & Referer
@@ -163,7 +170,7 @@ class MusicPlaybackService : MediaSessionService() {
         val cacheDataSourceFactory: DataSource.Factory = try {
             val cacheDir = File(cacheDir, "exo_audio_cache")
             val perfMode = app?.preferencesManager?.performanceMode?.value
-                ?: com.example.data.preferences.PreferencesManager.PerformanceMode.AUTO
+                ?: com.example.data.preferences.PreferencesManager.PerformanceMode.HIGH
             val profile = com.example.ui.theme.resolvePerformanceProfile(this, perfMode)
             val cacheBytes = profile.exoCacheMb.toLong() * 1024L * 1024L
             val evictor = LeastRecentlyUsedCacheEvictor(cacheBytes)
@@ -187,7 +194,9 @@ class MusicPlaybackService : MediaSessionService() {
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setLoadControl(loadControl)
             .build()
+        player.pauseAtEndOfMediaItems = !(app?.preferencesManager?.gaplessPlayback?.value ?: true)
 
+        val crossfadeDspProcessor = StudioFloatDspAudioProcessor()
         val crossfadeRenderersFactory = object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(
                 context: Context,
@@ -197,8 +206,14 @@ class MusicPlaybackService : MediaSessionService() {
                 return DefaultAudioSink.Builder(context)
                     .setEnableFloatOutput(true)
                     .setEnableAudioTrackPlaybackParams(true)
+                    .setAudioProcessors(arrayOf(crossfadeDspProcessor))
                     .setAudioTrackBufferSizeProvider { minBufferSizeInBytes, _, _, _, _, _, _ ->
-                        (minBufferSizeInBytes * 4).coerceAtLeast(131072)
+                        val antiCrackle = app?.preferencesManager?.antiCrackleBuffer?.value ?: true
+                        if (antiCrackle) {
+                            (minBufferSizeInBytes * 4).coerceAtLeast(131072)
+                        } else {
+                            (minBufferSizeInBytes * 2).coerceAtLeast(32768)
+                        }
                     }
                     .build()
             }

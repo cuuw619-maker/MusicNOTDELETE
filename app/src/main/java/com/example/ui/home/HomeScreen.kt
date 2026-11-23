@@ -63,8 +63,10 @@ import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.ExpressiveMorphShapeSurface
 import com.example.ui.components.ExpressiveSectionHeader
 import com.example.ui.components.LinearWavyProgressIndicator
+import com.example.ui.components.LiquidGlassSurface
 import com.example.ui.components.SongListItem
 import com.example.ui.components.groupedItemShape
+import com.example.ui.components.liquidGlassBackground
 import com.example.ui.components.morphPolygonShape
 import com.example.ui.components.rememberContinuousMorphShape
 import com.example.ui.theme.LocalPerformanceProfile
@@ -117,9 +119,10 @@ fun HomeScreen(
                 }
 
                 if (isScanning) {
-                    Surface(
+                    LiquidGlassSurface(
                         shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer
+                        fallbackColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -336,17 +339,17 @@ fun HomeScreen(
                     onActionClick = { viewModel.setQueueSheetVisible(true) }
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                Card(
+                LiquidGlassSurface(
+                    shape = RoundedCornerShape(22.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)),
+                    fallbackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp)
                         .bouncyClickable(
                             hapticType = HapticType.LIGHT,
                             onClick = { viewModel.setQueueSheetVisible(true) }
-                        ),
-                    shape = RoundedCornerShape(22.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+                        )
                 ) {
                     Row(
                         modifier = Modifier
@@ -483,16 +486,20 @@ private fun QuickActionCard(
     modifier: Modifier = Modifier,
     shapeIndex: Int = 1
 ) {
-    Card(
+    val cardShape = RoundedCornerShape(24.dp)
+    Box(
         modifier = modifier
             .height(108.dp)
             .bouncyClickable(
                 scaleDown = 0.94f,
                 hapticType = HapticType.LIGHT,
                 onClick = onClick
-            ),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = color)
+            )
+            .liquidGlassBackground(
+                shape = cardShape,
+                fallbackColor = color,
+                tintOverride = color
+            )
     ) {
         Column(
             modifier = Modifier
@@ -545,21 +552,24 @@ private fun RecentSongCard(
     isCurrent: Boolean,
     onClick: () -> Unit
 ) {
-    Card(
+    val cardShape = RoundedCornerShape(22.dp)
+    Box(
         modifier = Modifier
             .width(138.dp)
             .bouncyClickable(
                 scaleDown = 0.96f,
                 hapticType = HapticType.LIGHT,
                 onClick = onClick
-            ),
-        shape = RoundedCornerShape(22.dp),
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
-        ),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+            )
+            .liquidGlassBackground(
+                shape = cardShape,
+                fallbackColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                fallbackBorder = BorderStroke(
+                    width = 1.dp,
+                    color = if (isCurrent) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                    else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
+                )
+            )
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
             Box(

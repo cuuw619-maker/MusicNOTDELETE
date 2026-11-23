@@ -28,11 +28,11 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Material 3 Expressive Ambient Geometric Figures Overlay:
+ * Material 3 Expressive Ambient Geometric Figures Overlay (strictly >= 5 vertices/lobes):
  * - Zero recompositions per frame: uses `rememberInfiniteTransition` `State<Float>` read ONLY inside `Canvas`.
  * - Zero Espresso/Robolectric idling hangs (no `while (true) withFrameNanos` loops).
- * - Seamless integer-harmonic orbits & rotations across 7 layered geometric shapes (Clover, Spark,
- *   Cookie, Flower, Diamond, Sunburst, Shield) with soft outer halos, crisp tonal rims, and inner accents.
+ * - Seamless integer-harmonic orbits, soft beat pulsation, & rotations across 7 layered figures:
+ *   Pentagon (5), Hexagon (6), 5-Point Star, 6-Point Star, Heptagon (7), 8-Point Rosette Star, 10-Point Sunburst.
  */
 @Composable
 fun AmbientGeometricShapesOverlay(
@@ -61,7 +61,7 @@ fun AmbientGeometricShapesOverlay(
                 animation = tween(
                     durationMillis = when {
                         profile.isPotato -> 32_000
-                        isPlaying -> 20_000
+                        isPlaying -> 18_000
                         else -> 28_000
                     },
                     easing = LinearEasing
@@ -75,6 +75,7 @@ fun AmbientGeometricShapesOverlay(
     }
 
     val path = remember { Path() }
+    val innerPath = remember { Path() }
 
     Canvas(modifier = modifier.fillMaxSize()) {
         val w = size.width
@@ -85,27 +86,28 @@ fun AmbientGeometricShapesOverlay(
         val phase = cycleState?.value ?: 0.85f
         val mult = alphaMultiplier.coerceIn(0.25f, 1.6f)
 
-        // Shape LUT IDs: 2=Clover, 4=Spark, 3=Cookie, 5=Flower, 8=Diamond, 9=Sunburst, 7=Shield
-        val lutIndices = intArrayOf(2, 4, 3, 5, 8, 9, 7)
-        val anchorXs = floatArrayOf(0.13f, 0.87f, 0.82f, 0.16f, 0.50f, 0.62f, 0.28f)
-        val anchorYs = floatArrayOf(0.15f, 0.21f, 0.74f, 0.80f, 0.45f, 0.12f, 0.52f)
-        val sizeScales = floatArrayOf(0.185f, 0.145f, 0.205f, 0.160f, 0.125f, 0.120f, 0.135f)
+        // Strictly >= 5 corner shapes from MorphShapeLut:
+        // 0=Pentagon(5), 1=Hexagon(6), 2=5-Point Star, 3=6-Point Star, 4=Heptagon(7), 8=8-Point Rosette, 9=10-Point Sunburst
+        val lutIndices = intArrayOf(0, 2, 1, 3, 4, 8, 9)
+        val anchorXs = floatArrayOf(0.14f, 0.86f, 0.82f, 0.16f, 0.50f, 0.64f, 0.27f)
+        val anchorYs = floatArrayOf(0.15f, 0.20f, 0.74f, 0.79f, 0.45f, 0.12f, 0.52f)
+        val sizeScales = floatArrayOf(0.180f, 0.165f, 0.195f, 0.168f, 0.130f, 0.135f, 0.128f)
         // Strictly integer rotation & orbit harmonics over [0..2*PI] -> 100% seamless loop
         val rotHarmonics = floatArrayOf(1f, -2f, 1f, -1f, 2f, -2f, 1f)
         val orbitHarmonics = floatArrayOf(1f, 2f, 1f, 2f, 3f, 1f, 2f)
-        val driftRadii = floatArrayOf(0.055f, 0.065f, 0.050f, 0.058f, 0.044f, 0.048f, 0.045f)
+        val driftRadii = floatArrayOf(0.052f, 0.062f, 0.048f, 0.056f, 0.042f, 0.046f, 0.045f)
 
         val baseFillAlpha = (when {
-            profile.enableShaders && isPlaying -> 0.115f
-            isPlaying -> 0.095f
-            else -> 0.070f
-        } * mult).coerceIn(0.02f, 0.22f)
+            profile.enableShaders && isPlaying -> 0.125f
+            isPlaying -> 0.100f
+            else -> 0.072f
+        } * mult).coerceIn(0.02f, 0.24f)
 
         val baseStrokeAlpha = (when {
-            profile.enableShaders && isPlaying -> 0.24f
-            isPlaying -> 0.20f
-            else -> 0.15f
-        } * mult).coerceIn(0.04f, 0.42f)
+            profile.enableShaders && isPlaying -> 0.28f
+            isPlaying -> 0.22f
+            else -> 0.16f
+        } * mult).coerceIn(0.04f, 0.45f)
 
         for (sIdx in 0 until shapeCount) {
             val lutId = lutIndices[sIdx]
@@ -114,30 +116,41 @@ fun AmbientGeometricShapesOverlay(
             val oAngle = phase * orbitHarmonics[sIdx] + sIdx * 1.15f
             val cx = w * anchorXs[sIdx] + cos(oAngle) * drift
             val cy = h * anchorYs[sIdx] + sin(oAngle + sIdx * 0.75f) * drift
-            val breathe = if (isPlaying && !reducedMotion) 1f + 0.06f * sin(phase * 2f + sIdx) else 1f
+            // Soft harmonic pulsation (more lively while playing, gentle idle breath when paused)
+            val pulseAmp = if (isPlaying) 0.095f else 0.032f
+            val pulseWave = sin(phase * if (isPlaying) 4f else 2f + sIdx * 0.9f)
+            val breathe = if (!reducedMotion) 1f + pulseAmp * pulseWave else 1f
             val radius = minDim * sizeScales[sIdx] * breathe
             val rotRad = phase * rotHarmonics[sIdx] + sIdx * 0.65f
             val cosR = cos(rotRad)
             val sinR = sin(rotRad)
 
             path.reset()
+            innerPath.reset()
             var first = true
             var step = 0
             while (step < MorphShapeLut.STEPS) {
                 val r = radius * radii[step]
                 val c0 = MorphShapeLut.cosTable[step]
                 val s0 = MorphShapeLut.sinTable[step]
-                val x = cx + r * (c0 * cosR - s0 * sinR)
-                val y = cy + r * (s0 * cosR + c0 * sinR)
+                val rx = c0 * cosR - s0 * sinR
+                val ry = s0 * cosR + c0 * sinR
+                val x = cx + r * rx
+                val y = cy + r * ry
+                val ix = cx + r * 0.46f * rx
+                val iy = cy + r * 0.46f * ry
                 if (first) {
                     path.moveTo(x, y)
+                    innerPath.moveTo(ix, iy)
                     first = false
                 } else {
                     path.lineTo(x, y)
+                    innerPath.lineTo(ix, iy)
                 }
                 step += 2
             }
             path.close()
+            innerPath.close()
 
             val shapeColor = when (sIdx % 3) {
                 0 -> primaryColor
@@ -148,16 +161,16 @@ fun AmbientGeometricShapesOverlay(
             // Soft outer glow halo circle for depth (zero Shader/Brush allocation)
             if (!profile.isPotato) {
                 drawCircle(
-                    color = shapeColor.copy(alpha = (baseFillAlpha * 0.42f).coerceAtMost(0.08f)),
+                    color = shapeColor.copy(alpha = (baseFillAlpha * 0.44f).coerceAtMost(0.09f)),
                     radius = radius * 1.24f,
                     center = Offset(cx, cy)
                 )
             }
 
-            // Main organic M3 polygon fill
+            // Main 5+ vertex polygon / star fill
             drawPath(path = path, color = shapeColor.copy(alpha = baseFillAlpha), style = Fill)
 
-            // Crisp tonal rim + subtle inner accent ring
+            // Crisp tonal rim + inner geometric polygon ring
             if (!profile.isPotato) {
                 drawPath(
                     path = path,
@@ -165,10 +178,9 @@ fun AmbientGeometricShapesOverlay(
                     style = Stroke(width = 1.4.dp.toPx())
                 )
                 if (sIdx % 2 == 0) {
-                    drawCircle(
-                        color = shapeColor.copy(alpha = (baseStrokeAlpha * 0.65f).coerceAtMost(0.28f)),
-                        radius = radius * 0.34f,
-                        center = Offset(cx, cy),
+                    drawPath(
+                        path = innerPath,
+                        color = shapeColor.copy(alpha = (baseStrokeAlpha * 0.68f).coerceAtMost(0.30f)),
                         style = Stroke(width = 1.dp.toPx())
                     )
                 }

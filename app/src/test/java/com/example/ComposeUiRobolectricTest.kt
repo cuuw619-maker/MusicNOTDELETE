@@ -6,6 +6,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -23,7 +24,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(qualifiers = "w412dp-h915dp", sdk = [34], application = Application::class)
 class ComposeUiRobolectricTest {
 
     @get:Rule
@@ -351,6 +352,133 @@ class ComposeUiRobolectricTest {
         )
         assertTrue(
             composeTestRule.onAllNodes(hasTestTag("now_playing_artwork_stage"))
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+    }
+
+    @Test
+    fun miniPlayerButtonsAndNowPlayingCollapseRegisterClicksReliably() {
+        val sampleSong = com.example.model.Song(
+            id = 404L,
+            title = "Instant Crush",
+            artist = "Daft Punk",
+            album = "RAM",
+            albumId = 4004L,
+            durationMs = 337_000L,
+            contentUriString = ""
+        )
+        val state = com.example.model.PlaybackState(
+            currentSong = sampleSong,
+            isPlaying = false,
+            currentPositionMs = 12_000L,
+            durationMs = 337_000L,
+            queue = listOf(sampleSong),
+            currentQueueIndex = 0
+        )
+
+        var playPauseClicks = 0
+        var nextClicks = 0
+        var expanded by androidx.compose.runtime.mutableStateOf(false)
+
+        composeTestRule.setContent {
+            MaterialTheme {
+                androidx.compose.foundation.layout.Box(
+                    modifier = androidx.compose.ui.Modifier.size(
+                        width = androidx.compose.ui.unit.Dp(412f),
+                        height = androidx.compose.ui.unit.Dp(915f)
+                    )
+                ) {
+                    com.example.ui.player.ExpandingPlayerContainer(
+                        isExpanded = expanded,
+                        onExpandedChange = { expanded = it },
+                        playbackState = state,
+                        onPlayPause = { playPauseClicks++ },
+                        onSkipNext = { nextClicks++ },
+                        onSkipPrevious = {},
+                        onSeekTo = {},
+                        onRewind10 = {},
+                        onForward10 = {},
+                        onToggleShuffle = {},
+                        onCycleRepeatMode = {},
+                        onToggleFavorite = {},
+                        onOpenQueue = {},
+                        onOpenEqualizer = {},
+                        onAddToPlaylist = {},
+                        onOpenSleepTimer = {},
+                        audioReactiveShadersEnabled = false,
+                        miniSpectrumMode = "BARS"
+                    )
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNode(hasTestTag("mini_player_next")).performClick()
+        composeTestRule.waitForIdle()
+        assertTrue("mini_player_next button must register clicks", nextClicks == 1)
+
+        composeTestRule.onNode(hasTestTag("mini_player")).performClick()
+        composeTestRule.waitForIdle()
+        assertTrue("mini_player must expand on tap", expanded)
+
+        composeTestRule.onNode(hasTestTag("now_playing_play_pause"))
+            .performScrollTo()
+            .performClick()
+        composeTestRule.waitForIdle()
+        assertTrue("now_playing_play_pause button must register clicks", playPauseClicks == 1)
+
+        composeTestRule.onNode(hasTestTag("now_playing_collapse")).performClick()
+        composeTestRule.waitForIdle()
+        assertTrue("now_playing_collapse button must collapse player", !expanded)
+    }
+
+    @Test
+    fun liquidGlassDefaultsOffAndRendersSafelyWhenToggledOn() {
+        val defaultConfig = com.example.ui.components.LiquidGlassConfig()
+        assertTrue("LiquidGlass must be OFF by default", !defaultConfig.enabled)
+
+        var glassEnabled by androidx.compose.runtime.mutableStateOf(false)
+        composeTestRule.setContent {
+            MaterialTheme {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.example.ui.components.LocalLiquidGlassConfig provides com.example.ui.components.LiquidGlassConfig(
+                        enabled = glassEnabled,
+                        preset = com.example.ui.components.LiquidGlassConfig.PRESET_PRISM
+                    )
+                ) {
+                    androidx.compose.foundation.layout.Box(
+                        modifier = androidx.compose.ui.Modifier.size(
+                            width = androidx.compose.ui.unit.Dp(320f),
+                            height = androidx.compose.ui.unit.Dp(120f)
+                        )
+                    ) {
+                        com.example.ui.components.LiquidGlassCausticBackdrop(
+                            modifier = androidx.compose.ui.Modifier.size(
+                                width = androidx.compose.ui.unit.Dp(320f),
+                                height = androidx.compose.ui.unit.Dp(120f)
+                            )
+                        )
+                        com.example.ui.components.LiquidGlassSurface(
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(24f),
+                            fallbackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = androidx.compose.ui.Modifier.testTag("liquid_glass_probe")
+                        ) {
+                            androidx.compose.material3.Text("Glass Probe")
+                        }
+                    }
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+        assertTrue(
+            composeTestRule.onAllNodes(hasTestTag("liquid_glass_probe"))
+                .fetchSemanticsNodes().isNotEmpty()
+        )
+
+        glassEnabled = true
+        composeTestRule.waitForIdle()
+        assertTrue(
+            composeTestRule.onAllNodes(hasText("Glass Probe"))
                 .fetchSemanticsNodes().isNotEmpty()
         )
     }

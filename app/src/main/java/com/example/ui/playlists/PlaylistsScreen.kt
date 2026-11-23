@@ -71,6 +71,7 @@ import coil.request.ImageRequest
 import com.example.model.Playlist
 import com.example.model.Song
 import com.example.ui.components.EmptyStateView
+import com.example.ui.components.LiquidGlassSurface
 import com.example.ui.components.SongListItem
 import com.example.ui.components.groupedItemShape
 import com.example.ui.dialogs.ConfirmDeleteDialog
@@ -189,10 +190,11 @@ fun PlaylistsScreen(
                             )
                         }
 
-                        Surface(
+                        LiquidGlassSurface(
                             onClick = { viewModel.setSpotifySheetVisible(true) },
                             shape = CircleShape,
-                            color = Color(0xFF1DB954).copy(alpha = 0.16f),
+                            fallbackColor = Color(0xFF1DB954).copy(alpha = 0.16f),
+                            tintOverride = Color(0xFF1DB954),
                             contentColor = Color(0xFF1DB954),
                             modifier = Modifier.testTag("open_spotify_sync")
                         ) {
@@ -269,14 +271,13 @@ private fun PlaylistItem(
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
-    Surface(
+    LiquidGlassSurface(
+        onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 1.5.dp)
-            .clip(shape)
-            .clickable(onClick = onClick),
+            .padding(horizontal = 16.dp, vertical = 1.5.dp),
         shape = shape,
-        color = MaterialTheme.colorScheme.surfaceContainerLow
+        fallbackColor = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Row(
             modifier = Modifier

@@ -132,12 +132,20 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val spatialReverbPreset = preferencesManager.spatialReverbPreset
     val stereoWidener = preferencesManager.stereoWidener
     val audioBalance = preferencesManager.audioBalance
+    val volumeNormalize = preferencesManager.volumeNormalize
+    val gaplessPlayback = preferencesManager.gaplessPlayback
     val abPointA = controllerManager.abPointA
     val abPointB = controllerManager.abPointB
     val reducedMotion = preferencesManager.reducedMotion
     val hapticEnabled = preferencesManager.hapticEnabled
     val animationScale = preferencesManager.animationScale
     val performanceMode = preferencesManager.performanceMode
+    val liquidGlassEnabled = preferencesManager.liquidGlassEnabled
+    val liquidGlassPreset = preferencesManager.liquidGlassPreset
+    val liquidGlassBlurDp = preferencesManager.liquidGlassBlurDp
+    val liquidGlassRefraction = preferencesManager.liquidGlassRefraction
+    val liquidGlassFrostAlpha = preferencesManager.liquidGlassFrostAlpha
+    val liquidGlassHighlight = preferencesManager.liquidGlassHighlight
     val audioReactiveShadersEnabled = preferencesManager.audioReactiveShadersEnabled
     val autoDjEnabled = preferencesManager.autoDjEnabled
     val miniSpectrumMode = preferencesManager.miniSpectrumMode
@@ -560,6 +568,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun setHapticEnabled(enabled: Boolean) = preferencesManager.setHapticEnabled(enabled)
     fun setAnimationScale(scale: Float) = preferencesManager.setAnimationScale(scale)
     fun setPerformanceMode(mode: PreferencesManager.PerformanceMode) = preferencesManager.setPerformanceMode(mode)
+    fun setLiquidGlassEnabled(enabled: Boolean) = preferencesManager.setLiquidGlassEnabled(enabled)
+    fun setLiquidGlassPreset(preset: String) = preferencesManager.setLiquidGlassPreset(preset)
+    fun applyLiquidGlassPreset(preset: String) = preferencesManager.applyLiquidGlassPreset(preset)
+    fun setLiquidGlassBlurDp(blurDp: Float) = preferencesManager.setLiquidGlassBlurDp(blurDp)
+    fun setLiquidGlassRefraction(refraction: Float) = preferencesManager.setLiquidGlassRefraction(refraction)
+    fun setLiquidGlassFrostAlpha(alpha: Float) = preferencesManager.setLiquidGlassFrostAlpha(alpha)
+    fun setLiquidGlassHighlight(highlight: Float) = preferencesManager.setLiquidGlassHighlight(highlight)
     fun setAudioReactiveShadersEnabled(enabled: Boolean) = preferencesManager.setAudioReactiveShadersEnabled(enabled)
     fun setAutoDjEnabled(enabled: Boolean) = preferencesManager.setAutoDjEnabled(enabled)
     fun setMiniSpectrumMode(mode: String) = preferencesManager.setMiniSpectrumMode(mode)
@@ -575,13 +590,15 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun setPlaybackSpeed(speed: Float) = controllerManager.setPlaybackSpeed(speed)
     fun setPitchSemitones(semitones: Int) = controllerManager.setPitchSemitones(semitones)
     fun setPitchCents(cents: Int) = controllerManager.setPitchCents(cents)
-    fun setAudioEngineMode(mode: String) = preferencesManager.setAudioEngineMode(mode)
+    fun setAudioEngineMode(mode: String) = equalizerManager.setAudioEngineMode(mode)
     fun setAntiCrackleBuffer(enabled: Boolean) = preferencesManager.setAntiCrackleBuffer(enabled)
     fun setPlayerSwipeDirection(dir: String) = preferencesManager.setPlayerSwipeDirection(dir)
     fun setDoubleTapSeekSeconds(seconds: Int) = preferencesManager.setDoubleTapSeekSeconds(seconds)
     fun setVolumeGestureEnabled(enabled: Boolean) = preferencesManager.setVolumeGestureEnabled(enabled)
     fun setFilterShortAudio(enabled: Boolean) = preferencesManager.setFilterShortAudio(enabled)
     fun setPreservePitch(preserve: Boolean) = controllerManager.setPreservePitch(preserve)
+    fun setGaplessPlayback(enabled: Boolean) = controllerManager.setGaplessPlayback(enabled)
+    fun setVolumeNormalize(enabled: Boolean) = equalizerManager.setVolumeNormalize(enabled)
     fun setCrossfadeEnabled(enabled: Boolean) = preferencesManager.setCrossfadeEnabled(enabled)
     fun setCrossfadeDuration(seconds: Float) = preferencesManager.setCrossfadeDuration(seconds)
     fun setTrackEndFadeOutEnabled(enabled: Boolean) = preferencesManager.setTrackEndFadeOutEnabled(enabled)
@@ -620,7 +637,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setSpatialReverbPreset(preset: String) = equalizerManager.setSpatialReverbPreset(preset)
-    fun setStereoWidener(percent: Int) = preferencesManager.setStereoWidener(percent)
+    fun setStereoWidener(percent: Int) = equalizerManager.setStereoWidener(percent)
     fun setAudioBalance(balance: Float) = equalizerManager.setAudioBalance(balance)
 
     fun setPluginEnabled(pluginId: String, enabled: Boolean) = pluginManager.setPluginEnabled(pluginId, enabled)

@@ -67,6 +67,7 @@ import com.example.ui.components.AppIcons
 import com.example.ui.components.ExpressiveLoadingIndicator
 import com.example.ui.components.LinearWavyProgressIndicator
 import com.example.ui.components.MorphingPlayPauseButton
+import com.example.ui.components.liquidGlassBackground
 import com.example.ui.theme.LocalPerformanceProfile
 import com.example.ui.theme.SpringTokens
 import kotlinx.coroutines.flow.StateFlow
@@ -99,6 +100,9 @@ fun MiniPlayer(
         label = "mini_art_corner"
     )
 
+    val liquidGlass = com.example.ui.components.LocalLiquidGlassConfig.current
+    val miniShape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomStart = 28.dp, bottomEnd = 6.dp)
+
     AnimatedVisibility(
         visible = true,
         enter = slideInVertically(
@@ -122,6 +126,14 @@ fun MiniPlayer(
             modifier = modifier
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp, vertical = 4.dp)
+                .let {
+                    if (liquidGlass.enabled) {
+                        it.liquidGlassBackground(
+                            shape = miniShape,
+                            fallbackColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                        )
+                    } else it
+                }
                 .pointerInput(Unit) {
                     detectVerticalDragGestures { _, dragAmount ->
                         if (dragAmount < -18f) {
@@ -131,23 +143,23 @@ fun MiniPlayer(
                     }
                 }
                 .testTag("mini_player_card"),
-            shape = RoundedCornerShape(26.dp),
+            shape = miniShape,
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                containerColor = if (liquidGlass.enabled) androidx.compose.ui.graphics.Color.Transparent else MaterialTheme.colorScheme.surfaceContainerHigh
             ),
-            border = BorderStroke(
+            border = if (liquidGlass.enabled) null else BorderStroke(
                 width = 1.dp,
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
             ),
             elevation = CardDefaults.cardElevation(
-                defaultElevation = if (profile.isPotato) 1.dp else 8.dp
+                defaultElevation = if (profile.isPotato || liquidGlass.enabled) 0.dp else 8.dp
             )
         ) {
             Column {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 6.dp),
+                        .padding(start = 10.dp, end = 4.dp, top = 8.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
@@ -223,19 +235,17 @@ fun MiniPlayer(
                         isPlaying = playbackState.isPlaying,
                         isBuffering = playbackState.isBuffering,
                         onClick = if (hasError) onRetryPlayback else onPlayPause,
-                        size = 44.dp,
-                        iconSize = 20.dp,
-                        cornerRadius = 14.dp
+                        size = 46.dp,
+                        iconSize = 21.dp,
+                        cornerRadius = 15.dp
                     )
-
-                    Spacer(modifier = Modifier.width(4.dp))
 
                     Box(
                         modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(14.dp))
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(15.dp))
                             .fluidPress(
-                                scaleDown = 0.92f,
+                                scaleDown = 0.90f,
                                 hapticType = HapticType.LIGHT,
                                 onClick = onSkipNext
                             )
@@ -256,7 +266,7 @@ fun MiniPlayer(
                                 performHapticFeedback(view, HapticType.LIGHT)
                                 showMenu = true
                             },
-                            modifier = Modifier.size(44.dp)
+                            modifier = Modifier.size(48.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.MoreVert,
